@@ -2,10 +2,10 @@
 name = "lims"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Emil9405 <emil.qaxramanov94i@gmail.com>"]
 description = "Laboratory Information Management System"
 license = "MIT"
-repository = "https://github.com/yourusername/lims"
+repository = "https://github.com/Emil9405/LIMSgen"
 keywords = ["laboratory", "management", "inventory", "api", "web"]
 categories = ["science", "web-programming"]
 
