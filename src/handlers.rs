@@ -48,6 +48,58 @@ pub struct PaginatedResponse<T> {
     pub total_pages: i64,
 }
 
+// ==================== ENHANCED PAGINATION STRUCTURES ====================
+
+/// Расширенный ответ с пагинацией и информацией о сортировке
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponseWithSort<T> {
+    pub data: Vec<T>,
+    pub pagination: PaginationInfo,
+    pub sorting: SortingInfo,
+}
+
+/// Информация о пагинации
+#[derive(Debug, Serialize)]
+pub struct PaginationInfo {
+    pub total: i64,
+    pub page: i64,
+    pub per_page: i64,
+    pub total_pages: i64,
+    pub has_next: bool,
+    pub has_prev: bool,
+}
+
+impl PaginationInfo {
+    pub fn new(total: i64, page: i64, per_page: i64) -> Self {
+        let total_pages = if total == 0 { 1 } else { (total + per_page - 1) / per_page };
+        Self {
+            total,
+            page,
+            per_page,
+            total_pages,
+            has_next: page < total_pages,
+            has_prev: page > 1,
+        }
+    }
+}
+
+/// Информация о сортировке
+#[derive(Debug, Serialize)]
+pub struct SortingInfo {
+    pub sort_by: String,
+    pub sort_order: String,
+}
+
+/// Cursor-based пагинация для больших данных
+#[derive(Debug, Serialize)]
+pub struct CursorPaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub prev_cursor: Option<String>,
+    pub has_more: bool,
+    pub total: i64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
     pub page: Option<i64>,

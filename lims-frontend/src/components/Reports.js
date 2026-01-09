@@ -1,5 +1,7 @@
 // components/Reports.js - Full-featured Reports with Filters & Columns
-import React, { useState, useEffect, useCallback } from 'react';
+// ✅ ИСПРАВЛЕНО: пути API, валидация sortBy, debounce, race conditions, CSV экспорт
+
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../services/api';
 import ErrorMessage from './ErrorMessage';
 import Loading from './Loading';
@@ -8,6 +10,50 @@ import Badge from './Badge';
 import Button from './Button';
 import Select from './Select';
 import Input from './Input';
+
+// ==================== CONSTANTS ====================
+
+// ✅ Whitelist для валидации сортировки (должен совпадать с бэкендом)
+const ALLOWED_SORT_FIELDS = new Set([
+  'id', 'reagent_id', 'reagent_name', 'batch_number', 'cat_number',
+  'quantity', 'original_quantity', 'reserved_quantity', 'unit',
+  'expiry_date', 'supplier', 'manufacturer', 'received_date',
+  'status', 'location', 'created_at', 'updated_at', 'days_until_expiry',
+  'expiration_status',
+]);
+
+// ✅ Статусы синхронизированы с бэкендом (enums.rs BatchStatus)
+const BATCH_STATUSES = ['available', 'low_stock', 'reserved', 'expired', 'depleted'];
+
+// ==================== UTILITIES ====================
+
+/**
+ * Экранирование CSV-полей (обработка запятых, кавычек и переносов строк)
+ */
+const escapeCSV = (value) => {
+  if (value == null) return '';
+  const str = String(value);
+  if (/[,"\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+};
+
+/**
+ * Debounce hook
+ */
+const useDebounce = (value, delay) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+};
+
+// ==================== COMPONENT ====================
 
 const Reports = ({ user }) => {
   // State
@@ -32,17 +78,15 @@ const Reports = ({ user }) => {
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('DESC');
 
-  // Columns & Filters from backend
+  // ✅ Debounced search для предотвращения лишних запросов
+  const debouncedSearch = useDebounce(searchTerm, 300);
+
+  // ✅ AbortController для отмены предыдущих запросов
+  const abortControllerRef = useRef(null);
+
+  // Columns & Filters
   const [availableColumns, setAvailableColumns] = useState([]);
-  const [availableFields, setAvailableFields] = useState([
-    // Default fields - will be replaced by API response
-    { field: 'status', label: 'Status', data_type: 'enum', operators: ['eq', 'ne', 'in'], values: ['available', 'reserved', 'expired', 'depleted'] },
-    { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'] },
-    { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'] },
-    { field: 'location', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null'] },
-    { field: 'supplier', label: 'Supplier', data_type: 'text', operators: ['eq', 'like'] },
-    { field: 'days_until_expiry', label: 'Days Until Expiry', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'] },
-  ]);
+  const [availableFields, setAvailableFields] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [activeFilters, setActiveFilters] = useState([]);
   
@@ -52,7 +96,6 @@ const Reports = ({ user }) => {
   
   // New filter form
   const [newFilter, setNewFilter] = useState({ field: '', operator: '', value: '' });
-  const [fieldValues, setFieldValues] = useState({});
 
   // Report presets
   const reportPresets = [
@@ -83,85 +126,94 @@ const Reports = ({ user }) => {
     like: '~', in: '∈', not_in: '∉', is_null: '∅', is_not_null: '✓',
   };
 
-  // Load metadata from backend on mount
+  // ==================== DEFAULT DATA ====================
+  
+  // Дефолтные поля (используются если API недоступен)
+  const defaultFields = useMemo(() => [
+    { 
+      field: 'status', 
+      label: 'Status', 
+      data_type: 'enum', 
+      operators: ['eq', 'ne', 'in'], 
+      // ✅ ИСПРАВЛЕНО: добавлен low_stock
+      values: BATCH_STATUSES 
+    },
+    { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'], values: null },
+    { field: 'location', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null'], values: null },
+    { field: 'supplier', label: 'Supplier', data_type: 'text', operators: ['eq', 'like'], values: null },
+    { field: 'days_until_expiry', label: 'Days Until Expiry', data_type: 'number', operators: ['gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', operators: ['eq', 'like'], values: null },
+    { field: 'reagent_name', label: 'Reagent Name', data_type: 'text', operators: ['eq', 'like'], values: null },
+  ], []);
+
+  // Дефолтные колонки
+  const defaultColumns = useMemo(() => [
+    { field: 'reagent_name', label: 'Reagent', data_type: 'text', visible: true, sortable: true },
+    { field: 'batch_number', label: 'Batch #', data_type: 'text', visible: true, sortable: true },
+    { field: 'quantity', label: 'Quantity', data_type: 'number', visible: true, sortable: true },
+    { field: 'unit', label: 'Unit', data_type: 'text', visible: false, sortable: false },
+    { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', visible: true, sortable: true },
+    { field: 'days_until_expiry', label: 'Days Left', data_type: 'number', visible: true, sortable: true },
+    { field: 'status', label: 'Status', data_type: 'enum', visible: true, sortable: true },
+    { field: 'location', label: 'Location', data_type: 'text', visible: true, sortable: true },
+    { field: 'supplier', label: 'Supplier', data_type: 'text', visible: false, sortable: true },
+    { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', visible: false, sortable: true },
+    { field: 'cat_number', label: 'Cat #', data_type: 'text', visible: false, sortable: true },
+    { field: 'received_date', label: 'Received', data_type: 'date', visible: false, sortable: true },
+    { field: 'notes', label: 'Notes', data_type: 'text', visible: false, sortable: false },
+  ], []);
+
+  // ==================== LOAD METADATA ====================
+
   useEffect(() => {
     const loadMetadata = async () => {
       try {
-        // Load available fields for filtering
-        console.log('Loading report fields...');
+        // Загружаем поля для фильтрации
         const fieldsResponse = await api.getReportFields();
-        console.log('Fields response:', fieldsResponse);
         const fields = fieldsResponse?.data || fieldsResponse || [];
-        console.log('Parsed fields:', fields);
-        if (fields.length > 0) {
+        
+        if (Array.isArray(fields) && fields.length > 0) {
+          // ✅ Проверяем наличие low_stock в статусах
+          const statusField = fields.find(f => f.field === 'status');
+          if (statusField?.values && !statusField.values.includes('low_stock')) {
+            statusField.values = BATCH_STATUSES;
+          }
           setAvailableFields(fields);
         } else {
-          console.warn('No fields returned from API, using defaults');
+          setAvailableFields(defaultFields);
         }
 
-        // Load available columns
-        console.log('Loading report columns...');
-        const columnsResponse = await api.getReportColumns();
-        console.log('Columns response:', columnsResponse);
-        const columns = columnsResponse?.data || columnsResponse || [];
-        console.log('Parsed columns:', columns);
-        if (columns.length > 0) {
-          setAvailableColumns(columns);
-          
-          // Set default visible columns
-          const defaultVisible = columns
-            .filter(c => c.visible !== false)
-            .map(c => c.field);
-          setVisibleColumns(defaultVisible.length > 0 ? defaultVisible : [
-            'reagent_name', 'batch_number', 'quantity', 'expiry_date', 'status', 'location'
-          ]);
-        }
+        // ✅ ИСПРАВЛЕНО: Колонки берём из дефолтов, т.к. роута /reports/columns нет
+        // Если добавишь роут на бэкенде - раскомментируй:
+        // const columnsResponse = await api.getReportColumns();
+        // const columns = columnsResponse?.data || columnsResponse || [];
+        
+        setAvailableColumns(defaultColumns);
+        setVisibleColumns(
+          defaultColumns.filter(c => c.visible !== false).map(c => c.field)
+        );
+
       } catch (err) {
         console.error('Failed to load report metadata:', err);
-        // Use defaults
-        setAvailableFields([
-          { field: 'status', label: 'Status', data_type: 'enum', operators: ['eq', 'ne', 'in'], values: ['available', 'reserved', 'expired', 'depleted'] },
-          { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'] },
-          { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'] },
-          { field: 'location', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null'] },
-          { field: 'supplier', label: 'Supplier', data_type: 'text', operators: ['eq', 'like'] },
-          { field: 'days_until_expiry', label: 'Days Until Expiry', data_type: 'number', operators: ['gt', 'gte', 'lt', 'lte'] },
-        ]);
-        setAvailableColumns([
-          { field: 'reagent_name', label: 'Reagent', data_type: 'text', visible: true, sortable: true },
-          { field: 'batch_number', label: 'Batch #', data_type: 'text', visible: true, sortable: true },
-          { field: 'quantity', label: 'Quantity', data_type: 'number', visible: true, sortable: true },
-          { field: 'unit', label: 'Unit', data_type: 'text', visible: false, sortable: false },
-          { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', visible: true, sortable: true },
-          { field: 'days_until_expiry', label: 'Days Left', data_type: 'number', visible: true, sortable: true },
-          { field: 'status', label: 'Status', data_type: 'enum', visible: true, sortable: true },
-          { field: 'location', label: 'Location', data_type: 'text', visible: true, sortable: true },
-          { field: 'supplier', label: 'Supplier', data_type: 'text', visible: false, sortable: true },
-          { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', visible: false, sortable: true },
-          { field: 'cat_number', label: 'Cat #', data_type: 'text', visible: false, sortable: true },
-          { field: 'received_date', label: 'Received', data_type: 'date', visible: false, sortable: true },
-          { field: 'notes', label: 'Notes', data_type: 'text', visible: false, sortable: false },
-        ]);
-        setVisibleColumns(['reagent_name', 'batch_number', 'quantity', 'expiry_date', 'status', 'location']);
+        setAvailableFields(defaultFields);
+        setAvailableColumns(defaultColumns);
+        setVisibleColumns(defaultColumns.filter(c => c.visible).map(c => c.field));
       }
     };
+    
     loadMetadata();
-  }, []);
+  }, [defaultFields, defaultColumns]);
 
-  // Load field values when needed
-  const loadFieldValues = async (field) => {
-    if (fieldValues[field]) return;
-    try {
-      const response = await api.getReportFieldValues(field);
-      const values = response?.data || response || [];
-      setFieldValues(prev => ({ ...prev, [field]: values }));
-    } catch (err) {
-      console.warn(`Failed to load values for ${field}:`, err);
-    }
-  };
+  // ==================== LOAD REPORT ====================
 
-  // Load report data
   const loadReport = useCallback(async () => {
+    // ✅ Отменяем предыдущий запрос
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
     try {
       setLoading(true);
       setError('');
@@ -181,14 +233,13 @@ const Reports = ({ user }) => {
         per_page: perPage,
         sort_by: sortBy,
         sort_order: sortOrder,
-        search: searchTerm || undefined,
+        search: debouncedSearch || undefined,
         columns: visibleColumns,
-        // FIX #1B: Конвертируем строки в числа для числовых полей
         filters: activeFilters.map(f => {
           const fieldDef = availableFields.find(af => af.field === f.field);
           let value = f.value;
           
-          // Конвертируем строку в число для числовых полей и операторов
+          // Конвертируем строку в число для числовых полей
           if (fieldDef?.data_type === 'number' && typeof value === 'string') {
             const num = parseFloat(value);
             if (!isNaN(num)) {
@@ -206,6 +257,11 @@ const Reports = ({ user }) => {
 
       const response = await api.generateReport(requestBody);
       
+      // ✅ Проверяем что запрос не был отменён
+      if (abortControllerRef.current?.signal.aborted) {
+        return;
+      }
+
       if (response && response.data) {
         setReportData(response.data);
         setReportMetadata(response.metadata);
@@ -220,26 +276,39 @@ const Reports = ({ user }) => {
         setReportData([]);
       }
     } catch (err) {
+      // ✅ Игнорируем ошибки отменённых запросов
+      if (err.name === 'AbortError') {
+        return;
+      }
       console.error('Failed to load report:', err);
       setError(err.message || 'Failed to load report');
       setReportData([]);
     } finally {
       setLoading(false);
     }
-  }, [activeReport, threshold, expiringDays, page, perPage, sortBy, sortOrder, searchTerm, visibleColumns, activeFilters, availableFields]);
+  }, [activeReport, threshold, expiringDays, page, perPage, sortBy, sortOrder, debouncedSearch, visibleColumns, activeFilters, availableFields]);
 
-  // Load on mount and when dependencies change
+  // Load on dependencies change
   useEffect(() => {
     loadReport();
+    
+    // Cleanup: отменяем запрос при размонтировании
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [loadReport]);
 
   // Reset page when changing filters
   useEffect(() => {
     setPage(1);
-  }, [activeReport, searchTerm, threshold, expiringDays, activeFilters]);
+  }, [activeReport, debouncedSearch, threshold, expiringDays, activeFilters]);
+
+  // ==================== HANDLERS ====================
 
   // Add filter
-  const addFilter = () => {
+  const addFilter = useCallback(() => {
     if (!newFilter.field || !newFilter.operator) return;
     
     const filterToAdd = {
@@ -249,60 +318,70 @@ const Reports = ({ user }) => {
     };
     setActiveFilters(prev => [...prev, filterToAdd]);
     setNewFilter({ field: '', operator: '', value: '' });
-  };
+  }, [newFilter]);
 
   // Remove filter
-  const removeFilter = (id) => {
+  const removeFilter = useCallback((id) => {
     setActiveFilters(prev => prev.filter(f => f.id !== id));
-  };
+  }, []);
 
   // Toggle column
-  const toggleColumn = (field) => {
+  const toggleColumn = useCallback((field) => {
     setVisibleColumns(prev =>
       prev.includes(field)
         ? prev.filter(f => f !== field)
         : [...prev, field]
     );
-  };
+  }, []);
 
-  // Handle sort
-  const handleSort = (field) => {
+  // ✅ ИСПРАВЛЕНО: Handle sort с валидацией
+  const handleSort = useCallback((field) => {
+    // Валидация поля через whitelist
+    if (!ALLOWED_SORT_FIELDS.has(field)) {
+      console.warn(`Sort field "${field}" not allowed`);
+      return;
+    }
+    
     if (sortBy === field) {
-      setSortOrder(sortOrder === 'ASC' ? 'DESC' : 'ASC');
+      setSortOrder(prev => prev === 'ASC' ? 'DESC' : 'ASC');
     } else {
       setSortBy(field);
       setSortOrder('ASC');
     }
-  };
+  }, [sortBy]);
 
-  // Export CSV
-  const exportToCSV = async () => {
+  // ==================== EXPORT ====================
+
+  // ✅ ИСПРАВЛЕНО: Export CSV с правильным экранированием
+  const exportToCSV = useCallback(async () => {
     if (!reportData || reportData.length === 0) {
       alert('No data to export');
       return;
     }
 
     try {
-      // Try server-side export first
+      // ✅ ИСПРАВЛЕНО: Правильный путь API (без /csv)
       const presetParams = {};
       if (activeReport === 'low_stock') presetParams.threshold = threshold;
       if (activeReport === 'expiring_soon') presetParams.days = expiringDays;
 
-      const response = await api.exportReportCSV({
+      // Пробуем серверный экспорт
+      await api.exportReportCSV({
         preset: activeReport,
         preset_params: presetParams,
-        filters: activeFilters,
+        filters: activeFilters.map(f => ({
+          field: f.field,
+          operator: f.operator,
+          value: f.value,
+        })),
+        search: debouncedSearch || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
       });
-
-      const blob = new Blob([response], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `report_${activeReport}_${new Date().toISOString().split('T')[0]}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
     } catch {
-      // Fallback to client-side
+      // Fallback: клиентский экспорт
+      console.log('Server export failed, using client-side export');
+      
       const headers = visibleColumns.map(f => {
         const col = availableColumns.find(c => c.field === f);
         return col?.label || f;
@@ -311,16 +390,18 @@ const Reports = ({ user }) => {
       const rows = reportData.map(item =>
         visibleColumns.map(f => {
           let val = item[f];
-          if (f.includes('date') && val) val = new Date(val).toLocaleDateString();
-          return val ?? '';
+          if (f.includes('date') && val) {
+            val = new Date(val).toLocaleDateString();
+          }
+          return escapeCSV(val);
         })
       );
 
-      const csvContent = [headers.join(','), ...rows.map(r => 
-        r.map(c => typeof c === 'string' && (c.includes(',') || c.includes('"')) 
-          ? `"${c.replace(/"/g, '""')}"` : c
-        ).join(',')
-      )].join('\n');
+      // ✅ BOM для корректного отображения UTF-8 в Excel
+      const csvContent = '\ufeff' + [
+        headers.map(escapeCSV).join(','),
+        ...rows.map(r => r.join(','))
+      ].join('\n');
 
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
@@ -330,10 +411,12 @@ const Reports = ({ user }) => {
       a.click();
       URL.revokeObjectURL(url);
     }
-  };
+  }, [reportData, activeReport, threshold, expiringDays, activeFilters, debouncedSearch, sortBy, sortOrder, visibleColumns, availableColumns]);
+
+  // ==================== RENDER HELPERS ====================
 
   // Get status badge variant
-  const getStatusVariant = (item) => {
+  const getStatusVariant = useCallback((item) => {
     if (item.days_until_expiry !== null && item.days_until_expiry !== undefined) {
       if (item.days_until_expiry < 0) return 'danger';
       if (item.days_until_expiry < 7) return 'danger';
@@ -342,11 +425,12 @@ const Reports = ({ user }) => {
     if (item.status === 'expired') return 'danger';
     if (item.status === 'depleted') return 'secondary';
     if (item.status === 'reserved') return 'warning';
+    if (item.status === 'low_stock') return 'warning';
     return 'success';
-  };
+  }, []);
 
   // Render cell
-  const renderCell = (item, field) => {
+  const renderCell = useCallback((item, field) => {
     const value = item[field];
     
     switch (field) {
@@ -399,26 +483,34 @@ const Reports = ({ user }) => {
       default:
         return value || '—';
     }
-  };
+  }, [getStatusVariant]);
 
-  // Build table columns
-  const tableColumns = visibleColumns.map(field => {
-    const col = availableColumns.find(c => c.field === field) || { field, label: field };
-    return {
-      key: field,
-      label: col.label,
-      sortable: col.sortable !== false,
-      render: (item) => renderCell(item, field),
-    };
-  });
+  // ✅ Мемоизация tableColumns
+  const tableColumns = useMemo(() => 
+    visibleColumns.map(field => {
+      const col = availableColumns.find(c => c.field === field) || { field, label: field };
+      return {
+        key: field,
+        label: col.label,
+        sortable: col.sortable !== false && ALLOWED_SORT_FIELDS.has(field),
+        render: (item) => renderCell(item, field),
+      };
+    }),
+    [visibleColumns, availableColumns, renderCell]
+  );
 
-  // Get current field config
-  const currentFieldConfig = availableFields.find(f => f.field === newFilter.field);
+  // Get current field config for filter form
+  const currentFieldConfig = useMemo(() => 
+    availableFields.find(f => f.field === newFilter.field),
+    [availableFields, newFilter.field]
+  );
+
+  // ==================== RENDER ====================
 
   return (
     <div style={{ 
       padding: '1.5rem',
-      marginTop: '70px', // Отступ от header
+      marginTop: '70px',
       minHeight: 'calc(100vh - 70px)',
       backgroundColor: '#f7fafc'
     }}>
@@ -490,25 +582,17 @@ const Reports = ({ user }) => {
         }}>
           <h4 style={{ margin: '0 0 1rem 0', color: '#4a5568' }}>🔍 Filter Builder</h4>
           
-          {/* Debug info - remove in production */}
-          {availableFields.length === 0 && (
-            <div style={{ padding: '0.5rem', backgroundColor: '#fff3cd', borderRadius: '4px', marginBottom: '1rem', fontSize: '0.875rem' }}>
-              ⚠️ No filter fields loaded. Check console for errors.
-            </div>
-          )}
-          
           {/* Add new filter */}
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '1rem' }}>
             <div style={{ minWidth: '180px' }}>
-              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Field ({availableFields.length} available)</label>
-              {/* Using native select as fallback for debugging */}
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>
+                Field ({availableFields.length} available)
+              </label>
               <select
                 value={newFilter.field}
                 onChange={(e) => {
                   const field = e.target.value;
-                  console.log('Selected field:', field);
                   setNewFilter({ field, operator: '', value: '' });
-                  if (field) loadFieldValues(field);
                 }}
                 style={{
                   width: '100%',
@@ -531,10 +615,7 @@ const Reports = ({ user }) => {
                 <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Operator</label>
                 <select
                   value={newFilter.operator}
-                  onChange={(e) => {
-                    console.log('Selected operator:', e.target.value);
-                    setNewFilter(prev => ({ ...prev, operator: e.target.value, value: '' }));
-                  }}
+                  onChange={(e) => setNewFilter(prev => ({ ...prev, operator: e.target.value, value: '' }))}
                   style={{
                     width: '100%',
                     padding: '0.5rem',
@@ -555,13 +636,10 @@ const Reports = ({ user }) => {
             {newFilter.field && newFilter.operator && !['is_null', 'is_not_null'].includes(newFilter.operator) && (
               <div style={{ minWidth: '200px', flex: 1 }}>
                 <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Value</label>
-                {currentFieldConfig?.values || fieldValues[newFilter.field] ? (
+                {currentFieldConfig?.values ? (
                   <select
                     value={newFilter.value}
-                    onChange={(e) => {
-                      console.log('Selected value:', e.target.value);
-                      setNewFilter(prev => ({ ...prev, value: e.target.value }));
-                    }}
+                    onChange={(e) => setNewFilter(prev => ({ ...prev, value: e.target.value }))}
                     style={{
                       width: '100%',
                       padding: '0.5rem',
@@ -572,7 +650,7 @@ const Reports = ({ user }) => {
                     }}
                   >
                     <option value="">Select value...</option>
-                    {(currentFieldConfig?.values || fieldValues[newFilter.field] || []).map(v => (
+                    {currentFieldConfig.values.map(v => (
                       <option key={v} value={v}>{v}</option>
                     ))}
                   </select>
@@ -580,10 +658,7 @@ const Reports = ({ user }) => {
                   <input
                     type={currentFieldConfig?.data_type === 'number' ? 'number' : 'text'}
                     value={newFilter.value}
-                    onChange={(e) => {
-                      console.log('Entered value:', e.target.value);
-                      setNewFilter(prev => ({ ...prev, value: e.target.value }));
-                    }}
+                    onChange={(e) => setNewFilter(prev => ({ ...prev, value: e.target.value }))}
                     placeholder="Enter value..."
                     style={{
                       width: '100%',
@@ -598,10 +673,7 @@ const Reports = ({ user }) => {
             )}
 
             <button 
-              onClick={() => {
-                console.log('Adding filter:', newFilter);
-                addFilter();
-              }}
+              onClick={addFilter}
               disabled={!newFilter.field || !newFilter.operator || (!['is_null', 'is_not_null'].includes(newFilter.operator) && !newFilter.value)}
               style={{ 
                 height: '38px',
@@ -644,6 +716,7 @@ const Reports = ({ user }) => {
                     )}
                     <button
                       onClick={() => removeFilter(filter.id)}
+                      aria-label="Remove filter"
                       style={{
                         background: 'none',
                         border: 'none',
@@ -723,7 +796,6 @@ const Reports = ({ user }) => {
             placeholder="Search reagents, batches..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && loadReport()}
           />
         </div>
 

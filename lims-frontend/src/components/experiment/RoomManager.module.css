@@ -1,0 +1,336 @@
+/* src/components/experiments/RoomManager.module.css */
+
+/* === Overlay & Modal === */
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background-color: white;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+/* === Header === */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  color: #1f2937;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+}
+
+.closeButton {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.closeButton:hover {
+  color: #374151;
+}
+
+/* === Add Form === */
+.addForm {
+  background-color: #f9fafb;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.formTitle {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  color: #374151;
+  font-weight: 600;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.formField {
+  display: flex;
+  flex-direction: column;
+}
+
+.label {
+  display: block;
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+}
+
+.colorInput {
+  width: 100%;
+  height: 38px;
+  padding: 2px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.addButton {
+  padding: 8px 16px;
+  background-color: #10b981;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background-color 0.15s;
+}
+
+.addButton:hover {
+  background-color: #059669;
+}
+
+.addButton:disabled {
+  background-color: #9ca3af;
+  cursor: wait;
+}
+
+/* === Room List === */
+.roomList {
+  display: grid;
+  gap: 10px;
+}
+
+.emptyMessage {
+  text-align: center;
+  color: #6b7280;
+  padding: 40px 20px;
+  font-size: 14px;
+}
+
+/* === Room Item === */
+.roomItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background-color: #f9fafb;
+  border-radius: 8px;
+  border-left: 4px solid;
+  transition: background-color 0.15s;
+}
+
+.roomItem:hover {
+  background-color: #f3f4f6;
+}
+
+.colorDot {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.roomInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.roomName {
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.roomCapacity {
+  color: #6b7280;
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+.roomDescription {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* === Edit Mode === */
+.editInput {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.editInput:focus {
+  outline: none;
+  border-color: #8b5cf6;
+}
+
+.editColorInput {
+  width: 40px;
+  height: 30px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* === Action Buttons === */
+.editButton,
+.deleteButton,
+.saveButton,
+.cancelButton {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: opacity 0.15s, background-color 0.15s;
+}
+
+.editButton {
+  background-color: #f3f4f6;
+  color: #374151;
+}
+
+.editButton:hover {
+  background-color: #e5e7eb;
+}
+
+.deleteButton {
+  background-color: #fee2e2;
+  color: #dc2626;
+}
+
+.deleteButton:hover {
+  background-color: #fecaca;
+}
+
+.saveButton {
+  padding: 6px 12px;
+  background-color: #10b981;
+  color: white;
+}
+
+.saveButton:hover {
+  background-color: #059669;
+}
+
+.cancelButton {
+  padding: 6px 12px;
+  background-color: #6b7280;
+  color: white;
+}
+
+.cancelButton:hover {
+  background-color: #4b5563;
+}
+
+/* === Footer === */
+.footer {
+  margin-top: 20px;
+  text-align: right;
+}
+
+.doneButton {
+  padding: 10px 24px;
+  background-color: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  transition: background-color 0.15s;
+}
+
+.doneButton:hover {
+  background-color: #5a67d8;
+}
+
+/* === Responsive === */
+@media (max-width: 640px) {
+  .modal {
+    width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+    padding: 16px;
+  }
+
+  .formGrid {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .formGrid > .formField:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .formGrid > .formField:last-of-type {
+    grid-column: 1 / -1;
+  }
+
+  .addButton {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+
+  .roomItem {
+    flex-wrap: wrap;
+  }
+
+  .roomInfo {
+    flex-basis: calc(100% - 48px);
+  }
+
+  .editInput {
+    flex-basis: 100%;
+    order: 1;
+    margin-bottom: 8px;
+  }
+}

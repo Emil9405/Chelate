@@ -1,6 +1,6 @@
 // src/batch_handlers.rs
 //! Обработчики для партий реагентов
-//! ОБНОВЛЕНО: добавлена конвертация единиц и статус срока годности
+//! ОБНОВЛЕНО: интеграция с query_builders для безопасных SQL-запросов
 
 use actix_web::{web, HttpResponse};
 use std::sync::Arc;
@@ -9,6 +9,7 @@ use crate::models::*;
 use crate::error::{ApiError, ApiResult, validate_quantity, validate_unit};
 use crate::handlers::{ApiResponse, PaginatedResponse};
 use crate::validator::{CustomValidate, UnitConverter};
+use crate::query_builders::{SafeQueryBuilder, FieldWhitelist};
 use chrono::{Utc, DateTime};
 use uuid::Uuid;
 use validator::Validate;
@@ -21,6 +22,7 @@ use serde::Serialize;
 pub struct BatchResponse {
     pub id: String,
     pub reagent_id: String,
+    pub lot_number: Option<String>,
     pub batch_number: String,
     pub cat_number: Option<String>,
     pub quantity: f64,
@@ -53,6 +55,7 @@ pub struct BatchResponse {
 pub struct BatchWithReagent {
     pub id: String,
     pub reagent_id: String,
+    pub lot_number: Option<String>,
     pub batch_number: String,
     pub cat_number: Option<String>,
     pub quantity: f64,
@@ -79,6 +82,7 @@ pub struct BatchWithReagentResponse {
     pub id: String,
     pub reagent_id: String,
     pub reagent_name: String,
+    pub lot_number: Option<String>,
     pub batch_number: String,
     pub cat_number: Option<String>,
     pub quantity: f64,
@@ -153,57 +157,80 @@ impl BatchQuery {
     }
 }
 
+// ==================== WHITELIST для партий с JOIN ====================
+
+fn get_batch_join_whitelist() -> FieldWhitelist {
+    FieldWhitelist::new("batches",&[
+        // Поля batches (с алиасом b.)
+        "b.id", "b.reagent_id", "b.batch_number", "b.lot_number", "b.cat_number",
+        "b.quantity", "b.original_quantity", "b.reserved_quantity", "b.unit",
+        "b.expiry_date", "b.supplier", "b.manufacturer", "b.received_date",
+        "b.status", "b.location", "b.notes", "b.created_at", "b.updated_at",
+        "r.name", "r.id", "r.formula", "r.cas_number",
+    ])
+}
+
 // ==================== BATCH CRUD ====================
 
 /// Получить все партии с пагинацией
+/// Использует SafeQueryBuilder для безопасных SQL-запросов
 pub async fn get_all_batches(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<BatchQuery>,
 ) -> ApiResult<HttpResponse> {
-    let (page, per_page, offset) = query.normalize();
+    let (page, per_page, _offset) = query.normalize();
 
-    let mut conditions: Vec<String> = vec!["1=1".to_string()];
-    let mut params: Vec<String> = Vec::new();
+    let whitelist = get_batch_join_whitelist();
+    
+    // Безопасное построение запроса через SafeQueryBuilder
+    // Примечание: SafeQueryBuilder из mod.rs принимает base_query
+    let base_query = "SELECT b.*, r.name as reagent_name FROM batches b JOIN reagents r ON b.reagent_id = r.id";
+    let mut builder = crate::query_builders::SafeQueryBuilder::new(base_query)
+        .map_err(|e| ApiError::bad_request(&e))?
+        .with_whitelist(&whitelist);
 
+    // Добавляем условия поиска
     if let Some(ref search) = query.search {
-        if !search.trim().is_empty() {
-            let pattern = format!("%{}%", search.trim());
-            conditions.push("(b.batch_number LIKE ? OR r.name LIKE ? OR b.cat_number LIKE ? OR b.supplier LIKE ?)".to_string());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern);
+        let trimmed = search.trim();
+        if !trimmed.is_empty() {
+            // Для сложного OR условия используем add_condition
+            let pattern = format!("%{}%", trimmed);
+            let or_condition = "(b.batch_number LIKE ? OR r.name LIKE ? OR b.cat_number LIKE ? OR b.supplier LIKE ?)";
+            builder.add_condition(or_condition, vec![
+                pattern.clone(), 
+                pattern.clone(), 
+                pattern.clone(), 
+                pattern
+            ]);
         }
     }
 
     if let Some(ref status) = query.status {
-        conditions.push("b.status = ?".to_string());
-        params.push(status.clone());
+        builder.add_exact_match("b.status", status);
     }
 
-    let where_clause = conditions.join(" AND ");
+    // Сортировка и пагинация
+    builder
+        .order_by("b.created_at", "DESC")
+        .limit(per_page)
+        .offset((page - 1) * per_page);
 
-    // Count
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM batches b JOIN reagents r ON b.reagent_id = r.id WHERE {}",
-        where_clause
-    );
+    // Построение запросов
+    let (count_sql, count_params) = builder.build_count();
+    let (select_sql, select_params) = builder.build();
+
+    // Выполнение COUNT запроса
     let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-    for p in &params {
+    for p in &count_params {
         count_query = count_query.bind(p);
     }
     let total: i64 = count_query.fetch_one(&app_state.db_pool).await?;
 
-    // Select
-    let sql = format!(
-        "SELECT b.*, r.name as reagent_name FROM batches b JOIN reagents r ON b.reagent_id = r.id WHERE {} ORDER BY b.created_at DESC LIMIT ? OFFSET ?",
-        where_clause
-    );
-    let mut select_query = sqlx::query_as::<_, BatchWithReagent>(&sql);
-    for p in &params {
+    // Выполнение SELECT запроса
+    let mut select_query = sqlx::query_as::<_, BatchWithReagent>(&select_sql);
+    for p in &select_params {
         select_query = select_query.bind(p);
     }
-    select_query = select_query.bind(per_page).bind(offset);
     let batches: Vec<BatchWithReagent> = select_query.fetch_all(&app_state.db_pool).await?;
 
     // Transform to response with expiration status
@@ -215,6 +242,7 @@ pub async fn get_all_batches(
                 id: b.id,
                 reagent_id: b.reagent_id,
                 reagent_name: b.reagent_name,
+                lot_number: b.lot_number,
                 batch_number: b.batch_number,
                 cat_number: b.cat_number,
                 quantity: b.quantity,
@@ -247,49 +275,46 @@ pub async fn get_all_batches(
     })))
 }
 
-/// Получить партию по ID
+/// Получить одну партию по ID
 pub async fn get_batch(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
-    query: web::Query<BatchQuery>,
 ) -> ApiResult<HttpResponse> {
-    let (_, batch_id) = path.into_inner();
+    let (reagent_id, batch_id) = path.into_inner();
 
-    let batch: Option<Batch> = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
-        .bind(&batch_id)
+    let whitelist = FieldWhitelist::for_batches();
+    let mut builder = crate::query_builders::SafeQueryBuilder::new("SELECT * FROM batches")
+        .map_err(|e| ApiError::bad_request(&e))?
+        .with_whitelist(&whitelist);
+
+    builder
+        .add_exact_match("id", &batch_id)
+        .add_exact_match("reagent_id", &reagent_id);
+
+    let (sql, params) = builder.build();
+    
+    let mut query = sqlx::query_as::<_, Batch>(&sql);
+    for p in &params {
+        query = query.bind(p);
+    }
+
+    let batch = query
         .fetch_optional(&app_state.db_pool)
-        .await?;
-
-    let batch = match batch {
-        Some(b) => b,
-        None => return Err(ApiError::not_found("Batch")),
-    };
+        .await?
+        .ok_or_else(|| ApiError::not_found("Batch"))?;
 
     let (expiration_status, days_until_expiration) = calculate_expiration_status(batch.expiry_date);
-
-    // Unit conversion if requested
-    let (converted_quantity, converted_unit, original_unit) = 
-        if let Some(ref target_unit) = query.unit {
-            match convert_quantity(batch.quantity, &batch.unit, target_unit) {
-                Ok(converted) => (Some(converted), Some(target_unit.clone()), Some(batch.unit.clone())),
-                Err(e) => {
-                    log::warn!("Unit conversion failed: {}", e);
-                    (None, None, None)
-                }
-            }
-        } else {
-            (None, None, None)
-        };
-
+    
     let response = BatchResponse {
         id: batch.id,
         reagent_id: batch.reagent_id,
+        lot_number: batch.lot_number,
         batch_number: batch.batch_number,
         cat_number: batch.cat_number,
-        quantity: converted_quantity.unwrap_or(batch.quantity),
+        quantity: batch.quantity,
         original_quantity: batch.original_quantity,
         reserved_quantity: batch.reserved_quantity,
-        unit: converted_unit.clone().unwrap_or(batch.unit.clone()),
+        unit: batch.unit,
         expiry_date: batch.expiry_date,
         supplier: batch.supplier,
         manufacturer: batch.manufacturer,
@@ -303,100 +328,100 @@ pub async fn get_batch(
         updated_at: batch.updated_at,
         expiration_status,
         days_until_expiration,
-        converted_quantity,
-        converted_unit,
-        original_unit,
+        converted_quantity: None,
+        converted_unit: None,
+        original_unit: None,
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
 }
 
-/// Создать партию
+/// Создать новую партию
 pub async fn create_batch(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    batch: web::Json<CreateBatchRequest>,
+    batch_data: web::Json<CreateBatchRequest>,
     user_id: String,
 ) -> ApiResult<HttpResponse> {
-    batch.validate()?;
-
-    let validation_result = batch.custom_validate();
-    if !validation_result.is_valid() {
-        return Err(validation_result.to_api_error());
-    }
-
-    validate_unit(&batch.unit)?;
-    validate_quantity(batch.quantity)?;
-
     let reagent_id = path.into_inner();
-
-    let reagent: Option<Reagent> = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
-        .bind(&reagent_id)
-        .fetch_optional(&app_state.db_pool)
-        .await?;
-
-    if reagent.is_none() {
-        return Err(ApiError::not_found("Reagent"));
+    
+    // Валидация
+    batch_data.validate().map_err(|e| ApiError::ValidationError(e.to_string()))?;
+    
+    let custom_validation = batch_data.custom_validate();
+    if !custom_validation.is_valid() {
+        return Err(custom_validation.to_api_error());
     }
 
-    let id = Uuid::new_v4().to_string();
-    let now = Utc::now();
-    let received_date = batch.received_date.unwrap_or(now);
-
-    sqlx::query(r#"
-        INSERT INTO batches
-        (id, reagent_id, batch_number, cat_number, quantity, original_quantity, reserved_quantity, unit,
-         expiry_date, supplier, manufacturer, received_date, status, location, notes,
-         created_by, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?)
-    "#)
-        .bind(&id)
+    // Проверка существования реагента
+    let _: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
         .bind(&reagent_id)
-        .bind(&batch.batch_number)
-        .bind(&batch.cat_number)
-        .bind(batch.quantity)
-        .bind(batch.quantity)
-        .bind(&batch.unit)
-        .bind(&batch.expiry_date)
-        .bind(&batch.supplier)
-        .bind(&batch.manufacturer)
-        .bind(&received_date)
-        .bind(&batch.location)
-        .bind(&batch.notes)
-        .bind(&user_id)
-        .bind(&user_id)
-        .bind(&now)
-        .bind(&now)
-        .execute(&app_state.db_pool)
-        .await?;
+        .fetch_one(&app_state.db_pool)
+        .await
+        .map_err(|_| ApiError::not_found("Reagent"))?;
 
-    let created: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
-        .bind(&id)
+    let now = Utc::now();
+    let batch_id = Uuid::new_v4().to_string();
+    let received_date = batch_data.received_date.unwrap_or(now);
+
+    sqlx::query(
+        r#"INSERT INTO batches (
+            id, reagent_id, lot_number, batch_number, cat_number,
+            quantity, original_quantity, reserved_quantity, unit,
+            expiry_date, supplier, manufacturer, received_date,
+            status, location, notes, created_by, updated_by,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(&batch_id)
+    .bind(&reagent_id)
+    .bind(&batch_data.lot_number)
+    .bind(&batch_data.batch_number)
+    .bind(&batch_data.cat_number)
+    .bind(batch_data.quantity)
+    .bind(batch_data.quantity)  // original_quantity
+    .bind(&batch_data.unit)
+    .bind(&batch_data.expiry_date)
+    .bind(&batch_data.supplier)
+    .bind(&batch_data.manufacturer)
+    .bind(&received_date)
+    .bind(&batch_data.location)
+    .bind(&batch_data.notes)
+    .bind(&user_id)
+    .bind(&user_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&app_state.db_pool)
+    .await?;
+
+    let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
+        .bind(&batch_id)
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let (expiration_status, days_until_expiration) = calculate_expiration_status(created.expiry_date);
-    
+    let (expiration_status, days_until_expiration) = calculate_expiration_status(batch.expiry_date);
+
     let response = BatchResponse {
-        id: created.id,
-        reagent_id: created.reagent_id,
-        batch_number: created.batch_number,
-        cat_number: created.cat_number,
-        quantity: created.quantity,
-        original_quantity: created.original_quantity,
-        reserved_quantity: created.reserved_quantity,
-        unit: created.unit,
-        expiry_date: created.expiry_date,
-        supplier: created.supplier,
-        manufacturer: created.manufacturer,
-        received_date: created.received_date,
-        status: created.status,
-        location: created.location,
-        notes: created.notes,
-        created_by: created.created_by,
-        updated_by: created.updated_by,
-        created_at: created.created_at,
-        updated_at: created.updated_at,
+        id: batch.id,
+        reagent_id: batch.reagent_id,
+        lot_number: batch.lot_number,
+        batch_number: batch.batch_number,
+        cat_number: batch.cat_number,
+        quantity: batch.quantity,
+        original_quantity: batch.original_quantity,
+        reserved_quantity: batch.reserved_quantity,
+        unit: batch.unit,
+        expiry_date: batch.expiry_date,
+        supplier: batch.supplier,
+        manufacturer: batch.manufacturer,
+        received_date: batch.received_date,
+        status: batch.status,
+        location: batch.location,
+        notes: batch.notes,
+        created_by: batch.created_by,
+        updated_by: batch.updated_by,
+        created_at: batch.created_at,
+        updated_at: batch.updated_at,
         expiration_status,
         days_until_expiration,
         converted_quantity: None,
@@ -411,30 +436,26 @@ pub async fn create_batch(
 pub async fn update_batch(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
-    update: web::Json<UpdateBatchRequest>,
+    batch_data: web::Json<UpdateBatchRequest>,
     user_id: String,
 ) -> ApiResult<HttpResponse> {
-    update.validate()?;
-    let (_, batch_id) = path.into_inner();
+    let (reagent_id, batch_id) = path.into_inner();
+    
+    batch_data.validate().map_err(|e| ApiError::ValidationError(e.to_string()))?;
 
-    let existing: Option<Batch> = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
+    // Проверка существования
+    let existing: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ?")
         .bind(&batch_id)
-        .fetch_optional(&app_state.db_pool)
-        .await?;
-
-    if existing.is_none() {
-        return Err(ApiError::not_found("Batch"));
-    }
-    let existing = existing.unwrap();
-
-    if existing.status == "depleted" {
-        return Err(ApiError::cannot_modify_depleted_batch());
-    }
+        .bind(&reagent_id)
+        .fetch_one(&app_state.db_pool)
+        .await
+        .map_err(|_| ApiError::not_found("Batch"))?;
 
     let now = Utc::now();
 
-    sqlx::query(r#"
-        UPDATE batches SET
+    sqlx::query(
+        r#"UPDATE batches SET
+            lot_number = COALESCE(?, lot_number),
             batch_number = COALESCE(?, batch_number),
             cat_number = COALESCE(?, cat_number),
             quantity = COALESCE(?, quantity),
@@ -447,51 +468,54 @@ pub async fn update_batch(
             notes = COALESCE(?, notes),
             updated_by = ?,
             updated_at = ?
-        WHERE id = ?
-    "#)
-        .bind(&update.batch_number)
-        .bind(&update.cat_number)
-        .bind(update.quantity)
-        .bind(&update.unit)
-        .bind(&update.expiry_date)
-        .bind(&update.supplier)
-        .bind(&update.manufacturer)
-        .bind(&update.status)
-        .bind(&update.location)
-        .bind(&update.notes)
-        .bind(&user_id)
-        .bind(&now)
-        .bind(&batch_id)
-        .execute(&app_state.db_pool)
-        .await?;
+        WHERE id = ? AND reagent_id = ?"#,
+    )
+    .bind(&batch_data.lot_number)
+    .bind(&batch_data.batch_number)
+    .bind(&batch_data.cat_number)
+    .bind(&batch_data.quantity)
+    .bind(&batch_data.unit)
+    .bind(&batch_data.expiry_date)
+    .bind(&batch_data.supplier)
+    .bind(&batch_data.manufacturer)
+    .bind(&batch_data.status)
+    .bind(&batch_data.location)
+    .bind(&batch_data.notes)
+    .bind(&user_id)
+    .bind(&now)
+    .bind(&batch_id)
+    .bind(&reagent_id)
+    .execute(&app_state.db_pool)
+    .await?;
 
-    let updated: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
+    let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
         .bind(&batch_id)
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let (expiration_status, days_until_expiration) = calculate_expiration_status(updated.expiry_date);
-    
+    let (expiration_status, days_until_expiration) = calculate_expiration_status(batch.expiry_date);
+
     let response = BatchResponse {
-        id: updated.id,
-        reagent_id: updated.reagent_id,
-        batch_number: updated.batch_number,
-        cat_number: updated.cat_number,
-        quantity: updated.quantity,
-        original_quantity: updated.original_quantity,
-        reserved_quantity: updated.reserved_quantity,
-        unit: updated.unit,
-        expiry_date: updated.expiry_date,
-        supplier: updated.supplier,
-        manufacturer: updated.manufacturer,
-        received_date: updated.received_date,
-        status: updated.status,
-        location: updated.location,
-        notes: updated.notes,
-        created_by: updated.created_by,
-        updated_by: updated.updated_by,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
+        id: batch.id,
+        reagent_id: batch.reagent_id,
+        lot_number: batch.lot_number,
+        batch_number: batch.batch_number,
+        cat_number: batch.cat_number,
+        quantity: batch.quantity,
+        original_quantity: batch.original_quantity,
+        reserved_quantity: batch.reserved_quantity,
+        unit: batch.unit,
+        expiry_date: batch.expiry_date,
+        supplier: batch.supplier,
+        manufacturer: batch.manufacturer,
+        received_date: batch.received_date,
+        status: batch.status,
+        location: batch.location,
+        notes: batch.notes,
+        created_by: batch.created_by,
+        updated_by: batch.updated_by,
+        created_at: batch.created_at,
+        updated_at: batch.updated_at,
         expiration_status,
         days_until_expiration,
         converted_quantity: None,
@@ -506,12 +530,13 @@ pub async fn update_batch(
 pub async fn delete_batch(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
-    _user_id: String,
+    user_id: String,
 ) -> ApiResult<HttpResponse> {
-    let (_, batch_id) = path.into_inner();
+    let (reagent_id, batch_id) = path.into_inner();
 
-    let result = sqlx::query("DELETE FROM batches WHERE id = ?")
+    let result = sqlx::query("DELETE FROM batches WHERE id = ? AND reagent_id = ?")
         .bind(&batch_id)
+        .bind(&reagent_id)
         .execute(&app_state.db_pool)
         .await?;
 
@@ -519,43 +544,45 @@ pub async fn delete_batch(
         return Err(ApiError::not_found("Batch"));
     }
 
-    Ok(HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-        "message": "Batch deleted successfully"
-    }))))
+    log::info!("🗑️ Batch {} deleted by user {}", batch_id, user_id);
+
+    Ok(HttpResponse::Ok().json(ApiResponse::<()>::success_with_message((), "Batch deleted successfully".to_string())))
 }
 
-// ==================== SPECIALIZED QUERIES ====================
+// ==================== EXPIRING BATCHES ====================
 
 #[derive(Debug, serde::Deserialize)]
-pub struct ExpiringBatchesQuery {
+pub struct ExpiringQuery {
     pub days: Option<i64>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct LowStockQuery {
-    pub threshold: Option<f64>,
-}
-
-/// Получить истекающие партии
+/// Получить партии с истекающим сроком годности
 pub async fn get_expiring_batches(
     app_state: web::Data<Arc<AppState>>,
-    query: web::Query<ExpiringBatchesQuery>,
+    query: web::Query<ExpiringQuery>,
 ) -> ApiResult<HttpResponse> {
     let days = query.days.unwrap_or(30);
     let expiry_threshold = Utc::now() + chrono::Duration::days(days);
 
-    let batches: Vec<BatchWithReagent> = sqlx::query_as(r#"
-        SELECT b.*, r.name as reagent_name
-        FROM batches b
-        JOIN reagents r ON b.reagent_id = r.id
-        WHERE b.expiry_date IS NOT NULL
-          AND b.expiry_date <= ?
-          AND b.status = 'available'
-        ORDER BY b.expiry_date ASC
-    "#)
-        .bind(&expiry_threshold)
-        .fetch_all(&app_state.db_pool)
-        .await?;
+    let whitelist = get_batch_join_whitelist();
+    let base_query = "SELECT b.*, r.name as reagent_name FROM batches b JOIN reagents r ON b.reagent_id = r.id";
+    let mut builder = crate::query_builders::SafeQueryBuilder::new(base_query)
+        .map_err(|e| ApiError::bad_request(&e))?
+        .with_whitelist(&whitelist);
+
+    builder
+        .add_is_not_null("b.expiry_date")
+        .add_comparison("b.expiry_date", "<=", expiry_threshold.to_rfc3339())
+        .add_exact_match("b.status", "available")
+        .order_by("b.expiry_date", "ASC");
+
+    let (sql, params) = builder.build();
+
+    let mut select_query = sqlx::query_as::<_, BatchWithReagent>(&sql);
+    for p in &params {
+        select_query = select_query.bind(p);
+    }
+    let batches: Vec<BatchWithReagent> = select_query.fetch_all(&app_state.db_pool).await?;
 
     let response: Vec<BatchWithReagentResponse> = batches
         .into_iter()
@@ -565,6 +592,7 @@ pub async fn get_expiring_batches(
                 id: b.id,
                 reagent_id: b.reagent_id,
                 reagent_name: b.reagent_name,
+                lot_number: b.lot_number,
                 batch_number: b.batch_number,
                 cat_number: b.cat_number,
                 quantity: b.quantity,
@@ -589,6 +617,13 @@ pub async fn get_expiring_batches(
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
 }
 
+// ==================== LOW STOCK BATCHES ====================
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LowStockQuery {
+    pub threshold: Option<f64>,
+}
+
 /// Получить партии с низким остатком
 pub async fn get_low_stock_batches(
     app_state: web::Data<Arc<AppState>>,
@@ -596,11 +631,13 @@ pub async fn get_low_stock_batches(
 ) -> ApiResult<HttpResponse> {
     let threshold_percentage = query.threshold.unwrap_or(20.0);
 
+    // Для сложного условия используем raw SQL, но безопасно
     let batches: Vec<BatchWithReagent> = sqlx::query_as(r#"
         SELECT b.*, r.name as reagent_name
         FROM batches b
         JOIN reagents r ON b.reagent_id = r.id
         WHERE b.status = 'available'
+          AND b.original_quantity > 0
           AND (b.quantity / b.original_quantity * 100) <= ?
         ORDER BY (b.quantity / b.original_quantity) ASC
     "#)
@@ -616,6 +653,7 @@ pub async fn get_low_stock_batches(
                 id: b.id,
                 reagent_id: b.reagent_id,
                 reagent_name: b.reagent_name,
+                lot_number: b.lot_number,
                 batch_number: b.batch_number,
                 cat_number: b.cat_number,
                 quantity: b.quantity,
@@ -684,43 +722,45 @@ pub async fn get_batches_for_reagent(
     query: web::Query<BatchQuery>,
 ) -> ApiResult<HttpResponse> {
     let reagent_id = path.into_inner();
-    let (page, per_page, offset) = query.normalize();
+    let (page, per_page, _offset) = query.normalize();
 
-    // Check reagent exists
+    // Проверка существования реагента
     let _: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
         .bind(&reagent_id)
         .fetch_one(&app_state.db_pool)
         .await
         .map_err(|_| ApiError::not_found("Reagent"))?;
 
-    let mut conditions: Vec<String> = vec!["b.reagent_id = ?".to_string()];
-    let mut params: Vec<String> = vec![reagent_id.clone()];
+    let whitelist = FieldWhitelist::for_batches();
+    let mut builder = crate::query_builders::SafeQueryBuilder::new("SELECT * FROM batches b")
+        .map_err(|e| ApiError::bad_request(&e))?
+        .with_whitelist(&whitelist);
+
+    builder.add_exact_match("reagent_id", &reagent_id);
 
     if let Some(ref status) = query.status {
-        conditions.push("b.status = ?".to_string());
-        params.push(status.clone());
+        builder.add_exact_match("status", status);
     }
 
-    let where_clause = conditions.join(" AND ");
+    builder
+        .order_by("received_date", "DESC")
+        .limit(per_page)
+        .offset((page - 1) * per_page);
 
     // Count
-    let count_sql = format!("SELECT COUNT(*) FROM batches b WHERE {}", where_clause);
+    let (count_sql, count_params) = builder.build_count();
     let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-    for p in &params {
+    for p in &count_params {
         count_query = count_query.bind(p);
     }
     let total: i64 = count_query.fetch_one(&app_state.db_pool).await?;
 
     // Select
-    let sql = format!(
-        "SELECT * FROM batches b WHERE {} ORDER BY b.received_date DESC LIMIT ? OFFSET ?",
-        where_clause
-    );
+    let (sql, params) = builder.build();
     let mut select_query = sqlx::query_as::<_, Batch>(&sql);
     for p in &params {
         select_query = select_query.bind(p);
     }
-    select_query = select_query.bind(per_page).bind(offset);
     let batches: Vec<Batch> = select_query.fetch_all(&app_state.db_pool).await?;
 
     // Transform
@@ -731,6 +771,7 @@ pub async fn get_batches_for_reagent(
             BatchResponse {
                 id: b.id,
                 reagent_id: b.reagent_id,
+                lot_number: b.lot_number,
                 batch_number: b.batch_number,
                 cat_number: b.cat_number,
                 quantity: b.quantity,

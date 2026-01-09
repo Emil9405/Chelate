@@ -13,13 +13,19 @@ use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::io::Write;
-use std::str::FromStr;  // FIXED: Added missing import for from_str
+use std::str::FromStr;
 use chrono::Utc;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::AppState;
-use crate::models::*;
+use crate::models::{
+    Equipment, CreateEquipmentRequest, UpdateEquipmentRequest,
+    EquipmentPart, CreateEquipmentPartRequest, UpdateEquipmentPartRequest,
+    EquipmentMaintenance, EquipmentMaintenanceWithEquipment, 
+    CreateMaintenanceRequest, UpdateMaintenanceRequest, CompleteMaintenanceRequest,
+    EquipmentFile, UploadFileRequest, EquipmentDetailResponse
+};
 use crate::error::{ApiError, ApiResult};
 use crate::handlers::{ApiResponse, PaginatedResponse};
 use crate::query_builders::{
@@ -78,8 +84,16 @@ const ALLOWED_DOC_TYPES: &[&str] = &[
     "text/plain",
 ];
 
-/// Директория для хранения файлов оборудования
-const EQUIPMENT_FILES_DIR: &str = "./uploads/equipment";
+/// Возвращает путь к директории файлов оборудования (кроссплатформенно)
+fn get_equipment_files_dir() -> std::path::PathBuf {
+    std::env::var("EQUIPMENT_FILES_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(".")
+                .join("uploads")
+                .join("equipment")
+        })
+}
 
 // ==================== ОСНОВНЫЕ CRUD ОПЕРАЦИИ ====================
 
@@ -91,8 +105,9 @@ pub async fn get_equipment(
     let (page, per_page, offset) = query.normalize();
     let whitelist = FieldWhitelist::for_equipment();
 
-    // Подсчет общего количества - FIXED: new instead of new_safe
-    let mut count_builder = CountQueryBuilder::new("equipment")?;
+    // Подсчет общего количества
+    let mut count_builder = CountQueryBuilder::new("equipment")
+        .map_err(|e| ApiError::InternalServerError(e))?;
     apply_equipment_filters(&mut count_builder, &query, &whitelist)?;
     
     let (count_sql, count_params) = count_builder.build();
@@ -102,16 +117,24 @@ pub async fn get_equipment(
     }
     let total: i64 = count_query.fetch_one(&app_state.db_pool).await?;
 
-    // Выборка данных - FIXED: use base query string
+    // Выборка данных
     let base_sql = "SELECT * FROM equipment";
-    let mut select_builder = SafeQueryBuilder::new(base_sql)?
+    let mut select_builder = SafeQueryBuilder::new(base_sql)
+        .map_err(|e| ApiError::InternalServerError(e))?
         .with_whitelist(&whitelist);
+        
     apply_equipment_filters_safe(&mut select_builder, &query)?;
-    select_builder.order_by("created_at", "desc");
-    select_builder.limit(per_page);  // FIXED: removed as u32
-    select_builder.offset(offset);   // FIXED: removed as u32
+    
+    // ИСПРАВЛЕНО: Теперь используем параметры из запроса, а не хардкод
+    let sort_field = query.sort_by.as_deref().unwrap_or("created_at");
+    let sort_order = query.sort_order.as_deref().unwrap_or("desc");
+    select_builder.order_by(sort_field, sort_order);
+    
+    // В вашем query_builders/mod.rs limit принимает i64, приведение к u32 не нужно
+    select_builder.limit(per_page);
+    select_builder.offset(offset);
 
-    let (select_sql, select_params) = select_builder.build();  // FIXED: build() instead of build_select
+    let (select_sql, select_params) = select_builder.build();
     let mut select_query = sqlx::query_as::<_, Equipment>(&select_sql);
     for param in &select_params {
         select_query = select_query.bind(param);
@@ -952,27 +975,36 @@ pub async fn upload_equipment_file(
         let sanitized_part_name = sanitize_folder_name(&part.name);
         
         // Структура: equipment/{equip_name}/parts/{part_name}/{type}/
-        let type_dir = format!("{}/{}/parts/{}/{}", 
-            EQUIPMENT_FILES_DIR, sanitized_equip_name, sanitized_part_name, type_folder);
+        let type_dir = get_equipment_files_dir()
+            .join(&sanitized_equip_name)
+            .join("parts")
+            .join(&sanitized_part_name)
+            .join(type_folder);
         
         std::fs::create_dir_all(&type_dir)
             .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
         
         let unique_filename = generate_unique_filename(&original_filename);
-        format!("{}/{}", type_dir, unique_filename)
+        type_dir.join(&unique_filename).to_string_lossy().to_string()
     } else {
         // Структура: equipment/{equip_name}/{type}/
-        let type_dir = format!("{}/{}/{}", EQUIPMENT_FILES_DIR, sanitized_equip_name, type_folder);
+        let type_dir = get_equipment_files_dir()
+            .join(&sanitized_equip_name)
+            .join(type_folder);
         
         std::fs::create_dir_all(&type_dir)
             .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
         
         let unique_filename = generate_unique_filename(&original_filename);
-        format!("{}/{}", type_dir, unique_filename)
+        type_dir.join(&unique_filename).to_string_lossy().to_string()
     };
 
     // Извлекаем stored_filename из полного пути
-    let stored_filename = file_path.split('/').last().unwrap_or(&original_filename).to_string();
+    let stored_filename = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&original_filename)
+        .to_string();
 
     // Сохраняем файл
     let mut f = std::fs::File::create(&file_path)
@@ -1255,48 +1287,12 @@ pub async fn get_part_files(
 }
 
 /// Обновление FTS индекса для оборудования
-async fn update_equipment_fts(pool: &SqlitePool, equipment_id: &str) -> ApiResult<()> {
-    // Проверяем существование FTS таблицы
-    let fts_exists: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='equipment_fts'"
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(false);
-
-    if !fts_exists {
-        return Ok(());
-    }
-
-    // Удаляем старую запись
-    sqlx::query("DELETE FROM equipment_fts WHERE equipment_id = ?")
-        .bind(equipment_id)
-        .execute(pool)
-        .await?;
-
-    // Получаем данные оборудования
-    let equipment: Option<Equipment> = sqlx::query_as(
-        "SELECT * FROM equipment WHERE id = ?"
-    )
-    .bind(equipment_id)
-    .fetch_optional(pool)
-    .await?;
-
-    if let Some(e) = equipment {
-        sqlx::query(
-            r#"INSERT INTO equipment_fts (equipment_id, name, description, location, manufacturer, model)
-               VALUES (?, ?, ?, ?, ?, ?)"#
-        )
-        .bind(&e.id)
-        .bind(&e.name)
-        .bind(&e.description)
-        .bind(&e.location)
-        .bind::<Option<String>>(None) // manufacturer - добавить если есть в модели
-        .bind::<Option<String>>(None) // model - добавить если есть в модели
-        .execute(pool)
-        .await?;
-    }
-
+/// ПРИМЕЧАНИЕ: FTS5 с content table синхронизируется автоматически через триггеры.
+/// Эта функция оставлена для совместимости, но фактически ничего не делает,
+/// так как триггеры equipment_ai/equipment_au/equipment_ad обрабатывают синхронизацию.
+async fn update_equipment_fts(_pool: &SqlitePool, _equipment_id: &str) -> ApiResult<()> {
+    // FTS5 с content='equipment' синхронизируется автоматически через триггеры
+    // Ручное обновление не требуется и может вызвать ошибки
     Ok(())
 }
 
@@ -1326,7 +1322,6 @@ fn apply_equipment_filters(
 
     Ok(())
 }
-
 /// Применение фильтров к SafeQueryBuilder
 fn apply_equipment_filters_safe(
     builder: &mut SafeQueryBuilder,
@@ -1352,7 +1347,6 @@ fn apply_equipment_filters_safe(
 
     Ok(())
 }
-
 /// Валидация данных оборудования
 fn validate_equipment_data(equipment: &CreateEquipmentRequest) -> Result<(), ApiError> {
     if equipment.name.trim().is_empty() {

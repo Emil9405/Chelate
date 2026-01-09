@@ -28,7 +28,7 @@ const Table = ({
     view: { label: 'View', variant: 'secondary' },
     edit: { label: 'Edit', variant: 'primary' },
     delete: { label: 'Delete', variant: 'danger' },
-    reset: { label: 'Reset Password', variant: 'warning' }  // New custom action
+    reset: { label: 'Reset Password', variant: 'warning' }  
   };
 
   return (

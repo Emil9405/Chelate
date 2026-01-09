@@ -1,0 +1,510 @@
+/* src/components/experiments/ExperimentDetailsModal.module.css */
+
+/* === Overlay & Modal === */
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background-color: white;
+  border-radius: 12px;
+  max-width: 900px;
+  width: 95%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+/* === Header === */
+.header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.title {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.badges {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.statusBadge {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.typeBadge {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.typeBadge.educational {
+  background-color: #f3e8ff;
+  color: #7c3aed;
+}
+
+.typeBadge.research {
+  background-color: #e0f2fe;
+  color: #0369a1;
+}
+
+.closeButton {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.closeButton:hover {
+  color: #374151;
+}
+
+/* === Status Actions === */
+.statusActions {
+  padding: 12px 24px;
+  background-color: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.actionButton {
+  padding: 8px 16px;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.actionButton:hover {
+  opacity: 0.9;
+}
+
+.actionButton:active {
+  transform: scale(0.98);
+}
+
+.actionButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.startButton {
+  background-color: #f59e0b;
+}
+
+.completeButton {
+  background-color: #10b981;
+}
+
+.cancelButton {
+  background-color: #ef4444;
+}
+
+/* === Tabs === */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 24px;
+}
+
+.tab {
+  padding: 12px 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  color: #6b7280;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover {
+  color: #374151;
+}
+
+.activeTab {
+  color: #667eea;
+  border-bottom-color: #667eea;
+}
+
+/* === Content === */
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+}
+
+/* === Info Tab === */
+.infoGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.fullWidth {
+  grid-column: 1 / -1;
+}
+
+.sectionTitle {
+  margin: 0 0 12px 0;
+  color: #374151;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.infoList {
+  display: grid;
+  gap: 8px;
+}
+
+.infoList div {
+  color: #4b5563;
+}
+
+.infoList strong {
+  color: #374151;
+}
+
+.description {
+  margin: 0;
+  color: #4b5563;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+/* === Add Forms === */
+.addSection {
+  margin-bottom: 20px;
+}
+
+.addForm {
+  padding: 16px;
+  background-color: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.formTitle {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr;
+  gap: 10px;
+  align-items: end;
+}
+
+.label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+}
+
+.input,
+.select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.formActions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+}
+
+/* === Buttons === */
+.button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  transition: opacity 0.15s;
+}
+
+.button:hover {
+  opacity: 0.9;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.addButton {
+  background-color: #10b981;
+  color: white;
+}
+
+.equipmentAddButton {
+  background-color: #8b5cf6;
+  color: white;
+}
+
+.cancelFormButton {
+  background-color: #6b7280;
+  color: white;
+}
+
+/* === Tables === */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.table th {
+  background-color: #f9fafb;
+  font-weight: 600;
+  font-size: 13px;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.table td {
+  color: #4b5563;
+}
+
+.textRight {
+  text-align: right !important;
+}
+
+.textCenter {
+  text-align: center !important;
+}
+
+/* === Badges === */
+.consumedBadge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.consumed {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.reserved {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+/* === Table Buttons === */
+.tableButton {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  margin-right: 4px;
+  transition: opacity 0.15s;
+}
+
+.tableButton:hover {
+  opacity: 0.85;
+}
+
+.consumeButton {
+  background-color: #10b981;
+  color: white;
+}
+
+.removeButton {
+  background-color: #ef4444;
+  color: white;
+}
+
+/* === Empty State === */
+.emptyMessage {
+  color: #6b7280;
+  text-align: center;
+  padding: 40px;
+  font-size: 14px;
+}
+
+/* === Documents === */
+.documentsList {
+  display: grid;
+  gap: 10px;
+}
+
+.documentItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background-color: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.documentName {
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.documentDate {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.documentActions {
+  display: flex;
+  gap: 8px;
+}
+
+.docButton {
+  padding: 6px 12px;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+.docButton:hover {
+  opacity: 0.85;
+}
+
+.viewButton {
+  background-color: #667eea;
+  color: white;
+}
+
+.downloadButton {
+  background-color: #10b981;
+  color: white;
+}
+
+/* === Footer === */
+.footer {
+  padding: 16px 24px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.closeFooterButton {
+  padding: 10px 24px;
+  background-color: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  transition: background-color 0.15s;
+}
+
+.closeFooterButton:hover {
+  background-color: #5a67d8;
+}
+
+/* === Responsive === */
+@media (max-width: 768px) {
+  .modal {
+    width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .infoGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .tabs {
+    overflow-x: auto;
+    padding: 0 16px;
+  }
+
+  .tab {
+    padding: 12px 16px;
+    white-space: nowrap;
+  }
+
+  .content {
+    padding: 16px;
+  }
+
+  .header {
+    padding: 16px;
+  }
+
+  .table {
+    font-size: 13px;
+  }
+
+  .table th,
+  .table td {
+    padding: 8px;
+  }
+}

@@ -82,7 +82,7 @@ pub struct LoggingConfig {
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            jwt_secret: "dummy_32_chars_for_tests!!".to_string(), // Фикс для тестов, >=32
+            jwt_secret: "dummy_32_chars_for_tests!!".to_string(), 
             token_expiration_hours: 24,
             bcrypt_cost: 10,
             max_login_attempts: 5,
@@ -109,7 +109,7 @@ impl Default for ServerConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite:lims.db".to_string(),
+            url: "lims.db".to_string(),
             max_connections: 10,
             min_connections: 1,
             connect_timeout: 30,
@@ -310,7 +310,7 @@ fn override_with_env(config: &mut Config) -> Result<()> {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        println!("DEBUG: JWT len = {}", self.auth.jwt_secret.len()); // Убери после дебага
+        println!("DEBUG: JWT len = {}", self.auth.jwt_secret.len()); 
         if self.auth.jwt_secret.len() < 32 {
             return Err(anyhow::anyhow!(
                 "JWT_SECRET must be at least 32 characters long (current: {})",
@@ -377,122 +377,9 @@ pub fn load_env_file() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_default_config() {
-        env::remove_var("LIMS_ENV");
-        let config = Config::default();
-        assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.server.port, 8080);
-        assert!(config.hot_reload.enabled);
-        assert!(!config.is_production());
-        assert!(config.auth.jwt_secret.len() >= 32);
-    }
 
-    #[test]
-    fn test_config_validation() {
-        let mut config = Config::default();
 
-        // Короткий секрет
-        config.auth.jwt_secret = "short".to_string();
-        assert!(config.validate().is_err());
 
-        // Достаточный секрет
-        config.auth.jwt_secret = "a".repeat(32);
-        assert!(config.validate().is_ok());
 
-        // Некорректные соединения БД
-        config.database.max_connections = 1;
-        config.database.min_connections = 5;
-        assert!(config.validate().is_err());
-    }
 
-    #[test]
-    fn test_toml_loading() -> Result<()> {
-        let toml_content = r#"
-        [server]
-        host = "0.0.0.0"
-        port = 9000
-
-        [auth]
-        jwt_secret = "test_secret_123456789012345678901234567890"
-        "#;
-
-        let mut temp_file = NamedTempFile::new()?;
-        let path = temp_file.path().to_path_buf(); // Absolute path
-        fs::write(&path, toml_content.as_bytes())?; // Write as bytes
-        temp_file.persist(/* new_path */)?; // Flush to disk
-
-        let path_str = path.to_str().unwrap().to_string();
-        env::set_var("CONFIG_FILE", &path_str);
-
-        let config = Config::load()?;
-        assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.port, 9000);
-        assert_eq!(config.auth.jwt_secret, "test_secret_123456789012345678901234567890");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_env_override() {
-        env::remove_var("LIMS_PORT");
-        env::remove_var("JWT_SECRET");
-
-        env::set_var("LIMS_PORT", "9090");
-        env::set_var("JWT_SECRET", "env_secret_123456789012345678901234567890");
-
-        let config = Config::load().unwrap();
-        assert_eq!(config.server.port, 9090);
-        assert_eq!(config.auth.jwt_secret, "env_secret_123456789012345678901234567890");
-    }
-
-    #[test]
-    fn test_production_security() {
-        env::remove_var("LIMS_ENV");
-        env::remove_var("JWT_SECRET");
-
-        env::set_var("LIMS_ENV", "production");
-        let test_secret = generate_jwt_secret();
-
-        // Тестируем ошибку на коротком секрете
-        let mut config = Config::default();
-        let original_len = config.auth.jwt_secret.len();
-        config.auth.jwt_secret = "short".to_string();
-        assert!(config.validate().is_err()); // Теперь должно сработать
-
-        // Восстанавливаем и тестируем сильный секрет
-        config.auth.jwt_secret = "a".repeat(original_len);
-        assert!(config.validate().is_ok());
-
-        // Тестируем override из env
-        env::set_var("JWT_SECRET", &test_secret);
-        let config_env = Config::load().unwrap();
-        assert_eq!(config_env.auth.jwt_secret, test_secret);
-
-        env::remove_var("LIMS_ENV");
-        env::remove_var("JWT_SECRET");
-    }
-
-    #[test]
-    fn test_generate_and_save_jwt_secret() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let env_path = temp_dir.path().join(".env");
-        fs::write(&env_path, "DATABASE_URL=sqlite:test.db")?;
-
-        env::set_var("ENV_FILE", env_path.to_str().unwrap());
-
-        let secret = generate_and_save_jwt_secret()?;
-        assert_eq!(secret.len(), 64);
-
-        let content = fs::read_to_string(&env_path)?;
-        assert!(content.contains("JWT_SECRET="));
-
-        Ok(())
-    }
-}

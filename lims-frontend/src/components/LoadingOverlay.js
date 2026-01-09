@@ -1,28 +1,3 @@
-// components/LoadingOverlay.js
-import React from 'react';
-import './Toast.css'; // Contains LoadingOverlay styles
-
-const LoadingOverlay = ({ 
-  size = 'medium', 
-  message = 'Loading...', 
-  fullscreen = false,
-  transparent = false 
-}) => {
-  const className = `loading-overlay ${fullscreen ? 'fullscreen' : 'absolute'} ${transparent ? 'transparent' : ''}`;
-  
-  return (
-    <div className={className}>
-      <div className="loading-content">
-        <div className={`loading-spinner ${size}`}>
-          <div className="spinner-ring"></div>
-          <div className="spinner-ring"></div>
-          <div className="spinner-ring"></div>
-          <div className="spinner-ring"></div>
-        </div>
-        {message && <div className="loading-message">{message}</div>}
-      </div>
-    </div>
-  );
-};
-
-export default LoadingOverlay;
+// components/LoadingOverlay.js - CHELATE LIMS Style
+// Re-export from Loading.js for backward compatibility
+export { LoadingOverlay as default, LoadingOverlay } from './Loading';

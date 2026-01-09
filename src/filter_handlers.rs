@@ -1,18 +1,51 @@
 // src/filter_handlers.rs
-// Единый модуль для продвинутых фильтров (batches, experiments и т.д.)
 
 use actix_web::{web, HttpResponse};
 use sqlx::SqlitePool;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
-// ✅ ИСПРАВЛЕНО: правильный путь импорта (без safe_requests)
 use crate::query_builders::{
-    FilterGroup, SafeQueryBuilder, CountQueryBuilder, FieldWhitelist, Filter, FilterItem,
+    FilterGroup, FieldWhitelist, Filter, FilterItem,
 };
 use crate::handlers::PaginatedResponse;
 use crate::error::{ApiError, ApiResult};
-use crate::models::Experiment;
+use crate::models::{Experiment, Batch};
+
+// ==================== КОНСТАНТЫ БЕЗОПАСНОСТИ ====================
+
+/// Разрешённые поля сортировки для batches
+const BATCH_SORT_FIELDS: &[&str] = &[
+    "b.id", "b.reagent_id", "b.batch_number", "b.quantity",
+    "b.original_quantity", "b.reserved_quantity", "b.expiry_date",
+    "b.supplier", "b.manufacturer", "b.received_date", "b.status",
+    "b.location", "b.created_at", "b.updated_at",
+    "reagent_name", "days_until_expiry",
+];
+
+/// Разрешённые поля сортировки для experiments
+const EXPERIMENT_SORT_FIELDS: &[&str] = &[
+    "id", "title", "experiment_date", "experiment_type",
+    "instructor", "student_group", "status", "room_id",
+    "created_at", "updated_at",
+];
+
+/// Валидация поля сортировки
+fn validate_sort_field<'a>(field: &'a str, allowed: &[&str]) -> Option<&'a str> {
+    if allowed.iter().any(|&f| f == field) {
+        Some(field)
+    } else {
+        None
+    }
+}
+
+/// Экранирование спецсимволов LIKE
+fn escape_like_pattern(pattern: &str) -> String {
+    pattern
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
 
 // === Структура для чтения из БД ===
 #[derive(Debug, sqlx::FromRow)]
@@ -40,7 +73,7 @@ struct BatchFromDb {
     pub days_until_expiry: Option<i64>,
 }
 
-// === Структура для ответа API (совместима с BatchWithReagentResponse) ===
+// === Структура для ответа API ===
 #[derive(Debug, Serialize)]
 pub struct BatchFilterResponse {
     pub id: String,
@@ -69,7 +102,6 @@ pub struct BatchFilterResponse {
 const EXPIRY_CRITICAL_DAYS: i64 = 7;
 const EXPIRY_WARNING_DAYS: i64 = 30;
 
-/// Рассчитать статус срока годности
 fn calculate_expiration_status(days_until_expiry: Option<i64>) -> String {
     match days_until_expiry {
         None => "unknown".to_string(),
@@ -169,11 +201,15 @@ pub async fn get_batches_filtered(
         }
     }
 
-    // Поиск
+    // ✅ ИСПРАВЛЕНО: Поиск с экранированием LIKE-спецсимволов
     if let Some(ref search) = body.search {
         if !search.trim().is_empty() {
-            let search_pattern = format!("%{}%", search.trim());
-            conditions.push("(r.name LIKE ? OR b.batch_number LIKE ? OR b.cat_number LIKE ? OR b.supplier LIKE ?)".to_string());
+            let escaped = escape_like_pattern(search.trim());
+            let search_pattern = format!("%{}%", escaped);
+            conditions.push(
+                "(r.name LIKE ? ESCAPE '\\' OR b.batch_number LIKE ? ESCAPE '\\' \
+                 OR b.cat_number LIKE ? ESCAPE '\\' OR b.supplier LIKE ? ESCAPE '\\')".to_string()
+            );
             params.push(search_pattern.clone());
             params.push(search_pattern.clone());
             params.push(search_pattern.clone());
@@ -181,8 +217,10 @@ pub async fn get_batches_filtered(
         }
     }
 
-    // Сортировка
-    let sort_field = body.sort_by.as_deref().unwrap_or("b.created_at");
+    // ✅ ИСПРАВЛЕНО: Валидация поля сортировки через whitelist
+    let sort_field = body.sort_by.as_deref()
+        .and_then(|f| validate_sort_field(f, BATCH_SORT_FIELDS))
+        .unwrap_or("b.created_at");
     let sort_order = if body.sort_order.to_uppercase() == "ASC" { "ASC" } else { "DESC" };
 
     let sql = format!(
@@ -287,11 +325,15 @@ pub async fn get_experiments_filtered(
         }
     }
 
-    // Поиск
+    // ✅ ИСПРАВЛЕНО: Поиск с экранированием
     if let Some(ref search) = body.search {
         if !search.trim().is_empty() {
-            let search_pattern = format!("%{}%", search.trim());
-            conditions.push("(title LIKE ? OR description LIKE ? OR instructor LIKE ? OR student_group LIKE ?)".to_string());
+            let escaped = escape_like_pattern(search.trim());
+            let search_pattern = format!("%{}%", escaped);
+            conditions.push(
+                "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' \
+                 OR instructor LIKE ? ESCAPE '\\' OR student_group LIKE ? ESCAPE '\\')".to_string()
+            );
             params.push(search_pattern.clone());
             params.push(search_pattern.clone());
             params.push(search_pattern.clone());
@@ -299,8 +341,10 @@ pub async fn get_experiments_filtered(
         }
     }
 
-    // Сортировка
-    let sort_field = body.sort_by.as_deref().unwrap_or("created_at");
+    // ✅ ИСПРАВЛЕНО: Валидация сортировки
+    let sort_field = body.sort_by.as_deref()
+        .and_then(|f| validate_sort_field(f, EXPERIMENT_SORT_FIELDS))
+        .unwrap_or("created_at");
     let sort_order = if body.sort_order.to_uppercase() == "ASC" { "ASC" } else { "DESC" };
 
     let sql = format!(
@@ -339,4 +383,45 @@ pub async fn get_experiments_filtered(
         per_page: body.per_page,
         total_pages,
     }))
+}
+
+// ==================== ТЕСТЫ БЕЗОПАСНОСТИ ====================
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn test_sort_field_validation() {
+        // Валидные поля
+        assert!(validate_sort_field("b.created_at", BATCH_SORT_FIELDS).is_some());
+        assert!(validate_sort_field("b.quantity", BATCH_SORT_FIELDS).is_some());
+        assert!(validate_sort_field("created_at", EXPERIMENT_SORT_FIELDS).is_some());
+        
+        // SQL-инъекции блокируются
+        assert!(validate_sort_field("b.created_at; DROP TABLE users", BATCH_SORT_FIELDS).is_none());
+        assert!(validate_sort_field("1=1 OR 1=1", BATCH_SORT_FIELDS).is_none());
+        assert!(validate_sort_field("password", BATCH_SORT_FIELDS).is_none());
+        assert!(validate_sort_field("", BATCH_SORT_FIELDS).is_none());
+    }
+
+    #[test]
+    fn test_like_escape() {
+        assert_eq!(escape_like_pattern("100%"), "100\\%");
+        assert_eq!(escape_like_pattern("test_value"), "test\\_value");
+        assert_eq!(escape_like_pattern("a\\b"), "a\\\\b");
+        assert_eq!(escape_like_pattern("normal"), "normal");
+        assert_eq!(escape_like_pattern("%_%"), "\\%\\_\\%");
+    }
+
+    #[test]
+    fn test_expiration_status() {
+        assert_eq!(calculate_expiration_status(None), "unknown");
+        assert_eq!(calculate_expiration_status(Some(-1)), "expired");
+        assert_eq!(calculate_expiration_status(Some(0)), "expiring_critical");
+        assert_eq!(calculate_expiration_status(Some(7)), "expiring_critical");
+        assert_eq!(calculate_expiration_status(Some(8)), "expiring_soon");
+        assert_eq!(calculate_expiration_status(Some(30)), "expiring_soon");
+        assert_eq!(calculate_expiration_status(Some(31)), "ok");
+    }
 }

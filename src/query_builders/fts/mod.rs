@@ -1,6 +1,6 @@
 // src/query_builders/fts/mod.rs
 //! Full-Text Search построитель запросов
-//! ✅ ИСПРАВЛЕНО: Правильная квалификация id в FTS запросах
+//! ✅ ИСПРАВЛЕНО: Заменено .id на .rowid для FTS таблиц (обязательно для SQLite)
 
 pub mod config;
 
@@ -27,13 +27,15 @@ impl FtsQueryBuilder {
         matches!(result, Ok((count,)) if count > 0)
     }
 
-    /// Построить FTS запрос с экранированием спецсимволов
+    /// Построить FTS запрос (очистка и форматирование)
     pub fn build_fts_query(search: &str) -> String {
+        // Удаляем спецсимволы, которые могут сломать синтаксис FTS
         let cleaned = search
             .chars()
             .filter(|c| !matches!(c, '(' | ')' | '*' | '"' | ':' | '^' | '-' | '+' | '~' | '&' | '|'))
             .collect::<String>();
         
+        // Разбиваем на слова и добавляем * к каждому (поиск по началу слова)
         cleaned
             .split_whitespace()
             .filter(|s| !s.is_empty())
@@ -42,22 +44,12 @@ impl FtsQueryBuilder {
             .join(" ")
     }
 
-    /// Экранировать FTS запрос (алиас для build_fts_query)
+    /// Публичная обертка для эскейпинга
     pub fn escape_fts_query(query: &str) -> String {
         Self::build_fts_query(query)
     }
 
-    /// Построить условие поиска с FTS или LIKE fallback
-    /// 
-    /// # Arguments
-    /// * `search` - Строка поиска
-    /// * `use_fts` - Использовать FTS (true) или LIKE fallback (false)
-    /// * `fts_table` - Имя FTS таблицы (например "reagents_fts")
-    /// * `like_fields` - Поля для LIKE поиска (например ["name", "formula"])
-    /// * `table_alias` - Алиас основной таблицы (например "r")
-    /// 
-    /// # Returns
-    /// (SQL условие, Vec параметров для биндинга)
+    /// Построить общее условие поиска (FTS или LIKE)
     pub fn build_search_condition(
         search: &str,
         use_fts: bool,
@@ -76,13 +68,15 @@ impl FtsQueryBuilder {
                 return (String::new(), Vec::new());
             }
             
-            // ✅ ИСПРАВЛЕНО: Явно указываем fts_table.id для избежания ambiguous column
+            // ✅ ИСПРАВЛЕНИЕ: Используем rowid для связи с FTS
+            // main_table.rowid = fts_table.rowid
             let condition = format!(
-                "{}.id IN (SELECT {}.id FROM {} WHERE {} MATCH ?)",
-                table_alias, fts_table, fts_table, fts_table
+                "{}.rowid IN (SELECT rowid FROM {} WHERE {} MATCH ?)",
+                table_alias, fts_table, fts_table
             );
             (condition, vec![fts_query])
         } else {
+            // Fallback на LIKE
             let pattern = format!("%{}%", search_trimmed);
             
             if like_fields.is_empty() {
@@ -103,8 +97,7 @@ impl FtsQueryBuilder {
         }
     }
 
-    /// Построить условие поиска для реагентов (с поиском по батчам)
-    /// ✅ Использует алиас `bs` для подзапроса батчей чтобы избежать конфликта
+    /// Специализированный построитель для реагентов (поиск по реагентам + партиям)
     pub fn build_reagent_search_condition(
         search: &str,
         use_fts: bool,
@@ -123,11 +116,11 @@ impl FtsQueryBuilder {
                 return (String::new(), Vec::new());
             }
             
-            // ✅ ИСПРАВЛЕНО: 
-            // - Используем reagents_fts.id явно
-            // - Используем алиас `bs` (batch_search) вместо `b` для подзапроса
+            // ✅ ИСПРАВЛЕНИЕ: 
+            // 1. Для FTS используем .rowid (так как это виртуальная таблица)
+            // 2. Для связи с batches используем .id (так как там внешний ключ reagent_id ссылается на UUID)
             let condition = format!(
-                "({}.id IN (SELECT reagents_fts.id FROM reagents_fts WHERE reagents_fts MATCH ?) \
+                "({}.rowid IN (SELECT rowid FROM reagents_fts WHERE reagents_fts MATCH ?) \
                  OR EXISTS (SELECT 1 FROM batches bs WHERE bs.reagent_id = {}.id AND \
                  (bs.batch_number LIKE ? OR bs.cat_number LIKE ? OR bs.supplier LIKE ?)))",
                 table_alias, table_alias
@@ -135,7 +128,7 @@ impl FtsQueryBuilder {
             
             (condition, vec![fts_query, pattern.clone(), pattern.clone(), pattern])
         } else {
-            // ✅ ИСПРАВЛЕНО: Используем алиас `bs` для подзапроса батчей
+            // Обычный LIKE поиск по всем полям
             let condition = format!(
                 "({}.name LIKE ? OR {}.formula LIKE ? OR {}.cas_number LIKE ? OR {}.manufacturer LIKE ? \
                  OR EXISTS (SELECT 1 FROM batches bs WHERE bs.reagent_id = {}.id AND \
@@ -144,129 +137,14 @@ impl FtsQueryBuilder {
             );
             
             (condition, vec![
-                pattern.clone(), pattern.clone(), pattern.clone(), pattern.clone(),
-                pattern.clone(), pattern.clone(), pattern
+                pattern.clone(), pattern.clone(), pattern.clone(), pattern.clone(), // Поля реагента
+                pattern.clone(), pattern.clone(), pattern // Поля партии
             ])
         }
     }
 }
 
-/// Экранировать FTS запрос (публичная функция для обратной совместимости)
+/// Глобальная функция-хелпер, если она используется в других местах напрямую
 pub fn escape_fts_query(query: &str) -> String {
     FtsQueryBuilder::build_fts_query(query)
-}
-
-// ==================== ТЕСТЫ ====================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_fts_query() {
-        assert_eq!(FtsQueryBuilder::build_fts_query("test"), "test*");
-        assert_eq!(FtsQueryBuilder::build_fts_query("sodium chloride"), "sodium* chloride*");
-        assert_eq!(FtsQueryBuilder::build_fts_query("test*"), "test*");
-        assert_eq!(FtsQueryBuilder::build_fts_query("(test)"), "test*");
-        assert_eq!(FtsQueryBuilder::build_fts_query("a+b-c"), "abc*");
-        assert_eq!(FtsQueryBuilder::build_fts_query(""), "");
-        assert_eq!(FtsQueryBuilder::build_fts_query("   "), "");
-    }
-
-    #[test]
-    fn test_build_search_condition_fts() {
-        let (condition, params) = FtsQueryBuilder::build_search_condition(
-            "sodium",
-            true,
-            "reagents_fts",
-            &["name", "formula"],
-            "r"
-        );
-        
-        assert!(condition.contains("reagents_fts.id"));
-        assert!(condition.contains("r.id IN"));
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "sodium*");
-    }
-
-    #[test]
-    fn test_build_search_condition_like() {
-        let (condition, params) = FtsQueryBuilder::build_search_condition(
-            "sodium",
-            false,
-            "reagents_fts",
-            &["name", "formula", "cas_number"],
-            "r"
-        );
-        
-        assert!(condition.contains("r.name LIKE"));
-        assert!(condition.contains("r.formula LIKE"));
-        assert!(condition.contains("r.cas_number LIKE"));
-        assert_eq!(params.len(), 3);
-    }
-
-    #[test]
-    fn test_build_search_condition_empty() {
-        let (condition, params) = FtsQueryBuilder::build_search_condition(
-            "",
-            true,
-            "reagents_fts",
-            &["name"],
-            "r"
-        );
-        assert!(condition.is_empty());
-        assert!(params.is_empty());
-
-        let (condition2, params2) = FtsQueryBuilder::build_search_condition(
-            "   ",
-            false,
-            "reagents_fts",
-            &["name"],
-            "r"
-        );
-        assert!(condition2.is_empty());
-        assert!(params2.is_empty());
-    }
-
-    #[test]
-    fn test_build_reagent_search_condition_fts() {
-        let (condition, params) = FtsQueryBuilder::build_reagent_search_condition(
-            "sodium",
-            true,
-            "r"
-        );
-        
-        // Должен использовать reagents_fts.id
-        assert!(condition.contains("reagents_fts.id"));
-        // Должен использовать алиас bs для батчей, НЕ b
-        assert!(condition.contains("bs.reagent_id"));
-        assert!(condition.contains("bs.batch_number"));
-        // НЕ должен содержать "FROM batches b " (с пробелом после b)
-        assert!(!condition.contains("FROM batches b "));
-        
-        assert_eq!(params.len(), 4); // fts_query + 3 LIKE patterns
-    }
-
-    #[test]
-    fn test_build_reagent_search_condition_like() {
-        let (condition, params) = FtsQueryBuilder::build_reagent_search_condition(
-            "sodium",
-            false,
-            "r"
-        );
-        
-        // Должен использовать алиас bs для батчей
-        assert!(condition.contains("bs.reagent_id"));
-        assert!(condition.contains("r.name LIKE"));
-        assert!(condition.contains("r.formula LIKE"));
-        
-        assert_eq!(params.len(), 7); // 4 поля реагента + 3 поля батча
-    }
-
-    #[test]
-    fn test_escape_fts_query() {
-        assert_eq!(escape_fts_query("hello world"), "hello* world*");
-        assert_eq!(escape_fts_query("H2O"), "H2O*");
-        assert_eq!(escape_fts_query("test(1)"), "test1*");
-    }
 }

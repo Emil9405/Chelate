@@ -13,13 +13,24 @@ use std::path::PathBuf;
 use crate::config::load_config;
 use crate::auth::get_current_user;
 use crate::handlers::PaginationQuery;
-use crate::models::{CompleteMaintenanceRequest, 
-                    UpdateMaintenanceRequest,
-                    CreateMaintenanceRequest,
-                    UpcomingMaintenanceQuery,
-                    UpdateEquipmentPartRequest,
-                    CreateEquipmentPartRequest
-                };
+use crate::models::{
+    // Equipment
+    CreateEquipmentRequest, UpdateEquipmentRequest, 
+    CreateEquipmentPartRequest, UpdateEquipmentPartRequest,
+    CreateMaintenanceRequest, UpdateMaintenanceRequest, CompleteMaintenanceRequest,
+    UpcomingMaintenanceQuery,
+    
+    // Experiment
+    CreateExperimentRequest, UpdateExperimentRequest,
+    
+    // Reagent & Batch
+    CreateReagentRequest, UpdateReagentRequest,
+    CreateBatchRequest, UpdateBatchRequest,
+    
+    // Room
+    CreateRoomRequest, UpdateRoomRequest, RoomStatus
+};
+
 use rand::{thread_rng, Rng, distributions::Alphanumeric};
 use rand::distributions::Distribution;
 use rand::seq::SliceRandom;
@@ -59,12 +70,16 @@ use auth_handlers::{change_user_password, delete_user, create_user, get_roles};
 // Handlers - only common utilities and specific functions
 use handlers::{
     get_dashboard_stats, use_reagent, get_usage_history,
-    get_reagent_with_batches
+    get_reagent_with_batches, get_jwt_rotation_status, force_jwt_rotation
 };
 
 // Reagent handlers
 use reagent_handlers::{
-    get_reagent_by_id, get_reagents, search_reagents
+    get_reagent_by_id, 
+    get_reagents, 
+    search_reagents, 
+    get_reagents_cursor, 
+    get_reagents_pagination_meta
 };
 
 // Batch handlers - FIXED: get_batches_for_reagent instead of get_batches_by_reagent
@@ -94,12 +109,13 @@ use import_export::{
     import_equipment, export_equipment, import_equipment_json, import_equipment_excel
 };
 
-// Experiment handlers - FIXED: only import what actually exists
+// Experiment handlers
 use experiment_handlers::{
     create_experiment, get_experiment, get_all_experiments,
     update_experiment, delete_experiment,
-    add_reagent_to_experiment, get_experiment_reagents,
-    get_experiment_stats,
+    add_reagent_to_experiment, get_experiment_reagents, remove_reagent_from_experiment,
+    get_experiment_stats, start_experiment, complete_experiment, cancel_experiment,
+    consume_experiment_reagent, auto_update_experiment_statuses,
 };
 
 // Room handlers
@@ -109,8 +125,6 @@ use room_handlers::{
 
 use auth_handlers::*;
 use monitoring::{Metrics, RequestLogger, start_maintenance_tasks};
-use crate::models::{CreateEquipmentRequest, UpdateEquipmentRequest};
-
 use error::ApiResult;
 
 pub struct AppState {
@@ -122,7 +136,7 @@ pub struct AppState {
 
 async fn create_experiment_protected(
     app_state: web::Data<Arc<AppState>>,
-    experiment: web::Json<crate::models::CreateExperimentRequest>,
+    experiment: web::Json<crate::models::experiment::CreateExperimentRequest>,
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Create)?;
@@ -133,7 +147,7 @@ async fn create_experiment_protected(
 async fn update_experiment_protected(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    update_data: web::Json<crate::models::UpdateExperimentRequest>,
+    update_data: web::Json<crate::models::experiment::UpdateExperimentRequest>,
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
@@ -164,11 +178,67 @@ async fn add_experiment_reagent_protected(
     add_reagent_to_experiment(app_state, path, reagent, claims.sub).await
 }
 
+async fn remove_experiment_reagent_protected(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<(String, String)>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
+    let claims = crate::auth::get_current_user(&http_request)?;
+    remove_reagent_from_experiment(app_state, path, claims.sub).await
+}
+
+async fn start_experiment_protected(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
+    let claims = crate::auth::get_current_user(&http_request)?;
+    start_experiment(app_state, path, claims.sub).await
+}
+
+async fn complete_experiment_protected(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
+    let claims = crate::auth::get_current_user(&http_request)?;
+    complete_experiment(app_state, path, claims.sub).await
+}
+
+async fn cancel_experiment_protected(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
+    let claims = crate::auth::get_current_user(&http_request)?;
+    cancel_experiment(app_state, path, claims.sub).await
+}
+
+async fn consume_experiment_reagent_protected(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<(String, String)>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
+    let claims = crate::auth::get_current_user(&http_request)?;
+    consume_experiment_reagent(app_state, path, claims.sub).await
+}
+
+async fn auto_update_experiment_statuses_handler(
+    app_state: web::Data<Arc<AppState>>,
+) -> ApiResult<HttpResponse> {
+    auto_update_experiment_statuses(app_state).await
+}
+
 // ==================== REAGENT PROTECTED WRAPPERS ====================
 
 async fn create_reagent_protected(
     app_state: web::Data<Arc<AppState>>,
-    reagent: web::Json<crate::models::CreateReagentRequest>,
+    reagent: web::Json<crate::models::reagent::CreateReagentRequest>,
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Create)?;
@@ -179,7 +249,7 @@ async fn create_reagent_protected(
 async fn update_reagent_protected(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    update_data: web::Json<crate::models::UpdateReagentRequest>,
+    update_data: web::Json<crate::models::reagent::UpdateReagentRequest>,
     http_request: HttpRequest,
 ) -> error::ApiResult<HttpResponse> {
     auth_handlers::check_reagent_permission(&http_request, auth_handlers::ReagentAction::Edit)?;
@@ -201,7 +271,7 @@ async fn delete_reagent_protected(
 async fn create_batch_protected(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    batch: web::Json<crate::models::CreateBatchRequest>,
+    batch: web::Json<crate::models::batch::CreateBatchRequest>,
     http_request: HttpRequest,
 ) -> error::ApiResult<HttpResponse> {
     auth_handlers::check_batch_permission(&http_request, auth_handlers::BatchAction::Create)?;
@@ -212,7 +282,7 @@ async fn create_batch_protected(
 async fn update_batch_protected(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
-    update_data: web::Json<crate::models::UpdateBatchRequest>,
+    update_data: web::Json<crate::models::batch::UpdateBatchRequest>,
     http_request: HttpRequest,
 ) -> error::ApiResult<HttpResponse> {
     auth_handlers::check_batch_permission(&http_request, auth_handlers::BatchAction::Edit)?;
@@ -398,7 +468,7 @@ async fn get_part_files_protected(
 
 async fn create_room_protected(
     app_state: web::Data<Arc<AppState>>,
-    room: web::Json<crate::models::CreateRoomRequest>,
+    room: web::Json<crate::models::room::CreateRoomRequest>,
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Create)?;
@@ -409,7 +479,7 @@ async fn create_room_protected(
 async fn update_room_protected(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    update_data: web::Json<crate::models::UpdateRoomRequest>,
+    update_data: web::Json<crate::models::room::UpdateRoomRequest>,
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Edit)?;
@@ -522,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
                     .route("/register", web::post().to(register))
             )
 
-            // Public file access (no auth - for <img> tags)
+            // Public file access (endpoints)
             .service(
                 web::scope("/api/v1/public")
                     .route("/equipment/{id}/files/{file_id}", web::get().to(download_equipment_file))
@@ -538,7 +608,7 @@ async fn main() -> anyhow::Result<()> {
                             .route("/convert", web::post().to(batch_handlers::convert_units))
                     )
 
-                    // Auth management - FIXED: Added create_user and get_roles routes
+                    // Auth management
                     .service(
                         web::scope("/auth")
                             .route("/profile", web::get().to(get_profile))
@@ -546,11 +616,13 @@ async fn main() -> anyhow::Result<()> {
                             .route("/logout", web::post().to(logout))
                             .route("/roles", web::get().to(get_roles))
                             .route("/users", web::get().to(get_users))
-                            .route("/users", web::post().to(create_user))  // NEW: Create user endpoint
+                            .route("/users", web::post().to(create_user))
                             .route("/users/{id}", web::get().to(get_user))
                             .route("/users/{id}", web::put().to(update_user))
                             .route("/users/{id}", web::delete().to(delete_user))
                             .route("/users/{id}/reset-password", web::put().to(change_user_password))
+                            .route("/jwt/status", web::get().to(get_jwt_rotation_status))
+                            .route("/jwt/rotate", web::post().to(force_jwt_rotation))
                     )
 
                     // Dashboard
@@ -576,6 +648,8 @@ async fn main() -> anyhow::Result<()> {
                     // Reagents
                     .service(
                         web::scope("/reagents")
+                            .route("/cursor", web::get().to(get_reagents_cursor))
+                            .route("/pagination-meta", web::get().to(get_reagents_pagination_meta))
                             .route("", web::post().to(create_reagent_protected))
                             .route("", web::get().to(get_reagents))
                             .route("/search", web::get().to(search_reagents))
@@ -644,11 +718,17 @@ async fn main() -> anyhow::Result<()> {
                             .route("", web::get().to(get_all_experiments))
                             .route("/stats", web::get().to(get_experiment_stats))
                             .route("/filter", web::post().to(filter_handlers::get_experiments_filtered))
-                            .route("/{id}/reagents", web::get().to(get_experiment_reagents))
-                            .route("/{id}/reagents", web::post().to(add_experiment_reagent_protected))
+                            .route("/auto-update-statuses", web::post().to(auto_update_experiment_statuses_handler))
                             .route("/{id}", web::get().to(get_experiment))
                             .route("/{id}", web::put().to(update_experiment_protected))
                             .route("/{id}", web::delete().to(delete_experiment_protected))
+                            .route("/{id}/start", web::post().to(start_experiment_protected))
+                            .route("/{id}/complete", web::post().to(complete_experiment_protected))
+                            .route("/{id}/cancel", web::post().to(cancel_experiment_protected))
+                            .route("/{id}/reagents", web::get().to(get_experiment_reagents))
+                            .route("/{id}/reagents", web::post().to(add_experiment_reagent_protected))
+                            .route("/{id}/reagents/{reagent_id}", web::delete().to(remove_experiment_reagent_protected))
+                            .route("/{id}/reagents/{reagent_id}/consume", web::post().to(consume_experiment_reagent_protected))
                     )
 
                     // Reports
@@ -664,8 +744,14 @@ async fn main() -> anyhow::Result<()> {
         // Add static files to the SAME app
         if env::var("LIMS_ENV").as_deref() == Ok("production") {
             let build_dir = env::var("FRONTEND_BUILD_DIR")
-                .unwrap_or_else(|_| "../lims-frontend/build".to_string());
-            app.service(Files::new("/static", format!("{}/static", build_dir)))
+                .map(|s| PathBuf::from(s))
+                .unwrap_or_else(|_| {
+                    PathBuf::from("..")
+                        .join("lims-frontend")
+                        .join("build")
+                });
+            let build_dir_str = build_dir.to_string_lossy().to_string();
+            app.service(Files::new("/static", format!("{}/static", build_dir_str)))
                 .default_service(web::route().to(serve_index))
         } else {
             app.route("/", web::get().to(serve_index))
@@ -703,11 +789,11 @@ pub fn setup_improved_cors(allowed_origins: &[String]) -> Cors {
 
     if allowed_origins.contains(&"*".to_string()) {
         if is_production {
-            log::error!("❌ FATAL: Wildcard CORS origin (*) is not allowed in production!");
-            log::error!("❌ Please specify exact allowed origins in ALLOWED_ORIGINS environment variable");
+            log::error!("âŒ FATAL: Wildcard CORS origin (*) is not allowed in production!");
+            log::error!("âŒ Please specify exact allowed origins in ALLOWED_ORIGINS environment variable");
             panic!("Cannot start server with wildcard CORS in production");
         } else {
-            log::warn!("⚠️  Using wildcard CORS (*) in development mode");
+            log::warn!("âš ï¸  Using wildcard CORS (*) in development mode");
             println!("DEBUG: Using permissive CORS (allow_any_origin)");
             cors = cors.allow_any_origin().allow_any_header().allow_any_method();
         }
@@ -872,7 +958,7 @@ async fn create_default_admin_if_needed(
         log::warn!("Default admin user created and promoted to Admin:");
         log::warn!("  Username: admin");
         log::warn!("  Password: {} (generated - CHANGE IMMEDIATELY!)", password);
-        log::warn!("  ⚠️  Login at http://127.0.0.1:8080 and update your password");
+        log::warn!("  âš ï¸  Login at http://127.0.0.1:8080 and update your password");
     }
 
     Ok(())
@@ -882,8 +968,13 @@ async fn serve_index() -> Result<NamedFile> {
     let path: PathBuf = match env::var("LIMS_ENV").as_deref() {
         Ok("production") => {
             let build_dir = env::var("FRONTEND_BUILD_DIR")
-                .unwrap_or_else(|_| "../lims-frontend/build".to_string());
-            PathBuf::from(build_dir).join("index.html")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    PathBuf::from("..")
+                        .join("lims-frontend")
+                        .join("build")
+                });
+            build_dir.join("index.html")
         }
         _ => {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web_interface.html")

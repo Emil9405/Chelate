@@ -1,9 +1,10 @@
+// src/monitoring.rs
 use actix_web::{HttpResponse, web};
 use serde::Serialize;
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, Duration};
 
 #[derive(Debug, Clone)]
 pub struct Metrics {
@@ -32,7 +33,6 @@ impl Metrics {
     pub fn record_response_time(&self, time_ms: u64) {
         if let Ok(mut times) = self.response_times.lock() {
             times.push(time_ms);
-            // Ð”ÐµÑ€Ð¶Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ðµ 1000 Ð·Ð°Ð¿Ð¸ÑÐµÐ¹
             if times.len() > 1000 {
                 times.remove(0);
             }
@@ -62,14 +62,13 @@ pub async fn health_check() -> HttpResponse {
         status: "healthy".to_string(),
         timestamp: Utc::now(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        uptime_seconds: 0, // TODO: Implement actual uptime tracking
+        uptime_seconds: 0, 
     };
 
     HttpResponse::Ok().json(response)
 }
 
 pub async fn readiness_check(pool: web::Data<SqlitePool>) -> HttpResponse {
-    // ÐŸÑ€Ð¾Ð²ÐµÑ€ÑÐµÐ¼ Ð¿Ð¾Ð´ÐºÐ»ÑŽÑ‡ÐµÐ½Ð¸Ðµ Ðº Ð±Ð°Ð·Ðµ Ð´Ð°Ð½Ð½Ñ‹Ñ…
     match sqlx::query("SELECT 1").fetch_one(pool.get_ref()).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({
             "status": "ready",
@@ -94,27 +93,20 @@ pub async fn metrics_endpoint(metrics: web::Data<Arc<Metrics>>) -> HttpResponse 
     let error_count = metrics.error_count.load(Ordering::Relaxed);
 
     let avg_response_time = if let Ok(times) = metrics.response_times.lock() {
-        if times.is_empty() {
-            0.0
-        } else {
-            times.iter().sum::<u64>() as f64 / times.len() as f64
-        }
-    } else {
-        0.0
-    };
+        if times.is_empty() { 0.0 } else { times.iter().sum::<u64>() as f64 / times.len() as f64 }
+    } else { 0.0 };
 
     let response = MetricsResponse {
         requests_total: request_count,
         errors_total: error_count,
         avg_response_time_ms: avg_response_time,
-        database_connections: 0, // TODO: Get actual connection count
-        memory_usage_mb: 0.0,   // TODO: Get actual memory usage
+        database_connections: 0,
+        memory_usage_mb: 0.0,
     };
 
     HttpResponse::Ok().json(response)
 }
 
-// Middleware Ð´Ð»Ñ Ð»Ð¾Ð³Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ñ Ð·Ð°Ð¿Ñ€Ð¾ÑÐ¾Ð²
 pub struct RequestLogger {
     metrics: Arc<Metrics>,
 }
@@ -168,24 +160,18 @@ where
     type Error = actix_web::Error;
     type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(
-        &self,
-        ctx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ctx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ctx)
     }
 
     fn call(&self, req: actix_web::dev::ServiceRequest) -> Self::Future {
         let start_time = std::time::Instant::now();
         let metrics = self.metrics.clone();
-
         let fut = self.service.call(req);
 
         Box::pin(async move {
             metrics.increment_requests();
-
             let res = fut.await;
-
             let elapsed = start_time.elapsed().as_millis() as u64;
             metrics.record_response_time(elapsed);
 
@@ -194,65 +180,113 @@ where
                     metrics.increment_errors();
                 }
             }
-
             res
         })
     }
 }
 
-// Ð¤Ð¾Ð½Ð¾Ð²Ñ‹Ðµ Ð·Ð°Ð´Ð°Ñ‡Ð¸ Ð¾Ð±ÑÐ»ÑƒÐ¶Ð¸Ð²Ð°Ð½Ð¸Ñ
 pub async fn start_maintenance_tasks(pool: SqlitePool) {
-    tokio::spawn(cleanup_old_audit_logs(pool.clone()));
-    tokio::spawn(update_batch_statuses(pool));
+    let pool_clone1 = pool.clone();
+    let pool_clone2 = pool.clone();
+    
+    tokio::spawn(async move {
+        cleanup_old_audit_logs(pool_clone1).await;
+    });
+    
+    tokio::spawn(async move {
+        update_batch_statuses(pool_clone2).await;
+    });
 }
 
 async fn cleanup_old_audit_logs(pool: SqlitePool) {
-    let mut interval = interval(Duration::from_secs(24 * 3600)); // Ð Ð°Ð· Ð² Ð´ÐµÐ½ÑŒ
+    let mut interval = interval(Duration::from_secs(24 * 3600)); // Раз в день
 
     loop {
         interval.tick().await;
+        log::info!("Starting daily cleanup of audit logs...");
+        let mut total_deleted = 0;
 
-        // Ð£Ð´Ð°Ð»ÑÐµÐ¼ Ð»Ð¾Ð³Ð¸ ÑÑ‚Ð°Ñ€ÑˆÐµ 90 Ð´Ð½ÐµÐ¹
-        let result = sqlx::query(
-            "DELETE FROM audit_logs WHERE created_at < datetime('now', '-90 days')"
-        )
+        loop {
+            // Удаляем пачками по 1000
+            let result = sqlx::query(
+                "DELETE FROM audit_logs 
+                 WHERE id IN (
+                     SELECT id FROM audit_logs 
+                     WHERE created_at < datetime('now', '-90 days') 
+                     LIMIT 1000
+                 )"
+            )
             .execute(&pool)
             .await;
 
-        match result {
-            Ok(result) => {
-                if result.rows_affected() > 0 {
-                    log::info!("Cleaned up {} old audit log entries", result.rows_affected());
+            match result {
+                Ok(res) => {
+                    let count = res.rows_affected();
+                    total_deleted += count;
+                    if count < 1000 { break; }
+                    sleep(Duration::from_millis(50)).await;
+                },
+                Err(e) => {
+                    log::error!("Failed to cleanup audit logs chunk: {}", e);
+                    break;
                 }
-            },
-            Err(e) => log::error!("Failed to cleanup audit logs: {}", e),
+            }
+        }
+        if total_deleted > 0 {
+            log::info!("Cleaned up {} old audit log entries in chunks", total_deleted);
         }
     }
 }
 
 async fn update_batch_statuses(pool: SqlitePool) {
-    let mut interval = interval(Duration::from_secs(3600)); // Ð Ð°Ð· Ð² Ñ‡Ð°Ñ
+    let mut interval = interval(Duration::from_secs(3600)); // Раз в час
 
     loop {
         interval.tick().await;
+        log::info!("Starting hourly batch status update...");
+        let mut total_updated = 0;
 
-        // ÐžÐ±Ð½Ð¾Ð²Ð»ÑÐµÐ¼ ÑÑ‚Ð°Ñ‚ÑƒÑ Ð¿Ñ€Ð¾ÑÑ€Ð¾Ñ‡ÐµÐ½Ð½Ñ‹Ñ… Ð¿Ð°Ñ€Ñ‚Ð¸Ð¹
-        let result = sqlx::query(
-            r#"UPDATE batches
-               SET status = 'expired', updated_at = datetime('now')
-               WHERE expiry_date < datetime('now')
-               AND status = 'available'"#
-        )
-            .execute(&pool)
-            .await;
-
-        match result {
-            Ok(result) => {
-                if result.rows_affected() > 0 {
-                    log::info!("Updated {} expired batches", result.rows_affected());
+        loop {
+            // 1. Ищем ID просроченных (по 1000)
+            let batch_ids: Vec<String> = match sqlx::query_scalar(
+                r#"SELECT id FROM batches 
+                   WHERE expiry_date < datetime('now') 
+                   AND status = 'available' 
+                   LIMIT 1000"#
+            )
+            .fetch_all(&pool)
+            .await 
+            {
+                Ok(ids) => ids,
+                Err(e) => {
+                    log::error!("Failed to fetch expiring batches: {}", e);
+                    break;
                 }
-            },
-            Err(e) => log::error!("Failed to update batch statuses: {}", e),
+            };
+
+            if batch_ids.is_empty() { break; }
+
+            // 2. Обновляем пачку
+            let query = format!(
+                "UPDATE batches SET status = 'expired', updated_at = datetime('now') WHERE id IN ({})",
+                batch_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+            );
+            
+            let mut q = sqlx::query(&query);
+            for id in &batch_ids {
+                q = q.bind(id);
+            }
+
+            match q.execute(&pool).await {
+                Ok(_) => { total_updated += batch_ids.len(); },
+                Err(e) => { log::error!("Failed to update batch chunk: {}", e); }
+            }
+
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        if total_updated > 0 {
+            log::info!("Updated {} expired batches in chunks", total_updated);
         }
     }
 }

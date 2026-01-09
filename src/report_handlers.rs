@@ -14,6 +14,41 @@ use crate::query_builders::{
     ComparisonOperator, ReportFilterValue,
 };
 
+// ==================== SECURITY CONSTANTS ====================
+
+/// Разрешённые поля для сортировки - защита от SQL-инъекций
+const ALLOWED_SORT_FIELDS: &[&str] = &[
+    "id", "reagent_id", "reagent_name", "batch_number", "cat_number",
+    "quantity", "original_quantity", "reserved_quantity", "unit",
+    "expiry_date", "supplier", "manufacturer", "received_date",
+    "status", "location", "created_at", "updated_at", "days_until_expiry",
+    "expiration_status",
+];
+
+/// Валидация поля сортировки
+fn validate_sort_field(field: &str) -> Option<&'static str> {
+    ALLOWED_SORT_FIELDS.iter()
+        .find(|&&allowed| allowed == field)
+        .copied()
+}
+
+/// Экранирование спецсимволов LIKE для предотвращения LIKE-инъекций
+fn escape_like_pattern(pattern: &str) -> String {
+    pattern
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Экранирование CSV-полей (обработка запятых, кавычек и переносов строк)
+fn escape_csv_field(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 // ==================== RESPONSE STRUCTURES ====================
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -216,9 +251,12 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
         }
     }
 
-    // Сортировка
+    // ✅ ИСПРАВЛЕНО: Валидация сортировки через whitelist
     if let Some(ref sort_by) = request.sort_by {
-        config.sort_by = Some(sort_by.clone());
+        if validate_sort_field(sort_by).is_some() {
+            config.sort_by = Some(sort_by.clone());
+        }
+        // Если поле невалидно - используем дефолт (created_at)
     }
     if let Some(ref sort_order) = request.sort_order {
         config.sort_order = sort_order.to_uppercase();
@@ -300,7 +338,14 @@ pub async fn get_report_fields(
             label: "Status".to_string(),
             data_type: "enum".to_string(),
             operators: vec!["eq".to_string(), "ne".to_string(), "in".to_string()],
-            values: Some(vec!["available".to_string(), "reserved".to_string(), "expired".to_string(), "depleted".to_string()]),
+            // ✅ ИСПРАВЛЕНО: добавлен low_stock
+            values: Some(vec![
+                "available".to_string(), 
+                "low_stock".to_string(),
+                "reserved".to_string(), 
+                "expired".to_string(), 
+                "depleted".to_string()
+            ]),
         },
         AvailableField {
             field: "quantity".to_string(),
@@ -337,6 +382,21 @@ pub async fn get_report_fields(
             operators: vec!["eq".to_string(), "like".to_string()],
             values: None,
         },
+        // ✅ ДОБАВЛЕНО: дополнительные полезные поля
+        AvailableField {
+            field: "manufacturer".to_string(),
+            label: "Manufacturer".to_string(),
+            data_type: "text".to_string(),
+            operators: vec!["eq".to_string(), "like".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "reagent_name".to_string(),
+            label: "Reagent Name".to_string(),
+            data_type: "text".to_string(),
+            operators: vec!["eq".to_string(), "like".to_string()],
+            values: None,
+        },
     ];
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(fields)))
@@ -365,12 +425,13 @@ pub async fn generate_report(
     // Строим WHERE условия
     let (where_clause, mut params) = build_filter_sql(&config, &whitelist);
     
-    // Добавляем поиск
+    // ✅ ИСПРАВЛЕНО: Добавляем поиск с экранированием LIKE-спецсимволов
     let mut search_condition = String::new();
     if let Some(ref search) = request.search {
         if !search.trim().is_empty() {
-            let pattern = format!("%{}%", search.trim());
-            search_condition = " AND (reagent_name LIKE ? OR batch_number LIKE ? OR supplier LIKE ? OR location LIKE ?)".to_string();
+            let escaped = escape_like_pattern(search.trim());
+            let pattern = format!("%{}%", escaped);
+            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\')".to_string();
             params.push(pattern.clone());
             params.push(pattern.clone());
             params.push(pattern.clone());
@@ -378,8 +439,10 @@ pub async fn generate_report(
         }
     }
 
-    // Сортировка
-    let sort_field = config.sort_by.as_deref().unwrap_or("created_at");
+    // ✅ ИСПРАВЛЕНО: Валидация сортировки через whitelist
+    let sort_field = config.sort_by.as_deref()
+        .and_then(validate_sort_field)
+        .unwrap_or("created_at");
     let sort_order = if config.sort_order == "ASC" { "ASC" } else { "DESC" };
 
     // COUNT запрос
@@ -445,12 +508,13 @@ pub async fn export_report(
 
     let (where_clause, mut params) = build_filter_sql(&config, &whitelist);
     
-    // Добавляем поиск
+    // ✅ ИСПРАВЛЕНО: Добавляем поиск с экранированием
     let mut search_condition = String::new();
     if let Some(ref search) = request.search {
         if !search.trim().is_empty() {
-            let pattern = format!("%{}%", search.trim());
-            search_condition = " AND (reagent_name LIKE ? OR batch_number LIKE ? OR supplier LIKE ? OR location LIKE ?)".to_string();
+            let escaped = escape_like_pattern(search.trim());
+            let pattern = format!("%{}%", escaped);
+            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\')".to_string();
             params.push(pattern.clone());
             params.push(pattern.clone());
             params.push(pattern.clone());
@@ -458,7 +522,10 @@ pub async fn export_report(
         }
     }
 
-    let sort_field = config.sort_by.as_deref().unwrap_or("created_at");
+    // ✅ ИСПРАВЛЕНО: Валидация сортировки
+    let sort_field = config.sort_by.as_deref()
+        .and_then(validate_sort_field)
+        .unwrap_or("created_at");
     let sort_order = if config.sort_order == "ASC" { "ASC" } else { "DESC" };
 
     // Запрос без пагинации для экспорта
@@ -474,22 +541,25 @@ pub async fn export_report(
     
     let data: Vec<BatchReportRow> = data_query.fetch_all(&app_state.db_pool).await?;
 
-    // Генерируем CSV
+    // ✅ ИСПРАВЛЕНО: Генерируем CSV с правильным экранированием
     let mut csv_content = String::new();
-    csv_content.push_str("ID,Reagent,Batch Number,Quantity,Unit,Expiry Date,Status,Location,Supplier\n");
+    // BOM для корректного отображения UTF-8 в Excel
+    csv_content.push('\u{FEFF}');
+    csv_content.push_str("ID,Reagent,Batch Number,Quantity,Unit,Expiry Date,Status,Location,Supplier,Notes\n");
     
     for row in &data {
         csv_content.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{}\n",
-            row.id,
-            row.reagent_name.replace(',', ";"),
-            row.batch_number.replace(',', ";"),
+            "{},{},{},{},{},{},{},{},{},{}\n",
+            escape_csv_field(&row.id),
+            escape_csv_field(&row.reagent_name),
+            escape_csv_field(&row.batch_number),
             row.quantity,
-            row.unit,
+            escape_csv_field(&row.unit),
             row.expiry_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
-            row.status,
-            row.location.as_deref().unwrap_or("").replace(',', ";"),
-            row.supplier.as_deref().unwrap_or("").replace(',', ";"),
+            escape_csv_field(&row.status),
+            escape_csv_field(row.location.as_deref().unwrap_or("")),
+            escape_csv_field(row.supplier.as_deref().unwrap_or("")),
+            escape_csv_field(row.notes.as_deref().unwrap_or("")),
         ));
     }
 
@@ -499,4 +569,70 @@ pub async fn export_report(
         .insert_header(("Content-Type", "text/csv; charset=utf-8"))
         .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
         .body(csv_content))
+}
+
+// ==================== TESTS ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_sort_field() {
+        // Валидные поля
+        assert_eq!(validate_sort_field("created_at"), Some("created_at"));
+        assert_eq!(validate_sort_field("quantity"), Some("quantity"));
+        assert_eq!(validate_sort_field("reagent_name"), Some("reagent_name"));
+        
+        // SQL-инъекции блокируются
+        assert_eq!(validate_sort_field("created_at; DROP TABLE users"), None);
+        assert_eq!(validate_sort_field("1=1 OR 1=1"), None);
+        assert_eq!(validate_sort_field("password"), None);
+        assert_eq!(validate_sort_field(""), None);
+        assert_eq!(validate_sort_field("' OR '1'='1"), None);
+    }
+
+    #[test]
+    fn test_escape_like_pattern() {
+        assert_eq!(escape_like_pattern("100%"), "100\\%");
+        assert_eq!(escape_like_pattern("test_value"), "test\\_value");
+        assert_eq!(escape_like_pattern("a\\b"), "a\\\\b");
+        assert_eq!(escape_like_pattern("normal"), "normal");
+        assert_eq!(escape_like_pattern("%_%"), "\\%\\_\\%");
+    }
+
+    #[test]
+    fn test_escape_csv_field() {
+        assert_eq!(escape_csv_field("simple"), "simple");
+        assert_eq!(escape_csv_field("with,comma"), "\"with,comma\"");
+        assert_eq!(escape_csv_field("with\"quote"), "\"with\"\"quote\"");
+        assert_eq!(escape_csv_field("with\nnewline"), "\"with\nnewline\"");
+        assert_eq!(escape_csv_field("combo,\"\n"), "\"combo,\"\"\n\"");
+    }
+
+    #[test]
+    fn test_report_filter_request_conversion() {
+        let req = ReportFilterRequest {
+            field: "quantity".to_string(),
+            operator: "gt".to_string(),
+            value: serde_json::json!(10),
+        };
+        
+        let filter = req.to_report_filter();
+        assert!(filter.is_some());
+        let f = filter.unwrap();
+        assert_eq!(f.field, "quantity");
+        assert_eq!(f.operator, ComparisonOperator::Gt);
+    }
+
+    #[test]
+    fn test_invalid_operator_returns_none() {
+        let req = ReportFilterRequest {
+            field: "status".to_string(),
+            operator: "INVALID_OP".to_string(),
+            value: serde_json::json!("test"),
+        };
+        
+        assert!(req.to_report_filter().is_none());
+    }
 }

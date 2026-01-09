@@ -48,6 +48,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             cas_number TEXT CHECK(cas_number IS NULL OR length(cas_number) <= 50),
             manufacturer TEXT CHECK(manufacturer IS NULL OR length(manufacturer) <= 255),
             description TEXT CHECK(description IS NULL OR length(description) <= 1000),
+            storage_conditions TEXT CHECK(storage_conditions IS NULL OR length(storage_conditions) <= 255),
+            appearance TEXT CHECK(appearance IS NULL OR length(appearance) <= 255),
+            hazard_pictograms TEXT CHECK(hazard_pictograms IS NULL OR length(hazard_pictograms) <= 100),
+
             status TEXT NOT NULL DEFAULT 'active' CHECK(
                 status IN ('active', 'inactive', 'discontinued')
             ),
@@ -69,6 +73,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         CREATE TABLE IF NOT EXISTS batches (
             id TEXT PRIMARY KEY,
             reagent_id TEXT NOT NULL,
+            lot_number TEXT CHECK(lot_number IS NULL OR length(lot_number) <= 100),
             batch_number TEXT NOT NULL,
             quantity REAL NOT NULL CHECK(quantity >= 0),
             cat_number TEXT CHECK(cat_number IS NULL OR length(cat_number) <= 100),
@@ -465,6 +470,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             cas_number,
             manufacturer,
             description,
+            storage_conditions,
+            appearance,
             content='reagents',
             content_rowid='rowid'
         )
@@ -477,14 +484,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         r#"
         CREATE VIRTUAL TABLE IF NOT EXISTS equipment_fts USING fts5(
-            equipment_id,
             name,
             description,
             location,
             manufacturer,
             model,
             serial_number,
-            content='',
+            content='equipment',
+            content_rowid='rowid',
             tokenize='unicode61'
         )
         "#,
@@ -682,6 +689,44 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     for query in trigger_queries.iter() {
         let _ = sqlx::query(query).execute(pool).await;
     }
+    let fts_triggers = [
+        // --- Reagents FTS Sync ---
+        "CREATE TRIGGER IF NOT EXISTS reagents_ai AFTER INSERT ON reagents BEGIN
+           INSERT INTO reagents_fts(rowid, name, formula, cas_number, manufacturer, description, storage_conditions, appearance)
+           VALUES (new.rowid, new.name, new.formula, new.cas_number, new.manufacturer, new.description, new.storage_conditions, new.appearance);
+         END;",
+        "CREATE TRIGGER IF NOT EXISTS reagents_ad AFTER DELETE ON reagents BEGIN
+                INSERT INTO reagents_fts(reagents_fts, rowid, name, formula, cas_number, manufacturer, description, storage_conditions, appearance)
+                VALUES('delete', old.rowid, old.name, old.formula, old.cas_number, old.manufacturer, old.description, old.storage_conditions, old.appearance);
+         END;",
+        "CREATE TRIGGER IF NOT EXISTS reagents_au AFTER UPDATE ON reagents BEGIN
+           INSERT INTO reagents_fts(reagents_fts, rowid, name, formula, cas_number, manufacturer, description, storage_conditions, appearance)
+           VALUES('delete', old.rowid, old.name, old.formula, old.cas_number, old.manufacturer, old.description, old.storage_conditions, old.appearance);
+           INSERT INTO reagents_fts(rowid, name, formula, cas_number, manufacturer, description, storage_conditions, appearance)
+           VALUES (new.rowid, new.name, new.formula, new.cas_number, new.manufacturer, new.description, new.storage_conditions, new.appearance);
+         END;",
+        // --- Equipment FTS Sync (ДОБАВИТЬ ЭТО) ---
+        "CREATE TRIGGER IF NOT EXISTS equipment_ai AFTER INSERT ON equipment BEGIN
+           INSERT INTO equipment_fts(rowid, name, description, location, manufacturer, model, serial_number)
+           VALUES (new.rowid, new.name, new.description, new.location, new.manufacturer, new.model, new.serial_number);
+         END;",
+        "CREATE TRIGGER IF NOT EXISTS equipment_ad AFTER DELETE ON equipment BEGIN
+           INSERT INTO equipment_fts(equipment_fts, rowid, name, description, location, manufacturer, model, serial_number)
+           VALUES('delete', old.rowid, old.name, old.description, old.location, old.manufacturer, old.model, old.serial_number);
+         END;",
+        "CREATE TRIGGER IF NOT EXISTS equipment_au AFTER UPDATE ON equipment BEGIN
+           INSERT INTO equipment_fts(equipment_fts, rowid, name, description, location, manufacturer, model, serial_number)
+           VALUES('delete', old.rowid, old.name, old.description, old.location, old.manufacturer, old.model, old.serial_number);
+           INSERT INTO equipment_fts(rowid, name, description, location, manufacturer, model, serial_number)
+           VALUES (new.rowid, new.name, new.description, new.location, new.manufacturer, new.model, new.serial_number);
+         END;",
+
+
+    ];
+
+    for query in fts_triggers.iter() {
+        let _ = sqlx::query(query).execute(pool).await;
+    }
 
     // Run migrations for existing tables
     migrate_existing_tables(pool).await?;
@@ -700,7 +745,9 @@ pub async fn migrate_existing_tables(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE reagents ADD COLUMN created_by TEXT",
         "ALTER TABLE reagents ADD COLUMN updated_by TEXT",
         "ALTER TABLE reagents ADD COLUMN molecular_weight REAL CHECK(molecular_weight IS NULL OR molecular_weight >= 0)",
-
+        "ALTER TABLE reagents ADD COLUMN storage_conditions TEXT CHECK(storage_conditions IS NULL OR length(storage_conditions) <= 255)",
+        "ALTER TABLE reagents ADD COLUMN appearance TEXT CHECK(appearance IS NULL OR length(appearance) <= 255)",
+        "ALTER TABLE reagents ADD COLUMN hazard_pictograms TEXT CHECK(hazard_pictograms IS NULL OR length(hazard_pictograms) <= 100)",
         // ==================== EQUIPMENT ====================
         "ALTER TABLE equipment ADD COLUMN serial_number TEXT CHECK(serial_number IS NULL OR length(serial_number) <= 100)",
         "ALTER TABLE equipment ADD COLUMN manufacturer TEXT CHECK(manufacturer IS NULL OR length(manufacturer) <= 255)",
@@ -716,6 +763,7 @@ pub async fn migrate_existing_tables(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE users ADD COLUMN locked_until DATETIME",
 
         // ==================== BATCHES ====================
+        "ALTER TABLE batches ADD COLUMN lot_number TEXT CHECK(lot_number IS NULL OR length(lot_number) <= 100)",
         "ALTER TABLE batches ADD COLUMN cat_number TEXT CHECK(cat_number IS NULL OR length(cat_number) <= 100)",
         "ALTER TABLE batches ADD COLUMN original_quantity REAL",
         "ALTER TABLE batches ADD COLUMN manufacturer TEXT CHECK(manufacturer IS NULL OR length(manufacturer) <= 255)",
@@ -725,7 +773,7 @@ pub async fn migrate_existing_tables(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE batches ADD COLUMN created_by TEXT",
         "ALTER TABLE batches ADD COLUMN updated_by TEXT",
         "ALTER TABLE batches ADD COLUMN reserved_quantity REAL NOT NULL DEFAULT 0.0 CHECK(reserved_quantity >= 0)",
-
+        
         // ==================== EXPERIMENTS ====================
         "ALTER TABLE experiment_reagents ADD COLUMN is_consumed INTEGER NOT NULL DEFAULT 0 CHECK(is_consumed IN (0, 1))",
         "ALTER TABLE experiments ADD COLUMN location TEXT CHECK(location IS NULL OR length(location) <= 255)",
@@ -742,6 +790,72 @@ pub async fn migrate_existing_tables(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("UPDATE batches SET original_quantity = quantity WHERE original_quantity IS NULL")
         .execute(pool)
         .await;
+
+    // ==================== FTS MIGRATIONS ====================
+    // Пересоздаём equipment_fts если она имеет старую схему с equipment_id
+    // Проверяем есть ли колонка equipment_id в FTS (которой не должно быть)
+    let has_old_fts: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('equipment_fts') WHERE name = 'equipment_id'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
+    if has_old_fts {
+        log::info!("Recreating equipment_fts with correct schema...");
+        
+        // Удаляем старые триггеры
+        let _ = sqlx::query("DROP TRIGGER IF EXISTS equipment_ai").execute(pool).await;
+        let _ = sqlx::query("DROP TRIGGER IF EXISTS equipment_ad").execute(pool).await;
+        let _ = sqlx::query("DROP TRIGGER IF EXISTS equipment_au").execute(pool).await;
+        
+        // Удаляем старую FTS таблицу
+        let _ = sqlx::query("DROP TABLE IF EXISTS equipment_fts").execute(pool).await;
+        
+        // Создаём новую FTS таблицу с правильной схемой
+        let _ = sqlx::query(
+            r#"CREATE VIRTUAL TABLE IF NOT EXISTS equipment_fts USING fts5(
+                name,
+                description,
+                location,
+                manufacturer,
+                model,
+                serial_number,
+                content='equipment',
+                content_rowid='rowid',
+                tokenize='unicode61'
+            )"#
+        ).execute(pool).await;
+        
+        // Пересоздаём триггеры
+        let _ = sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS equipment_ai AFTER INSERT ON equipment BEGIN
+               INSERT INTO equipment_fts(rowid, name, description, location, manufacturer, model, serial_number)
+               VALUES (new.rowid, new.name, new.description, new.location, new.manufacturer, new.model, new.serial_number);
+             END"
+        ).execute(pool).await;
+        
+        let _ = sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS equipment_ad AFTER DELETE ON equipment BEGIN
+               INSERT INTO equipment_fts(equipment_fts, rowid, name, description, location, manufacturer, model, serial_number)
+               VALUES('delete', old.rowid, old.name, old.description, old.location, old.manufacturer, old.model, old.serial_number);
+             END"
+        ).execute(pool).await;
+        
+        let _ = sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS equipment_au AFTER UPDATE ON equipment BEGIN
+               INSERT INTO equipment_fts(equipment_fts, rowid, name, description, location, manufacturer, model, serial_number)
+               VALUES('delete', old.rowid, old.name, old.description, old.location, old.manufacturer, old.model, old.serial_number);
+               INSERT INTO equipment_fts(rowid, name, description, location, manufacturer, model, serial_number)
+               VALUES (new.rowid, new.name, new.description, new.location, new.manufacturer, new.model, new.serial_number);
+             END"
+        ).execute(pool).await;
+        
+        // Перестраиваем FTS индекс из существующих данных
+        let _ = sqlx::query("INSERT INTO equipment_fts(equipment_fts) VALUES('rebuild')").execute(pool).await;
+        
+        log::info!("equipment_fts recreated successfully");
+    }
 
     Ok(())
 }

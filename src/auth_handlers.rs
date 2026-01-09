@@ -44,7 +44,13 @@ pub struct CreateUserRequest {
     #[validate(length(min = 1, message = "Role is required"))]
     pub role: String,
 }
-
+// ✅ ADDED MISSING LOGOUT FUNCTION
+pub async fn logout() -> ApiResult<HttpResponse> {
+    // In stateless JWT auth, the server doesn't need to do much.
+    // The client should delete the token. 
+    // If you use cookies, you would clear the cookie here.
+    Ok(HttpResponse::Ok().json(ApiResponse::<()>::success_with_message((), "Logged out successfully".to_string())))
+}
 /// Response with user info and optional generated password
 #[derive(Debug, Serialize)]
 pub struct CreateUserResponse {

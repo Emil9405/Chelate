@@ -1,60 +1,141 @@
 /* =========================================================
-   index.css — Global styles, design tokens & base elements
+   CHELATE LIMS - Global Styles & Design Tokens
+   Laboratory Information Management System
    ========================================================= */
 
-/* ---------- CSS variables (design tokens) ---------- */
+/* ---------- CSS Variables (CHELATE Design System) ---------- */
 
 :root {
-  /* Цвета */
-  --color-bg: #f7fafc;
+  /* === CHELATE Brand Colors === */
+  
+  /* Primary Navy (главный цвет текста/заголовков) */
+  --chelate-navy: #1a365d;
+  --chelate-navy-light: #2c5282;
+  --chelate-navy-dark: #1a202c;
+  
+  /* Primary Blue (основной акцент) */
+  --chelate-blue: #3182ce;
+  --chelate-blue-light: #4299e1;
+  --chelate-blue-dark: #2b6cb0;
+  --chelate-blue-subtle: rgba(49, 130, 206, 0.1);
+  
+  /* Teal/Cyan (переходный цвет) */
+  --chelate-teal: #38b2ac;
+  --chelate-teal-light: #4fd1c5;
+  --chelate-teal-dark: #319795;
+  
+  /* Green (вторичный акцент) */
+  --chelate-green: #38a169;
+  --chelate-green-light: #48bb78;
+  --chelate-green-dark: #2f855a;
+  --chelate-green-subtle: rgba(56, 161, 105, 0.1);
+  
+  /* Silver/Gray (вспомогательные) */
+  --chelate-silver: #a0aec0;
+  --chelate-silver-light: #cbd5e0;
+  --chelate-silver-dark: #718096;
+  
+  /* === Semantic Colors === */
+  --color-primary: var(--chelate-blue);
+  --color-primary-hover: var(--chelate-blue-dark);
+  --color-primary-subtle: var(--chelate-blue-subtle);
+  
+  --color-secondary: var(--chelate-teal);
+  --color-accent: var(--chelate-green);
+  
+  --color-success: var(--chelate-green);
+  --color-warning: #ed8936;
+  --color-danger: #e53e3e;
+  --color-info: var(--chelate-blue);
+  
+  /* === Background Colors === */
+  --color-bg: #f8fafc;
   --color-bg-alt: #ffffff;
   --color-bg-elevated: #ffffff;
-
-  --color-text: #2d3748;
-  --color-text-muted: #718096;
+  --color-bg-hexagon: rgba(49, 130, 206, 0.03);
+  
+  /* === Text Colors === */
+  --color-text: var(--chelate-navy);
+  --color-text-muted: var(--chelate-silver-dark);
+  --color-text-light: var(--chelate-silver);
+  
+  /* === Border Colors === */
   --color-border: #e2e8f0;
-  --color-border-strong: #cbd5e0;
-
-  --color-primary: #667eea;
-  --color-primary-hover: #5a67d8;
-  --color-primary-subtle: #ebf4ff;
-
-  --color-success: #38a169;
-  --color-warning: #dd6b20;
-  --color-danger: #e53e3e;
-  --color-info: #3182ce;
-
-  /* Тени и скругления */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.06);
-
-  /* Типографика и размеры */
-  --font-base: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
-    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
-    "Helvetica Neue", sans-serif;
-  --font-mono: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
-
-  --font-size-base: 16px;
+  --color-border-strong: var(--chelate-silver-light);
+  --color-border-accent: var(--chelate-blue-light);
+  
+  /* === Gradients (из логотипа) === */
+  --gradient-primary: linear-gradient(135deg, var(--chelate-blue) 0%, var(--chelate-teal) 50%, var(--chelate-green) 100%);
+  --gradient-header: linear-gradient(135deg, var(--chelate-navy) 0%, var(--chelate-blue-dark) 100%);
+  --gradient-accent: linear-gradient(135deg, var(--chelate-teal) 0%, var(--chelate-green) 100%);
+  --gradient-subtle: linear-gradient(180deg, rgba(49, 130, 206, 0.05) 0%, rgba(56, 161, 105, 0.05) 100%);
+  
+  /* === Shadows === */
+  --shadow-sm: 0 1px 3px rgba(26, 54, 93, 0.08);
+  --shadow-md: 0 4px 12px rgba(26, 54, 93, 0.1);
+  --shadow-lg: 0 10px 30px rgba(26, 54, 93, 0.12);
+  --shadow-xl: 0 20px 50px rgba(26, 54, 93, 0.15);
+  --shadow-glow: 0 0 20px rgba(49, 130, 206, 0.3);
+  
+  /* === Border Radius === */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+  
+  /* === Typography === */
+  --font-base: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 1.875rem;
+  
+  --line-height-tight: 1.25;
   --line-height-base: 1.5;
-
-  /* Отступы */
+  --line-height-relaxed: 1.75;
+  
+  /* === Spacing === */
   --spacing-xs: 4px;
   --spacing-sm: 8px;
   --spacing-md: 12px;
   --spacing-lg: 16px;
   --spacing-xl: 24px;
-
-  /* Скорость анимаций */
-  --transition-fast: 0.15s ease-out;
-  --transition-normal: 0.2s ease;
+  --spacing-2xl: 32px;
+  --spacing-3xl: 48px;
+  
+  /* === Transitions === */
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  
+  /* === Z-Index === */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 1000;
+  --z-toast: 2000;
 }
 
-/* ---------- Global reset ---------- */
+/* === Dark Mode (опционально) === */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f172a;
+    --color-bg-alt: #1e293b;
+    --color-bg-elevated: #334155;
+    --color-text: #f1f5f9;
+    --color-text-muted: #94a3b8;
+    --color-border: #334155;
+    --color-border-strong: #475569;
+  }
+}
+
+/* ---------- Global Reset ---------- */
 
 *,
 *::before,
@@ -64,14 +145,14 @@
   box-sizing: border-box;
 }
 
-/* ---------- Base typography & layout ---------- */
+/* ---------- Base Typography & Layout ---------- */
 
 html {
-  font-size: 100%; /* 16px по умолчанию */
+  font-size: 100%;
+  scroll-behavior: smooth;
 }
 
 body {
-  margin: 0;
   font-family: var(--font-base);
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);
@@ -79,86 +160,118 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: var(--color-bg);
   color: var(--color-text);
+  min-height: 100vh;
+  position: relative;
 }
 
-/* Корневой контейнер приложения (если используете #root / .app-root) */
+/* === Hexagonal Pattern Background (как в логотипе) === */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='52' viewBox='0 0 60 52'%3E%3Cpath fill='%233182ce' fill-opacity='0.03' d='M30 0l30 15v22l-30 15L0 37V15L30 0zm0 4.33L4 17.67v16.66L30 47.67l26-13.34V17.67L30 4.33z'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: -1;
+}
+
 #root,
 .app-root {
   min-height: 100vh;
 }
 
-/* Контейнер по центру (для основных страниц) */
-.app-container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: var(--spacing-lg);
-}
+/* ---------- Headings ---------- */
 
-/* Базовая типографика */
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  font-weight: 600;
-  color: var(--color-text);
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--chelate-navy);
   margin-bottom: var(--spacing-md);
+  line-height: var(--line-height-tight);
 }
 
 h1 {
-  font-size: 1.8rem;
+  font-size: var(--font-size-3xl);
+  letter-spacing: -0.025em;
 }
 
 h2 {
-  font-size: 1.6rem;
+  font-size: var(--font-size-2xl);
+  letter-spacing: -0.02em;
 }
 
 h3 {
-  font-size: 1.4rem;
+  font-size: var(--font-size-xl);
+}
+
+h4 {
+  font-size: var(--font-size-lg);
 }
 
 p {
   margin-bottom: var(--spacing-sm);
+  color: var(--color-text);
 }
 
-/* Код */
+/* ---------- Code ---------- */
 
 code {
   font-family: var(--font-mono);
-  background-color: #edf2f7;
-  padding: 0 4px;
+  background: linear-gradient(135deg, rgba(49, 130, 206, 0.1) 0%, rgba(56, 161, 105, 0.1) 100%);
+  padding: 2px 6px;
   border-radius: var(--radius-sm);
   font-size: 0.9em;
+  color: var(--chelate-blue-dark);
 }
 
-/* ---------- Scrollbar styling (WebKit) ---------- */
+pre {
+  background: var(--chelate-navy-dark);
+  color: #e2e8f0;
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+/* ---------- Scrollbar Styling ---------- */
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: var(--color-bg);
+  border-radius: var(--radius-full);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #a0aec0;
-  border-radius: 5px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-full);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #718096;
+  background: var(--chelate-blue);
+}
+
+/* ---------- Selection ---------- */
+
+::selection {
+  background: rgba(49, 130, 206, 0.2);
+  color: var(--chelate-navy);
 }
 
 /* ---------- Animations ---------- */
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 
 @keyframes fadeIn {
@@ -183,50 +296,55 @@ code {
   }
 }
 
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.05);
-  }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
 }
 
 @keyframes shimmer {
-  0% {
-    background-position: -1000px 0;
-  }
-  100% {
-    background-position: 1000px 0;
-  }
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
 }
 
-/* Animation utilities */
-
-.fade-in {
-  animation: fadeIn 0.3s ease;
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(49, 130, 206, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(49, 130, 206, 0.5); }
 }
 
-.slide-in {
-  animation: slideIn 0.3s ease;
+@keyframes moleculeFloat {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-10px) rotate(5deg); }
 }
 
-.pulse {
-  animation: pulse 2s ease-in-out infinite;
-}
+/* Animation Utilities */
+.fade-in { animation: fadeIn 0.3s ease; }
+.slide-in { animation: slideIn 0.3s ease; }
+.slide-up { animation: slideUp 0.3s ease; }
+.pulse { animation: pulse 2s ease-in-out infinite; }
+.glow { animation: glow 2s ease-in-out infinite; }
 
 /* ---------- Links ---------- */
 
 a {
-  color: var(--color-primary);
+  color: var(--chelate-blue);
   text-decoration: none;
-  transition: color var(--transition-normal);
+  transition: color var(--transition-fast);
 }
 
 a:hover {
-  color: var(--color-primary-hover);
-  text-decoration: underline;
+  color: var(--chelate-teal);
+  text-decoration: none;
 }
 
 /* ---------- Buttons ---------- */
@@ -238,36 +356,46 @@ button {
   background: none;
 }
 
-/* Базовый стиль кнопки (если используете className="btn") */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 8px 14px;
+  gap: 8px;
+  padding: 10px 20px;
   border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  font-size: 0.95rem;
-  font-weight: 500;
-  background-color: var(--color-primary);
+  border: none;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  background: var(--gradient-primary);
   color: #ffffff;
-  box-shadow: var(--shadow-sm);
-  transition:
-    background-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    transform var(--transition-fast),
-    border-color var(--transition-fast);
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-fast);
+  position: relative;
+  overflow: hidden;
+}
+
+.btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  transition: left 0.5s;
+}
+
+.btn:hover::before {
+  left: 100%;
 }
 
 .btn:hover {
-  background-color: var(--color-primary-hover);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg), var(--shadow-glow);
 }
 
 .btn:active {
   transform: translateY(0);
-  box-shadow: var(--shadow-sm);
 }
 
 .btn:disabled {
@@ -276,24 +404,57 @@ button {
   transform: none;
 }
 
-/* Варианты кнопок */
-.btn-ghost {
-  background-color: transparent;
-  color: var(--color-primary);
-  border-color: var(--color-border);
+/* Button Variants */
+.btn-primary {
+  background: var(--gradient-primary);
 }
 
-.btn-ghost:hover {
-  background-color: var(--color-primary-subtle);
-  border-color: var(--color-primary);
+.btn-secondary {
+  background: var(--color-bg-alt);
+  color: var(--chelate-blue);
+  border: 2px solid var(--chelate-blue);
+}
+
+.btn-secondary:hover {
+  background: var(--chelate-blue-subtle);
+}
+
+.btn-success {
+  background: linear-gradient(135deg, var(--chelate-green) 0%, var(--chelate-green-dark) 100%);
 }
 
 .btn-danger {
-  background-color: var(--color-danger);
+  background: linear-gradient(135deg, var(--color-danger) 0%, #c53030 100%);
 }
 
-.btn-danger:hover {
-  background-color: #c53030;
+.btn-ghost {
+  background: transparent;
+  color: var(--chelate-blue);
+  border: 1px solid var(--color-border);
+  box-shadow: none;
+}
+
+.btn-ghost:hover {
+  background: var(--chelate-blue-subtle);
+  border-color: var(--chelate-blue);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-icon {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: var(--radius-full);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: var(--font-size-xs);
+}
+
+.btn-lg {
+  padding: 14px 28px;
+  font-size: var(--font-size-base);
 }
 
 /* ---------- Forms ---------- */
@@ -302,16 +463,14 @@ input,
 select,
 textarea {
   font-family: inherit;
-  font-size: 0.95rem;
+  font-size: var(--font-size-sm);
   border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  padding: 8px 10px;
-  background-color: #ffffff;
+  border: 2px solid var(--color-border);
+  padding: 10px 14px;
+  background-color: var(--color-bg-alt);
   color: var(--color-text);
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    background-color var(--transition-fast);
+  transition: all var(--transition-fast);
+  width: 100%;
 }
 
 input::placeholder,
@@ -322,170 +481,227 @@ textarea::placeholder {
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 1px var(--color-primary-subtle);
+  outline: none;
+  border-color: var(--chelate-blue);
+  box-shadow: 0 0 0 4px var(--chelate-blue-subtle);
 }
 
-/* Группы полей */
+input:hover:not(:focus),
+select:hover:not(:focus),
+textarea:hover:not(:focus) {
+  border-color: var(--chelate-silver);
+}
+
+/* Form Groups */
 .form-group {
-  margin-bottom: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
 }
 
 .form-label {
   display: block;
-  margin-bottom: 4px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--color-text);
+  margin-bottom: 6px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--chelate-navy);
 }
 
-/* ---------- Cards / Panels ---------- */
+.form-label.required::after {
+  content: ' *';
+  color: var(--color-danger);
+}
+
+.form-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+/* ---------- Cards ---------- */
 
 .card {
-  background-color: var(--color-bg-elevated);
+  background: var(--color-bg-elevated);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
-  padding: var(--spacing-lg);
   box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: all var(--transition-normal);
+}
+
+.card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
 }
 
 .card-header {
-  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-lg) var(--spacing-xl);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--gradient-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
 .card-title {
-  font-size: 1.1rem;
-  font-weight: 600;
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--chelate-navy);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
 }
 
-.card-subtitle {
-  font-size: 0.9rem;
-  color: var(--color-text-muted);
+.card-title i {
+  color: var(--chelate-blue);
 }
 
-/* ---------- Tables (полезно для LIMS) ---------- */
+.card-content {
+  padding: var(--spacing-xl);
+}
+
+.card-footer {
+  padding: var(--spacing-lg) var(--spacing-xl);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+/* Card with accent border (молекулярный стиль) */
+.card-accent {
+  border-top: 4px solid transparent;
+  border-image: var(--gradient-primary) 1;
+}
+
+/* ---------- Tables ---------- */
 
 .table {
   width: 100%;
   border-collapse: collapse;
-  margin-bottom: var(--spacing-lg);
-  font-size: 0.9rem;
+  font-size: var(--font-size-sm);
 }
 
 .table thead {
-  background-color: #edf2f7;
-}
-
-.table th,
-.table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--color-border);
-  text-align: left;
+  background: var(--gradient-subtle);
 }
 
 .table th {
-  font-weight: 600;
-  font-size: 0.85rem;
-  color: var(--color-text-muted);
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 700;
+  font-size: var(--font-size-xs);
+  color: var(--chelate-navy);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.05em;
+  border-bottom: 2px solid var(--chelate-blue-subtle);
+}
+
+.table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+.table tbody tr {
+  transition: all var(--transition-fast);
 }
 
 .table tbody tr:hover {
-  background-color: #f7fafc;
+  background: var(--chelate-blue-subtle);
 }
 
-/* ---------- Badges & status helpers ---------- */
+/* ---------- Badges ---------- */
 
 .badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .badge-success {
-  background-color: rgba(56, 161, 105, 0.1);
-  color: var(--color-success);
+  background: linear-gradient(135deg, rgba(56, 161, 105, 0.15) 0%, rgba(72, 187, 120, 0.15) 100%);
+  color: var(--chelate-green-dark);
 }
 
 .badge-warning {
-  background-color: rgba(221, 107, 32, 0.08);
-  color: var(--color-warning);
+  background: linear-gradient(135deg, rgba(237, 137, 54, 0.15) 0%, rgba(221, 107, 32, 0.15) 100%);
+  color: #c05621;
 }
 
 .badge-danger {
-  background-color: rgba(229, 62, 62, 0.1);
-  color: var(--color-danger);
+  background: linear-gradient(135deg, rgba(229, 62, 62, 0.15) 0%, rgba(197, 48, 48, 0.15) 100%);
+  color: #c53030;
 }
 
 .badge-info {
-  background-color: rgba(49, 130, 206, 0.08);
-  color: var(--color-info);
+  background: linear-gradient(135deg, rgba(49, 130, 206, 0.15) 0%, rgba(56, 178, 172, 0.15) 100%);
+  color: var(--chelate-blue-dark);
 }
 
-/* ---------- Font Awesome helpers (spacing) ---------- */
-
-/* Лёгкий отступ иконки от текста */
-.fa,
-.fas,
-.far,
-.fal,
-.fad,
-.fab,
-.fa-solid,
-.fa-regular,
-.fa-light,
-.fa-duotone,
-.fa-brands {
-  /* на всякий случай сглаживание, если понадобится */
-  -webkit-font-smoothing: antialiased;
+.badge-primary {
+  background: var(--gradient-primary);
+  color: white;
 }
 
-.btn .fa,
-.btn .fa-solid,
-.btn .fa-regular,
-.btn .fa-light,
-.btn .fa-brands {
-  margin-right: 6px;
+/* ---------- Molecular Decorations (опционально) ---------- */
+
+.molecule-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--gradient-primary);
+  display: inline-block;
+}
+
+.molecule-line {
+  width: 30px;
+  height: 3px;
+  background: var(--gradient-primary);
+  display: inline-block;
+  border-radius: var(--radius-full);
 }
 
 /* ---------- Utilities ---------- */
 
-.text-muted {
-  color: var(--color-text-muted);
-}
+.text-muted { color: var(--color-text-muted); }
+.text-primary { color: var(--chelate-blue); }
+.text-success { color: var(--chelate-green); }
+.text-danger { color: var(--color-danger); }
+.text-navy { color: var(--chelate-navy); }
 
-.text-right {
-  text-align: right;
-}
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.text-left { text-align: left; }
 
-.text-center {
-  text-align: center;
-}
+.font-bold { font-weight: 700; }
+.font-semibold { font-weight: 600; }
+.font-medium { font-weight: 500; }
 
-.mt-sm {
-  margin-top: var(--spacing-sm);
-}
+.mt-xs { margin-top: var(--spacing-xs); }
+.mt-sm { margin-top: var(--spacing-sm); }
+.mt-md { margin-top: var(--spacing-md); }
+.mt-lg { margin-top: var(--spacing-lg); }
+.mt-xl { margin-top: var(--spacing-xl); }
 
-.mt-md {
-  margin-top: var(--spacing-md);
-}
+.mb-xs { margin-bottom: var(--spacing-xs); }
+.mb-sm { margin-bottom: var(--spacing-sm); }
+.mb-md { margin-bottom: var(--spacing-md); }
+.mb-lg { margin-bottom: var(--spacing-lg); }
+.mb-xl { margin-bottom: var(--spacing-xl); }
 
-.mt-lg {
-  margin-top: var(--spacing-lg);
-}
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.justify-between { justify-content: space-between; }
+.gap-sm { gap: var(--spacing-sm); }
+.gap-md { gap: var(--spacing-md); }
+.gap-lg { gap: var(--spacing-lg); }
 
-/* Screen reader only content */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -498,27 +714,28 @@ textarea:focus {
   border-width: 0;
 }
 
-/* ---------- Focus outline for accessibility (fallback) ---------- */
-button:focus,
-[role="button"]:focus {
-  outline: 2px solid var(--color-primary);
+/* ---------- Focus States (Accessibility) ---------- */
+
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--chelate-blue);
   outline-offset: 2px;
 }
 
-/* ---------- Print styles ---------- */
+/* ---------- Print Styles ---------- */
 
 @media print {
-  body {
-    background: white;
+  body::before {
+    display: none;
   }
-
+  
   .no-print {
     display: none !important;
   }
-
-  .card,
-  .table {
+  
+  .card, .table {
     box-shadow: none;
-    border-color: var(--color-border-strong);
+    border: 1px solid var(--color-border-strong);
   }
 }

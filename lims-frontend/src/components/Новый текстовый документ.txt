@@ -1,0 +1,594 @@
+// src/components/BatchImportModal.js
+import React, { useState, useRef } from 'react';
+import * as XLSX from 'xlsx';
+
+const BatchImportModal = ({ isOpen, onClose, onImport, existingReagents, existingBatches }) => {
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [importSummary, setImportSummary] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleFileChange = async (e) => {
+    const selectedFile = e.target.files[0];
+    if (!selectedFile) return;
+
+    setError('');
+    setFile(selectedFile);
+    setIsProcessing(true);
+    setImportSummary(null);
+
+    try {
+      const fileExtension = selectedFile.name.split('.').pop().toLowerCase();
+      let data = [];
+
+      if (fileExtension === 'json') {
+        data = await parseJSON(selectedFile);
+      } else if (fileExtension === 'csv') {
+        data = await parseCSV(selectedFile);
+      } else if (['xlsx', 'xls'].includes(fileExtension)) {
+        data = await parseExcel(selectedFile);
+      } else {
+        throw new Error('Неподдерживаемый формат файла. Используйте JSON, CSV или Excel (.xlsx, .xls)');
+      }
+
+      if (data.length === 0) {
+        throw new Error('Файл не содержит данных');
+      }
+
+      // Обработка данных и проверка дубликатов
+      const processedData = processImportData(data);
+      setPreview(processedData);
+      
+    } catch (err) {
+      setError(err.message);
+      setFile(null);
+      setPreview(null);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const parseJSON = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const json = JSON.parse(e.target.result);
+          const data = Array.isArray(json) ? json : [json];
+          resolve(data);
+        } catch (error) {
+          reject(new Error('Ошибка парсинга JSON: ' + error.message));
+        }
+      };
+      reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+      reader.readAsText(file);
+    });
+  };
+
+  const parseCSV = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const text = e.target.result;
+          const lines = text.split('\n').filter(line => line.trim());
+          if (lines.length === 0) {
+            reject(new Error('CSV файл пуст'));
+            return;
+          }
+
+          const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+          const data = lines.slice(1).map(line => {
+            const values = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+            const obj = {};
+            headers.forEach((header, index) => {
+              obj[header] = values[index] || '';
+            });
+            return obj;
+          });
+
+          resolve(data);
+        } catch (error) {
+          reject(new Error('Ошибка парсинга CSV: ' + error.message));
+        }
+      };
+      reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+      reader.readAsText(file);
+    });
+  };
+
+  const parseExcel = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+          const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+          
+          if (jsonData.length === 0) {
+            reject(new Error('Excel файл не содержит данных'));
+            return;
+          }
+
+          resolve(jsonData);
+        } catch (error) {
+          reject(new Error('Ошибка парсинга Excel: ' + error.message));
+        }
+      };
+      reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const processImportData = (rawData) => {
+    const processed = rawData.map((row, index) => {
+      // Нормализация названий полей
+      const normalizedRow = {};
+      Object.keys(row).forEach(key => {
+        const normalizedKey = key.trim().toLowerCase().replace(/\s+/g, '_');
+        normalizedRow[normalizedKey] = row[key];
+      });
+
+      // Маппинг полей на структуру БД
+      const reagentName = normalizedRow.name || normalizedRow.reagent_name || '';
+      const lotNumber = normalizedRow.lot_number || normalizedRow.batch_number || normalizedRow.lotnumber || '';
+      
+      // Проверка на существующий реагент по имени
+      const existingReagent = existingReagents?.find(r => 
+        r.name.toLowerCase().trim() === reagentName.toLowerCase().trim()
+      );
+
+      // Проверка на существующую партию по имени реагента И номеру партии
+      const existingBatch = existingBatches?.find(b => {
+        const batchReagent = existingReagents?.find(r => r.id === b.reagent_id);
+        return batchReagent && 
+               batchReagent.name.toLowerCase().trim() === reagentName.toLowerCase().trim() &&
+               b.batch_number.toLowerCase().trim() === lotNumber.toLowerCase().trim();
+      });
+
+      return {
+        rowIndex: index + 1,
+        // Данные реагента
+        reagent: {
+          name: reagentName,
+          formula: normalizedRow.formula || '',
+          cas_number: normalizedRow.cas_number || normalizedRow.cas || '',
+          molecular_weight: parseFloat(normalizedRow.molecular_weight || normalizedRow['molecular_weight_(g/mol)'] || 0) || null,
+          physical_state: normalizedRow.physical_state || '',
+          description: normalizedRow.description || ''
+        },
+        // Данные партии
+        batch: {
+          batch_number: lotNumber,
+          cat_number: normalizedRow.cat_number || normalizedRow.catalog_number || '',
+          quantity: parseFloat(normalizedRow.quantity || 0),
+          unit: normalizedRow.quantity_units || normalizedRow.unit || 'мл',
+          location: normalizedRow.place || normalizedRow.location || '',
+          notes: normalizedRow.notes || '',
+          manufacturer: normalizedRow.manufacturer || '',
+          received_date: normalizedRow.received_date || new Date().toISOString().split('T')[0]
+        },
+        // Статус проверки
+        existingReagent: existingReagent || null,
+        existingBatch: existingBatch || null,
+        action: existingBatch ? 'update_quantity' : (existingReagent ? 'add_batch' : 'create_new'),
+        newQuantity: existingBatch ? existingBatch.quantity + parseFloat(normalizedRow.quantity || 0) : parseFloat(normalizedRow.quantity || 0)
+      };
+    });
+
+    return processed;
+  };
+
+  const handleImport = async () => {
+    if (!preview || preview.length === 0) {
+      setError('Нет данных для импорта');
+      return;
+    }
+
+    setIsProcessing(true);
+    setError('');
+
+    try {
+      const summary = {
+        newReagents: 0,
+        newBatches: 0,
+        updatedBatches: 0,
+        errors: []
+      };
+
+      const results = await onImport(preview);
+      
+      preview.forEach((item, index) => {
+        if (results[index]?.success) {
+          if (item.action === 'create_new') {
+            summary.newReagents++;
+            summary.newBatches++;
+          } else if (item.action === 'add_batch') {
+            summary.newBatches++;
+          } else if (item.action === 'update_quantity') {
+            summary.updatedBatches++;
+          }
+        } else {
+          summary.errors.push({
+            row: item.rowIndex,
+            name: item.reagent.name,
+            error: results[index]?.error || 'Неизвестная ошибка'
+          });
+        }
+      });
+
+      setImportSummary(summary);
+      
+      if (summary.errors.length === 0) {
+        setTimeout(() => {
+          handleClose();
+        }, 3000);
+      }
+    } catch (err) {
+      setError('Ошибка импорта: ' + err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleClose = () => {
+    setFile(null);
+    setPreview(null);
+    setError('');
+    setImportSummary(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    onClose();
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div style={styles.overlay}>
+      <div style={styles.modal}>
+        <div style={styles.header}>
+          <h2 style={styles.title}>Импорт реагентов и партий</h2>
+          <button onClick={handleClose} style={styles.closeButton}>×</button>
+        </div>
+
+        <div style={styles.content}>
+          {/* Инструкция */}
+          <div style={styles.infoBox}>
+            <h3 style={styles.infoTitle}>Логика импорта:</h3>
+            <ul style={styles.infoList}>
+              <li>Если реагент с таким <strong>именем</strong> НЕ существует → создается новый реагент и партия</li>
+              <li>Если реагент существует, но <strong>Lot number</strong> новый → добавляется новая партия</li>
+              <li>Если совпадают <strong>имя реагента И Lot number</strong> → <strong>количество суммируется</strong></li>
+            </ul>
+          </div>
+
+          {/* Загрузка файла */}
+          <div style={styles.uploadSection}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.csv,.xlsx,.xls"
+              onChange={handleFileChange}
+              style={styles.fileInput}
+            />
+            <p style={styles.hint}>
+              Поддерживаемые форматы: JSON, CSV, Excel (.xlsx, .xls)
+            </p>
+          </div>
+
+          {/* Ошибки */}
+          {error && (
+            <div style={styles.error}>
+              {error}
+            </div>
+          )}
+
+          {/* Результаты импорта */}
+          {importSummary && (
+            <div style={styles.successBox}>
+              <h3 style={styles.successTitle}>✓ Импорт завершен!</h3>
+              <p>Новых реагентов: <strong>{importSummary.newReagents}</strong></p>
+              <p>Новых партий: <strong>{importSummary.newBatches}</strong></p>
+              <p>Обновлено партий (суммирование): <strong>{importSummary.updatedBatches}</strong></p>
+              {importSummary.errors.length > 0 && (
+                <div style={styles.errorsList}>
+                  <p style={styles.errorsTitle}>Ошибки ({importSummary.errors.length}):</p>
+                  {importSummary.errors.slice(0, 5).map((err, idx) => (
+                    <p key={idx} style={styles.errorItem}>
+                      Строка {err.row}: {err.name} - {err.error}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Превью данных */}
+          {preview && !importSummary && (
+            <div style={styles.previewSection}>
+              <h3 style={styles.sectionTitle}>
+                Превью импорта ({preview.length} записей)
+              </h3>
+              <div style={styles.tableContainer}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>№</th>
+                      <th style={styles.th}>Реагент</th>
+                      <th style={styles.th}>Lot Number</th>
+                      <th style={styles.th}>Количество</th>
+                      <th style={styles.th}>Действие</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.slice(0, 10).map((item, index) => (
+                      <tr key={index} style={item.action === 'update_quantity' ? styles.updateRow : {}}>
+                        <td style={styles.td}>{item.rowIndex}</td>
+                        <td style={styles.td}>{item.reagent.name}</td>
+                        <td style={styles.td}>{item.batch.batch_number}</td>
+                        <td style={styles.td}>
+                          {item.action === 'update_quantity' ? (
+                            <>
+                              {item.existingBatch?.quantity} + {item.batch.quantity} = <strong>{item.newQuantity}</strong>
+                            </>
+                          ) : (
+                            item.batch.quantity
+                          )}
+                          {' '}{item.batch.unit}
+                        </td>
+                        <td style={styles.td}>
+                          {item.action === 'create_new' && <span style={styles.badgeNew}>Новый реагент + партия</span>}
+                          {item.action === 'add_batch' && <span style={styles.badgeAdd}>Новая партия</span>}
+                          {item.action === 'update_quantity' && <span style={styles.badgeUpdate}>Суммирование</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {preview.length > 10 && (
+                  <p style={styles.moreRecords}>
+                    ... и еще {preview.length - 10} записей
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={styles.footer}>
+          <button
+            onClick={handleClose}
+            style={styles.cancelButton}
+            disabled={isProcessing}
+          >
+            {importSummary ? 'Закрыть' : 'Отмена'}
+          </button>
+          {!importSummary && preview && (
+            <button
+              onClick={handleImport}
+              style={styles.importButton}
+              disabled={isProcessing}
+            >
+              {isProcessing ? 'Импорт...' : `Импортировать (${preview.length})`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const styles = {
+  overlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  modal: {
+    backgroundColor: 'white',
+    borderRadius: '8px',
+    maxWidth: '90%',
+    maxHeight: '90vh',
+    display: 'flex',
+    flexDirection: 'column',
+    boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+    width: '1200px',
+  },
+  header: {
+    padding: '20px',
+    borderBottom: '1px solid #e5e7eb',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  title: {
+    margin: 0,
+    fontSize: '20px',
+    fontWeight: '600',
+  },
+  closeButton: {
+    background: 'none',
+    border: 'none',
+    fontSize: '28px',
+    cursor: 'pointer',
+    color: '#6b7280',
+    padding: '0',
+    width: '32px',
+    height: '32px',
+  },
+  content: {
+    padding: '20px',
+    overflowY: 'auto',
+    flex: 1,
+  },
+  infoBox: {
+    backgroundColor: '#eff6ff',
+    border: '1px solid #3b82f6',
+    borderRadius: '4px',
+    padding: '16px',
+    marginBottom: '20px',
+  },
+  infoTitle: {
+    margin: '0 0 12px 0',
+    fontSize: '16px',
+    fontWeight: '600',
+    color: '#1e40af',
+  },
+  infoList: {
+    margin: 0,
+    paddingLeft: '20px',
+    color: '#1e3a8a',
+  },
+  uploadSection: {
+    marginBottom: '20px',
+  },
+  fileInput: {
+    width: '100%',
+    padding: '10px',
+    border: '2px dashed #d1d5db',
+    borderRadius: '4px',
+    cursor: 'pointer',
+  },
+  hint: {
+    marginTop: '8px',
+    fontSize: '14px',
+    color: '#6b7280',
+  },
+  error: {
+    padding: '12px',
+    backgroundColor: '#fee2e2',
+    color: '#dc2626',
+    borderRadius: '4px',
+    marginBottom: '16px',
+  },
+  successBox: {
+    backgroundColor: '#d1fae5',
+    border: '1px solid #10b981',
+    borderRadius: '4px',
+    padding: '16px',
+    marginBottom: '16px',
+  },
+  successTitle: {
+    margin: '0 0 12px 0',
+    fontSize: '18px',
+    fontWeight: '600',
+    color: '#065f46',
+  },
+  errorsList: {
+    marginTop: '12px',
+    paddingTop: '12px',
+    borderTop: '1px solid #10b981',
+  },
+  errorsTitle: {
+    fontWeight: '600',
+    color: '#dc2626',
+    marginBottom: '8px',
+  },
+  errorItem: {
+    fontSize: '14px',
+    color: '#991b1b',
+    margin: '4px 0',
+  },
+  previewSection: {
+    marginTop: '20px',
+  },
+  sectionTitle: {
+    fontSize: '16px',
+    fontWeight: '600',
+    marginBottom: '12px',
+  },
+  tableContainer: {
+    overflowX: 'auto',
+    border: '1px solid #e5e7eb',
+    borderRadius: '4px',
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '14px',
+  },
+  th: {
+    padding: '12px',
+    textAlign: 'left',
+    backgroundColor: '#f9fafb',
+    fontWeight: '600',
+    borderBottom: '1px solid #e5e7eb',
+  },
+  td: {
+    padding: '12px',
+    borderBottom: '1px solid #e5e7eb',
+  },
+  updateRow: {
+    backgroundColor: '#fef3c7',
+  },
+  badgeNew: {
+    padding: '4px 8px',
+    backgroundColor: '#10b981',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '12px',
+    fontWeight: '500',
+  },
+  badgeAdd: {
+    padding: '4px 8px',
+    backgroundColor: '#3b82f6',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '12px',
+    fontWeight: '500',
+  },
+  badgeUpdate: {
+    padding: '4px 8px',
+    backgroundColor: '#f59e0b',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '12px',
+    fontWeight: '500',
+  },
+  moreRecords: {
+    padding: '12px',
+    textAlign: 'center',
+    color: '#6b7280',
+    fontStyle: 'italic',
+  },
+  footer: {
+    padding: '20px',
+    borderTop: '1px solid #e5e7eb',
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '12px',
+  },
+  cancelButton: {
+    padding: '10px 20px',
+    border: '1px solid #d1d5db',
+    borderRadius: '4px',
+    backgroundColor: 'white',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: '500',
+  },
+  importButton: {
+    padding: '10px 20px',
+    border: 'none',
+    borderRadius: '4px',
+    backgroundColor: '#3b82f6',
+    color: 'white',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: '500',
+  },
+};
+
+export default BatchImportModal;

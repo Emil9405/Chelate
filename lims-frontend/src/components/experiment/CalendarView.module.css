@@ -1,0 +1,221 @@
+/* src/components/experiments/CalendarView.module.css */
+
+/* === Container === */
+.container {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 20px;
+}
+
+/* === Header === */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.monthTitle {
+  font-size: 20px;
+  font-weight: 600;
+  color: #1f2937;
+  text-align: center;
+}
+
+.headerRight {
+  display: flex;
+  gap: 8px;
+}
+
+.navButton {
+  padding: 8px 16px;
+  background-color: #f3f4f6;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #374151;
+  transition: background-color 0.15s;
+}
+
+.navButton:hover {
+  background-color: #e5e7eb;
+}
+
+.todayButton {
+  padding: 8px 16px;
+  background-color: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.15s;
+}
+
+.todayButton:hover {
+  background-color: #5a67d8;
+}
+
+/* === Day Names Row === */
+.dayNamesRow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  margin-bottom: 1px;
+}
+
+.dayName {
+  padding: 10px;
+  text-align: center;
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 14px;
+  background-color: #f9fafb;
+}
+
+/* === Calendar Grid === */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  background-color: #e5e7eb;
+}
+
+/* === Day Cell === */
+.dayCell {
+  min-height: 100px;
+  padding: 8px;
+  background-color: white;
+  transition: background-color 0.15s;
+}
+
+.dayCell:hover {
+  background-color: #f9fafb;
+}
+
+.emptyCell {
+  min-height: 100px;
+  background-color: #f9fafb;
+}
+
+.today {
+  background-color: #eef2ff;
+}
+
+.today:hover {
+  background-color: #e0e7ff;
+}
+
+/* === Day Number === */
+.dayNumber {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1f2937;
+  margin-bottom: 5px;
+}
+
+.todayNumber {
+  font-weight: 700;
+  color: #4f46e5;
+}
+
+/* === Experiments Container === */
+.experimentsContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* === Experiment Item === */
+.experimentItem {
+  padding: 2px 6px;
+  border-left: 3px solid;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #374151;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.experimentItem:hover {
+  transform: translateX(2px);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* === More Count === */
+.moreCount {
+  font-size: 10px;
+  color: #6b7280;
+  text-align: center;
+  padding: 2px;
+}
+
+/* === Responsive === */
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .monthTitle {
+    font-size: 18px;
+    order: -1;
+    width: 100%;
+    text-align: center;
+  }
+
+  .headerRight {
+    margin-left: auto;
+  }
+
+  .dayName {
+    padding: 8px 4px;
+    font-size: 12px;
+  }
+
+  .dayCell {
+    min-height: 80px;
+    padding: 4px;
+  }
+
+  .dayNumber {
+    font-size: 12px;
+  }
+
+  .experimentItem {
+    font-size: 10px;
+    padding: 1px 4px;
+  }
+
+  .navButton,
+  .todayButton {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .dayCell {
+    min-height: 60px;
+  }
+
+  .dayName {
+    font-size: 10px;
+  }
+
+  .experimentItem {
+    font-size: 9px;
+  }
+
+  .moreCount {
+    font-size: 9px;
+  }
+}
