@@ -22,7 +22,7 @@ use crate::AppState;
 use crate::models::{
     Equipment, CreateEquipmentRequest, UpdateEquipmentRequest,
     EquipmentPart, CreateEquipmentPartRequest, UpdateEquipmentPartRequest,
-    EquipmentMaintenance, EquipmentMaintenanceWithEquipment, 
+    EquipmentMaintenance, EquipmentMaintenanceWithEquipment,
     CreateMaintenanceRequest, UpdateMaintenanceRequest, CompleteMaintenanceRequest,
     EquipmentFile, UploadFileRequest, EquipmentDetailResponse
 };
@@ -109,7 +109,7 @@ pub async fn get_equipment(
     let mut count_builder = CountQueryBuilder::new("equipment")
         .map_err(|e| ApiError::InternalServerError(e))?;
     apply_equipment_filters(&mut count_builder, &query, &whitelist)?;
-    
+
     let (count_sql, count_params) = count_builder.build();
     let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
     for param in &count_params {
@@ -122,14 +122,14 @@ pub async fn get_equipment(
     let mut select_builder = SafeQueryBuilder::new(base_sql)
         .map_err(|e| ApiError::InternalServerError(e))?
         .with_whitelist(&whitelist);
-        
+
     apply_equipment_filters_safe(&mut select_builder, &query)?;
-    
+
     // ИСПРАВЛЕНО: Теперь используем параметры из запроса, а не хардкод
     let sort_field = query.sort_by.as_deref().unwrap_or("created_at");
     let sort_order = query.sort_order.as_deref().unwrap_or("desc");
     select_builder.order_by(sort_field, sort_order);
-    
+
     // В вашем query_builders/mod.rs limit принимает i64, приведение к u32 не нужно
     select_builder.limit(per_page);
     select_builder.offset(offset);
@@ -162,9 +162,9 @@ pub async fn get_equipment_by_id(
     let equipment: Option<Equipment> = sqlx::query_as(
         "SELECT * FROM equipment WHERE id = ?"
     )
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     match equipment {
         Some(e) => {
@@ -205,24 +205,24 @@ pub async fn create_equipment(
             created_by, updated_by, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
     )
-    .bind(&id)
-    .bind(&equipment.name)
-    .bind(&equipment.type_)
-    .bind(equipment.quantity)
-    .bind(&equipment.unit)
-    .bind(&equipment.location)
-    .bind(&equipment.description)
-    .bind(&equipment.serial_number)
-    .bind(&equipment.manufacturer)
-    .bind(&equipment.model)
-    .bind(&equipment.purchase_date)
-    .bind(&equipment.warranty_until)
-    .bind(&_user_id)
-    .bind(&_user_id)
-    .bind(&now)
-    .bind(&now)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .bind(&equipment.name)
+        .bind(&equipment.type_)
+        .bind(equipment.quantity)
+        .bind(&equipment.unit)
+        .bind(&equipment.location)
+        .bind(&equipment.description)
+        .bind(&equipment.serial_number)
+        .bind(&equipment.manufacturer)
+        .bind(&equipment.model)
+        .bind(&equipment.purchase_date)
+        .bind(&equipment.warranty_until)
+        .bind(&_user_id)
+        .bind(&_user_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&app_state.db_pool)
+        .await?;
 
     // Обновляем FTS индекс
     update_equipment_fts(&app_state.db_pool, &id).await?;
@@ -249,9 +249,9 @@ pub async fn update_equipment(
     let existing: Option<Equipment> = sqlx::query_as(
         "SELECT * FROM equipment WHERE id = ?"
     )
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     if existing.is_none() {
         return Err(ApiError::not_found("Equipment"));
@@ -336,9 +336,9 @@ pub async fn delete_equipment(
     let files: Vec<EquipmentFile> = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE equipment_id = ?"
     )
-    .bind(&equipment_id)
-    .fetch_all(&app_state.db_pool)
-    .await?;
+        .bind(&equipment_id)
+        .fetch_all(&app_state.db_pool)
+        .await?;
 
     for file in files {
         let _ = std::fs::remove_file(&file.file_path);
@@ -421,29 +421,29 @@ pub async fn add_equipment_part(
             created_by, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
     )
-    .bind(&id)
-    .bind(&equipment_id)
-    .bind(&part.name)
-    .bind(&part.part_number)
-    .bind(&part.manufacturer)
-    .bind(part.quantity.unwrap_or(1))
-    .bind(part.min_quantity.unwrap_or(0))
-    .bind(status)
-    .bind(&part.last_replaced)
-    .bind(&part.next_replacement)
-    .bind(&part.notes)
-    .bind(&user_id)
-    .bind(&now)
-    .bind(&now)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .bind(&equipment_id)
+        .bind(&part.name)
+        .bind(&part.part_number)
+        .bind(&part.manufacturer)
+        .bind(part.quantity.unwrap_or(1))
+        .bind(part.min_quantity.unwrap_or(0))
+        .bind(status)
+        .bind(&part.last_replaced)
+        .bind(&part.next_replacement)
+        .bind(&part.notes)
+        .bind(&user_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&app_state.db_pool)
+        .await?;
 
     let created: EquipmentPart = sqlx::query_as(
         "SELECT * FROM equipment_parts WHERE id = ?"
     )
-    .bind(&id)
-    .fetch_one(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .fetch_one(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Created().json(ApiResponse::success(created)))
 }
@@ -464,10 +464,10 @@ pub async fn update_equipment_part(
     let existing: Option<EquipmentPart> = sqlx::query_as(
         "SELECT * FROM equipment_parts WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&part_id)
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&part_id)
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     if existing.is_none() {
         return Err(ApiError::not_found("Equipment part"));
@@ -532,9 +532,9 @@ pub async fn update_equipment_part(
     let updated: EquipmentPart = sqlx::query_as(
         "SELECT * FROM equipment_parts WHERE id = ?"
     )
-    .bind(&part_id)
-    .fetch_one(&app_state.db_pool)
-    .await?;
+        .bind(&part_id)
+        .fetch_one(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(updated)))
 }
@@ -551,10 +551,10 @@ pub async fn delete_equipment_part(
     let result = sqlx::query(
         "DELETE FROM equipment_parts WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&part_id)
-    .bind(&equipment_id)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&part_id)
+        .bind(&equipment_id)
+        .execute(&app_state.db_pool)
+        .await?;
 
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found("Equipment part"));
@@ -582,9 +582,9 @@ pub async fn get_equipment_maintenance(
            WHERE equipment_id = ? 
            ORDER BY scheduled_date DESC"#
     )
-    .bind(&equipment_id)
-    .fetch_all(&app_state.db_pool)
-    .await?;
+        .bind(&equipment_id)
+        .fetch_all(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(maintenance)))
 }
@@ -627,29 +627,29 @@ pub async fn create_maintenance(
             created_by, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
     )
-    .bind(&id)
-    .bind(&equipment_id)
-    .bind(&maintenance.maintenance_type)
-    .bind(status)
-    .bind(&maintenance.scheduled_date)
-    .bind(&maintenance.completed_date)
-    .bind(&maintenance.performed_by)
-    .bind(&maintenance.description)
-    .bind(maintenance.cost)
-    .bind(&maintenance.parts_replaced)
-    .bind(&maintenance.notes)
-    .bind(&user_id)
-    .bind(&now)
-    .bind(&now)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .bind(&equipment_id)
+        .bind(&maintenance.maintenance_type)
+        .bind(status)
+        .bind(&maintenance.scheduled_date)
+        .bind(&maintenance.completed_date)
+        .bind(&maintenance.performed_by)
+        .bind(&maintenance.description)
+        .bind(maintenance.cost)
+        .bind(&maintenance.parts_replaced)
+        .bind(&maintenance.notes)
+        .bind(&user_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&app_state.db_pool)
+        .await?;
 
     let created: EquipmentMaintenance = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ?"
     )
-    .bind(&id)
-    .fetch_one(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .fetch_one(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Created().json(ApiResponse::success(created)))
 }
@@ -669,10 +669,10 @@ pub async fn update_maintenance(
     let existing: Option<EquipmentMaintenance> = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&maintenance_id)
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&maintenance_id)
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     if existing.is_none() {
         return Err(ApiError::not_found("Maintenance record"));
@@ -736,9 +736,9 @@ pub async fn update_maintenance(
     let updated: EquipmentMaintenance = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ?"
     )
-    .bind(&maintenance_id)
-    .fetch_one(&app_state.db_pool)
-    .await?;
+        .bind(&maintenance_id)
+        .fetch_one(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(updated)))
 }
@@ -757,10 +757,10 @@ pub async fn complete_maintenance(
     let existing: Option<EquipmentMaintenance> = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&maintenance_id)
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&maintenance_id)
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     if existing.is_none() {
         return Err(ApiError::not_found("Maintenance record"));
@@ -775,20 +775,20 @@ pub async fn complete_maintenance(
                notes = COALESCE(?, notes), updated_at = ?
            WHERE id = ?"#
     )
-    .bind(&completed_date)
-    .bind(&body.performed_by)
-    .bind(&body.notes)
-    .bind(Utc::now())
-    .bind(&maintenance_id)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&completed_date)
+        .bind(&body.performed_by)
+        .bind(&body.notes)
+        .bind(Utc::now())
+        .bind(&maintenance_id)
+        .execute(&app_state.db_pool)
+        .await?;
 
     let updated: EquipmentMaintenance = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ?"
     )
-    .bind(&maintenance_id)
-    .fetch_one(&app_state.db_pool)
-    .await?;
+        .bind(&maintenance_id)
+        .fetch_one(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(updated)))
 }
@@ -805,10 +805,10 @@ pub async fn delete_maintenance(
     let result = sqlx::query(
         "DELETE FROM equipment_maintenance WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&maintenance_id)
-    .bind(&equipment_id)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&maintenance_id)
+        .bind(&equipment_id)
+        .execute(&app_state.db_pool)
+        .await?;
 
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found("Maintenance record"));
@@ -853,10 +853,10 @@ pub async fn upload_equipment_file(
     let equipment: Equipment = sqlx::query_as(
         "SELECT * FROM equipment WHERE id = ?"
     )
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?
-    .ok_or_else(|| ApiError::not_found("Equipment"))?;
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Equipment"))?;
 
     let mut file_bytes: Option<Vec<u8>> = None;
     let mut original_filename: Option<String> = None;
@@ -868,7 +868,7 @@ pub async fn upload_equipment_file(
     // Читаем все поля формы
     while let Some(item) = payload.next().await {
         let mut field = item.map_err(|e| ApiError::bad_request(&format!("Multipart error: {}", e)))?;
-        
+
         let content_disposition = field.content_disposition();
         let field_name = content_disposition.get_name().unwrap_or("");
 
@@ -887,7 +887,7 @@ pub async fn upload_equipment_file(
                     .chain(ALLOWED_DOC_TYPES.iter())
                     .copied()
                     .collect();
-                
+
                 validate_mime_type(&mime, &all_allowed)?;
 
                 let mut bytes = Vec::new();
@@ -951,7 +951,7 @@ pub async fn upload_equipment_file(
 
     let file_type = form_file_type.unwrap_or_else(|| {
         if ALLOWED_IMAGE_TYPES.contains(&content_type.as_str()) {
-            "image".to_string()
+            "photo".to_string()  // DB constraint: 'manual', 'certificate', 'photo', 'other'
         } else {
             "other".to_string()
         }
@@ -960,30 +960,30 @@ pub async fn upload_equipment_file(
     // Создаём древовидную структуру папок
     let sanitized_equip_name = sanitize_folder_name(&equipment.name);
     let type_folder = get_type_folder(&file_type);
-    
+
     let file_path = if let Some(ref part_id) = form_part_id {
         // Получаем имя запчасти
         let part: EquipmentPart = sqlx::query_as(
             "SELECT * FROM equipment_parts WHERE id = ? AND equipment_id = ?"
         )
-        .bind(part_id)
-        .bind(&equipment_id)
-        .fetch_optional(&app_state.db_pool)
-        .await?
-        .ok_or_else(|| ApiError::not_found("Part"))?;
-        
+            .bind(part_id)
+            .bind(&equipment_id)
+            .fetch_optional(&app_state.db_pool)
+            .await?
+            .ok_or_else(|| ApiError::not_found("Part"))?;
+
         let sanitized_part_name = sanitize_folder_name(&part.name);
-        
+
         // Структура: equipment/{equip_name}/parts/{part_name}/{type}/
         let type_dir = get_equipment_files_dir()
             .join(&sanitized_equip_name)
             .join("parts")
             .join(&sanitized_part_name)
             .join(type_folder);
-        
+
         std::fs::create_dir_all(&type_dir)
             .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
-        
+
         let unique_filename = generate_unique_filename(&original_filename);
         type_dir.join(&unique_filename).to_string_lossy().to_string()
     } else {
@@ -991,10 +991,10 @@ pub async fn upload_equipment_file(
         let type_dir = get_equipment_files_dir()
             .join(&sanitized_equip_name)
             .join(type_folder);
-        
+
         std::fs::create_dir_all(&type_dir)
             .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
-        
+
         let unique_filename = generate_unique_filename(&original_filename);
         type_dir.join(&unique_filename).to_string_lossy().to_string()
     };
@@ -1018,31 +1018,31 @@ pub async fn upload_equipment_file(
 
     sqlx::query(
         r#"INSERT INTO equipment_files
-           (id, equipment_id, part_id, file_type, original_filename, stored_filename, 
+           (id, equipment_id, part_id, file_type, original_filename, stored_filename,
             file_path, file_size, mime_type, description, uploaded_by, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
     )
-    .bind(&id)
-    .bind(&equipment_id)
-    .bind(&form_part_id)
-    .bind(&file_type)
-    .bind(&original_filename)
-    .bind(&stored_filename)
-    .bind(&file_path)
-    .bind(file_bytes.len() as i64)
-    .bind(&content_type)
-    .bind(&form_description)
-    .bind(&user_id)
-    .bind(&now)
-    .execute(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .bind(&equipment_id)
+        .bind(&form_part_id)
+        .bind(&file_type)
+        .bind(&original_filename)
+        .bind(&stored_filename)
+        .bind(&file_path)
+        .bind(file_bytes.len() as i64)
+        .bind(&content_type)
+        .bind(&form_description)
+        .bind(&user_id)
+        .bind(&now)
+        .execute(&app_state.db_pool)
+        .await?;
 
     let created: EquipmentFile = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE id = ?"
     )
-    .bind(&id)
-    .fetch_one(&app_state.db_pool)
-    .await?;
+        .bind(&id)
+        .fetch_one(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Created().json(ApiResponse::success(created)))
 }
@@ -1066,7 +1066,7 @@ fn sanitize_folder_name(name: &str) -> String {
 /// Получение имени папки для типа файла
 fn get_type_folder(file_type: &str) -> &'static str {
     match file_type {
-        "image" => "images",
+        "photo" => "images",  // Changed from "image" to match DB constraint
         "manual" => "manuals",
         "certificate" => "certificates",
         "specification" => "specifications",
@@ -1085,10 +1085,10 @@ pub async fn download_equipment_file(
     let file: Option<EquipmentFile> = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&file_id)
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&file_id)
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     let file = file.ok_or_else(|| ApiError::not_found("File"))?;
 
@@ -1121,10 +1121,10 @@ pub async fn delete_equipment_file(
     let file: Option<EquipmentFile> = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE id = ? AND equipment_id = ?"
     )
-    .bind(&file_id)
-    .bind(&equipment_id)
-    .fetch_optional(&app_state.db_pool)
-    .await?;
+        .bind(&file_id)
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
 
     let file = file.ok_or_else(|| ApiError::not_found("File"))?;
 
@@ -1151,7 +1151,7 @@ pub async fn search_equipment(
     query: web::Query<SearchQuery>,
 ) -> ApiResult<HttpResponse> {
     let search_term = query.q.as_deref().unwrap_or("").trim();
-    
+
     if search_term.is_empty() {
         return Err(ApiError::bad_request("Search query cannot be empty"));
     }
@@ -1162,9 +1162,9 @@ pub async fn search_equipment(
     let fts_available: bool = sqlx::query_scalar(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='equipment_fts'"
     )
-    .fetch_one(&app_state.db_pool)
-    .await
-    .unwrap_or(false);
+        .fetch_one(&app_state.db_pool)
+        .await
+        .unwrap_or(false);
 
     let equipment: Vec<Equipment> = if fts_available {
         // FTS поиск
@@ -1188,12 +1188,12 @@ pub async fn search_equipment(
         sqlx::query_as::<_, Equipment>(
             "SELECT * FROM equipment WHERE name LIKE ? OR description LIKE ? OR location LIKE ? ORDER BY name LIMIT ?"
         )
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(limit)
-        .fetch_all(&app_state.db_pool)
-        .await?
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(limit)
+            .fetch_all(&app_state.db_pool)
+            .await?
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(equipment)))
@@ -1206,9 +1206,9 @@ async fn check_equipment_exists(pool: &SqlitePool, equipment_id: &str) -> ApiRes
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM equipment WHERE id = ?)"
     )
-    .bind(equipment_id)
-    .fetch_one(pool)
-    .await?;
+        .bind(equipment_id)
+        .fetch_one(pool)
+        .await?;
 
     if !exists {
         return Err(ApiError::not_found("Equipment"));
@@ -1224,9 +1224,9 @@ async fn get_equipment_parts_internal(
     let parts: Vec<EquipmentPart> = sqlx::query_as(
         "SELECT * FROM equipment_parts WHERE equipment_id = ? ORDER BY name"
     )
-    .bind(equipment_id)
-    .fetch_all(pool)
-    .await?;
+        .bind(equipment_id)
+        .fetch_all(pool)
+        .await?;
 
     Ok(parts)
 }
@@ -1243,10 +1243,10 @@ async fn get_recent_maintenance_internal(
            ORDER BY scheduled_date DESC 
            LIMIT ?"#
     )
-    .bind(equipment_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+        .bind(equipment_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
     Ok(maintenance)
 }
@@ -1259,9 +1259,9 @@ async fn get_equipment_files_internal(
     let files: Vec<EquipmentFile> = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE equipment_id = ? ORDER BY created_at DESC"
     )
-    .bind(equipment_id)
-    .fetch_all(pool)
-    .await?;
+        .bind(equipment_id)
+        .fetch_all(pool)
+        .await?;
 
     Ok(files)
 }
@@ -1278,10 +1278,10 @@ pub async fn get_part_files(
     let files: Vec<EquipmentFile> = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE equipment_id = ? AND part_id = ? ORDER BY created_at DESC"
     )
-    .bind(&equipment_id)
-    .bind(&part_id)
-    .fetch_all(&app_state.db_pool)
-    .await?;
+        .bind(&equipment_id)
+        .bind(&part_id)
+        .fetch_all(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(files)))
 }
@@ -1399,7 +1399,7 @@ mod tests {
         // Part statuses matching DB constraint:
         // status IN ('good', 'needs_attention', 'needs_replacement', 'replaced', 'missing')
         let valid_statuses = ["good", "needs_attention", "needs_replacement", "replaced", "missing"];
-        
+
         assert!(valid_statuses.contains(&"good"));
         assert!(valid_statuses.contains(&"needs_attention"));
         assert!(valid_statuses.contains(&"needs_replacement"));
