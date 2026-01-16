@@ -66,8 +66,8 @@ LIMS is a modern web-based laboratory management system optimized for handling l
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/lims.git
-cd lims
+git clone https://github.com/Emil9405/LIMSgen
+
 ```
 
 ### 2. Backend Setup
