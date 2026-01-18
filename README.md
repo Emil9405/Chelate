@@ -142,7 +142,7 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 
 ```bash
 # Clone repository
-git clone https://github.com/Emil9405/chelate-lims.git
+git clone https://github.com/Emil9405/LIMSgen
 cd chelate-lims
 
 # Backend setup
