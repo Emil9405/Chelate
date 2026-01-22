@@ -85,7 +85,7 @@ use reagent_handlers::{
 // Batch handlers - FIXED: get_batches_for_reagent instead of get_batches_by_reagent
 use batch_handlers::{
     get_all_batches, get_batch, get_low_stock_batches, get_expiring_batches,
-    get_batches_for_reagent
+    get_batches_for_reagent, dispense_units, get_batch_units_info
 };
 
 // Equipment handlers - FIXED: removed get_upcoming_maintenance (doesn't exist)
@@ -684,6 +684,8 @@ async fn main() -> anyhow::Result<()> {
                             .route("/{reagent_id}/batches/{batch_id}", web::delete().to(delete_batch_protected))
                             .route("/{reagent_id}/batches/{batch_id}/use", web::post().to(use_reagent))
                             .route("/{reagent_id}/batches/{batch_id}/usage", web::get().to(get_usage_history))
+                            .route("/{reagent_id}/batches/{batch_id}/dispense-units", web::post().to(dispense_units))
+                            .route("/{reagent_id}/batches/{batch_id}/units-info", web::get().to(get_batch_units_info))
                     )
 
                     // Equipment

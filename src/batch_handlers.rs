@@ -2,11 +2,12 @@
 //! Обработчики для партий реагентов
 //! ОБНОВЛЕНО: интеграция с query_builders для безопасных SQL-запросов
 
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpResponse, HttpRequest};
 use std::sync::Arc;
 use crate::AppState;
 use crate::models::*;
 use crate::error::{ApiError, ApiResult, validate_quantity, validate_unit};
+use crate::auth::get_current_user;
 use crate::handlers::{ApiResponse, PaginatedResponse};
 use crate::validator::{CustomValidate, UnitConverter};
 use crate::query_builders::{SafeQueryBuilder, FieldWhitelist};
@@ -865,4 +866,270 @@ pub async fn get_batches_for_reagent(
         per_page,
         total_pages,
     })))
+}
+
+// ==================== ШТУЧНОЕ СПИСАНИЕ (DISPENSE BY UNITS) ====================
+
+/// Запрос на штучное списание
+/// units_to_dispense - количество единиц (штук/бутылок/упаковок)
+/// При списании: quantity -= units_to_dispense * pack_size
+#[derive(Debug, serde::Deserialize, Validate)]
+pub struct DispenseUnitsRequest {
+    /// Количество единиц для списания (минимум 1)
+    #[validate(range(min = 1, message = "Units to dispense must be at least 1"))]
+    pub units_to_dispense: i64,
+    
+    /// Назначение использования
+    #[validate(length(max = 500, message = "Purpose cannot exceed 500 characters"))]
+    pub purpose: Option<String>,
+    
+    /// Дополнительные заметки
+    #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
+    pub notes: Option<String>,
+}
+
+/// Ответ на штучное списание
+#[derive(Debug, Serialize)]
+pub struct DispenseUnitsResponse {
+    /// ID записи использования
+    pub usage_id: String,
+    /// Списано единиц
+    pub units_dispensed: i64,
+    /// Списано quantity (в базовых единицах)
+    pub quantity_dispensed: f64,
+    /// Единица измерения
+    pub unit: String,
+    /// Оставшееся quantity
+    pub remaining_quantity: f64,
+    /// Оставшееся количество единиц (упаковок)
+    pub remaining_units: i64,
+    /// Новый статус батча
+    pub status: String,
+}
+
+/// Штучное списание из батча
+/// 
+/// POST /api/reagents/{reagent_id}/batches/{batch_id}/dispense-units
+/// 
+/// Логика: если батч содержит 10 единиц по 1000г (pack_size=1000, quantity=10000),
+/// при dispense_units=1 -> quantity уменьшается на 1000, остается 9000г (9 единиц)
+pub async fn dispense_units(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<(String, String)>,
+    request: web::Json<DispenseUnitsRequest>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    let (reagent_id, batch_id) = path.into_inner();
+    
+    // Валидация запроса
+    request.validate().map_err(|e| ApiError::ValidationError(e.to_string()))?;
+    
+    // Получаем текущего пользователя
+    let claims = get_current_user(&http_request)?;
+    
+    // Проверяем существование реагента
+    let _reagent: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
+        .bind(&reagent_id)
+        .fetch_one(&app_state.db_pool)
+        .await
+        .map_err(|_| ApiError::reagent_not_found(&reagent_id))?;
+
+    // Получаем батч
+    let batch: Batch = sqlx::query_as(
+        "SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL"
+    )
+        .bind(&batch_id)
+        .bind(&reagent_id)
+        .fetch_one(&app_state.db_pool)
+        .await
+        .map_err(|_| ApiError::batch_not_found(&batch_id))?;
+
+    // Проверяем статус батча
+    if batch.status != "available" {
+        return Err(ApiError::BadRequest(format!(
+            "Batch is not available for dispensing. Current status: '{}'", 
+            batch.status
+        )));
+    }
+
+    // Проверяем что pack_size установлен
+    let pack_size = batch.pack_size.ok_or_else(|| {
+        ApiError::BadRequest(
+            "Cannot dispense by units: pack_size is not set for this batch. \
+             Use regular quantity-based dispensing (/use endpoint) instead.".to_string()
+        )
+    })?;
+
+    if pack_size <= 0.0 {
+        return Err(ApiError::BadRequest(
+            "Invalid pack_size: must be greater than 0".to_string()
+        ));
+    }
+
+    // Вычисляем количество для списания
+    let quantity_to_dispense = request.units_to_dispense as f64 * pack_size;
+    
+    // Проверяем доступное количество
+    let available_quantity = batch.quantity - batch.reserved_quantity;
+    if quantity_to_dispense > available_quantity {
+        let available_units = (available_quantity / pack_size).floor() as i64;
+        return Err(ApiError::BadRequest(format!(
+            "Insufficient quantity. Requested {} units ({:.2} {}), \
+             but only {} units ({:.2} {}) available.",
+            request.units_to_dispense,
+            quantity_to_dispense,
+            batch.unit,
+            available_units,
+            available_quantity,
+            batch.unit
+        )));
+    }
+
+    // Начинаем транзакцию
+    let now = Utc::now();
+    let usage_id = Uuid::new_v4().to_string();
+    let mut tx = app_state.db_pool.begin().await?;
+
+    // Создаем запись в usage_logs
+    sqlx::query(
+        r#"INSERT INTO usage_logs (
+            id, reagent_id, batch_id, user_id, quantity_used, unit, 
+            purpose, notes, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+    )
+    .bind(&usage_id)
+    .bind(&reagent_id)
+    .bind(&batch_id)
+    .bind(&claims.sub)
+    .bind(quantity_to_dispense)
+    .bind(&batch.unit)
+    .bind(&request.purpose)
+    .bind(&request.notes)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+
+    // Вычисляем новое количество и статус
+    let new_quantity = batch.quantity - quantity_to_dispense;
+    let new_status = if new_quantity <= 0.0 { 
+        "depleted" 
+    } else if new_quantity <= pack_size {
+        "low_stock"  // Осталась последняя единица или меньше
+    } else { 
+        "available" 
+    };
+
+    // Обновляем батч
+    sqlx::query(
+        "UPDATE batches SET quantity = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?"
+    )
+    .bind(new_quantity.max(0.0))
+    .bind(new_status)
+    .bind(&now)
+    .bind(&claims.sub)
+    .bind(&batch_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Коммитим транзакцию
+    tx.commit().await?;
+
+    // Вычисляем оставшееся количество единиц
+    let remaining_units = (new_quantity / pack_size).floor() as i64;
+
+    log::info!(
+        "User {} dispensed {} units ({:.2} {}) from batch {} (reagent {}). \
+         Remaining: {} units ({:.2} {})",
+        claims.username,
+        request.units_to_dispense,
+        quantity_to_dispense,
+        batch.unit,
+        batch_id,
+        reagent_id,
+        remaining_units,
+        new_quantity,
+        batch.unit
+    );
+
+    let response = DispenseUnitsResponse {
+        usage_id,
+        units_dispensed: request.units_to_dispense,
+        quantity_dispensed: quantity_to_dispense,
+        unit: batch.unit,
+        remaining_quantity: new_quantity.max(0.0),
+        remaining_units,
+        status: new_status.to_string(),
+    };
+
+    Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
+        response,
+        format!("Successfully dispensed {} unit(s)", request.units_to_dispense),
+    )))
+}
+
+/// Получить информацию о доступных единицах в батче
+/// GET /api/reagents/{reagent_id}/batches/{batch_id}/units-info
+pub async fn get_batch_units_info(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<(String, String)>,
+) -> ApiResult<HttpResponse> {
+    let (reagent_id, batch_id) = path.into_inner();
+
+    let batch: Batch = sqlx::query_as(
+        "SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL"
+    )
+        .bind(&batch_id)
+        .bind(&reagent_id)
+        .fetch_one(&app_state.db_pool)
+        .await
+        .map_err(|_| ApiError::batch_not_found(&batch_id))?;
+
+    #[derive(Debug, Serialize)]
+    struct UnitsInfo {
+        batch_id: String,
+        /// Общее количество в базовых единицах
+        total_quantity: f64,
+        /// Зарезервированное количество
+        reserved_quantity: f64,
+        /// Доступное количество (total - reserved)
+        available_quantity: f64,
+        /// Единица измерения
+        unit: String,
+        /// Размер одной упаковки/единицы
+        pack_size: Option<f64>,
+        /// Общее количество целых единиц
+        total_units: Option<i64>,
+        /// Доступное количество целых единиц для списания
+        available_units: Option<i64>,
+        /// Можно ли использовать штучное списание
+        can_dispense_by_units: bool,
+        /// Статус батча
+        status: String,
+    }
+
+    let available_quantity = batch.quantity - batch.reserved_quantity;
+    
+    let (total_units, available_units, can_dispense) = match batch.pack_size {
+        Some(ps) if ps > 0.0 => (
+            Some((batch.quantity / ps).floor() as i64),
+            Some((available_quantity / ps).floor() as i64),
+            true,
+        ),
+        _ => (None, None, false),
+    };
+
+    let info = UnitsInfo {
+        batch_id: batch.id,
+        total_quantity: batch.quantity,
+        reserved_quantity: batch.reserved_quantity,
+        available_quantity,
+        unit: batch.unit,
+        pack_size: batch.pack_size,
+        total_units,
+        available_units,
+        can_dispense_by_units: can_dispense,
+        status: batch.status,
+    };
+
+    Ok(HttpResponse::Ok().json(ApiResponse::success(info)))
 }

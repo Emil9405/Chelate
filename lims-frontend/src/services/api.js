@@ -371,6 +371,53 @@ export const api = {
         return response.data || response;
     },
 
+    // ==================== UNIT-BASED DISPENSING ====================
+
+    /**
+     * Получить информацию о доступных единицах в батче
+     * @param {string} reagentId - ID реагента
+     * @param {string} batchId - ID батча
+     * @returns {Promise<{
+     *   batch_id: string,
+     *   total_quantity: number,
+     *   reserved_quantity: number,
+     *   available_quantity: number,
+     *   unit: string,
+     *   pack_size: number|null,
+     *   total_units: number|null,
+     *   available_units: number|null,
+     *   can_dispense_by_units: boolean,
+     *   status: string
+     * }>}
+     */
+    getBatchUnitsInfo: async (reagentId, batchId) => {
+        const response = await apiCall(`${API_V1_BASE}/reagents/${reagentId}/batches/${batchId}/units-info`);
+        return response.data || response;
+    },
+
+    /**
+     * Штучное списание из батча
+     * @param {string} reagentId - ID реагента
+     * @param {string} batchId - ID батча
+     * @param {object} data - { units_to_dispense: number, purpose?: string, notes?: string }
+     * @returns {Promise<{
+     *   usage_id: string,
+     *   units_dispensed: number,
+     *   quantity_dispensed: number,
+     *   unit: string,
+     *   remaining_quantity: number,
+     *   remaining_units: number,
+     *   status: string
+     * }>}
+     */
+    dispenseUnits: async (reagentId, batchId, data) => {
+        const response = await apiCall(`${API_V1_BASE}/reagents/${reagentId}/batches/${batchId}/dispense-units`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+        return response.data || response;
+    },
+
     importBatches: async (file) => {
         const isJson = file.name.toLowerCase().endsWith('.json');
         const endpoint = isJson
