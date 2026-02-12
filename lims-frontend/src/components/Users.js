@@ -254,11 +254,8 @@ const UserActivityModal = ({ isOpen, onClose, user }) => {
   const [filter, setFilter] = useState('all');
   const [dateRange, setDateRange] = useState({ from: '', to: '' });
 
-  useEffect(() => {
-    if (isOpen && user) loadActivities();
-  }, [isOpen, user]);
-
-  const loadActivities = async () => {
+  const loadActivities = useCallback(async () => {
+    if (!user) return;
     setLoading(true);
     try {
       const params = { limit: 100, ...(filter !== 'all' && { action_type: filter }), ...(dateRange.from && { date_from: dateRange.from }), ...(dateRange.to && { date_to: dateRange.to }) };
@@ -270,10 +267,20 @@ const UserActivityModal = ({ isOpen, onClose, user }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, filter, dateRange]);
+
+  // Auto-reload when modal opens OR when filter changes
+  useEffect(() => {
+    if (isOpen && user) loadActivities();
+  }, [isOpen, user, filter, loadActivities]);
 
   const getActionIcon = (action) => {
-    const icons = { 'create': '➕', 'update': '✏️', 'delete': '🗑️', 'login': '🔐', 'logout': '🚪', 'view': '👁️', 'export': '📤', 'import': '📥' };
+    const icons = {
+      'create': '➕', 'register': '📝', 'update': '✏️', 'edit': '✏️',
+      'delete': '🗑️', 'login': '🔐', 'logout': '🚪', 'view': '👁️',
+      'export': '📤', 'import': '📥', 'change_password': '🔑',
+      'use_reagent': '🧪', 'jwt_rotation': '🔄'
+    };
     const actionLower = action?.toLowerCase() || '';
     for (const [key, icon] of Object.entries(icons)) if (actionLower.includes(key)) return icon;
     return '📋';
@@ -282,9 +289,11 @@ const UserActivityModal = ({ isOpen, onClose, user }) => {
   const getActionColor = (action) => {
     const actionLower = action?.toLowerCase() || '';
     if (actionLower.includes('delete')) return '#e53e3e';
-    if (actionLower.includes('create')) return '#38a169';
-    if (actionLower.includes('update') || actionLower.includes('edit')) return '#3182ce';
+    if (actionLower.includes('create') || actionLower.includes('register')) return '#38a169';
+    if (actionLower.includes('update') || actionLower.includes('edit') || actionLower.includes('change')) return '#3182ce';
     if (actionLower.includes('login')) return '#805ad5';
+    if (actionLower.includes('use_reagent')) return '#d69e2e';
+    if (actionLower.includes('jwt') || actionLower.includes('rotation')) return '#ed8936';
     return '#718096';
   };
 
@@ -298,12 +307,15 @@ const UserActivityModal = ({ isOpen, onClose, user }) => {
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div>
           <label style={{ display: 'block', fontSize: '12px', color: '#718096', marginBottom: '4px' }}>Action Type</label>
-          <Select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: '150px' }}>
+          <Select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: '180px' }}>
             <option value="all">All Actions</option>
             <option value="create">Create</option>
-            <option value="update">Update</option>
+            <option value="update">Update / Edit</option>
             <option value="delete">Delete</option>
             <option value="login">Login</option>
+            <option value="register">Register</option>
+            <option value="change_password">Change Password</option>
+            <option value="use_reagent">Use Reagent</option>
           </Select>
         </div>
         <div>
