@@ -181,7 +181,8 @@ const ReagentAccordionItem = ({
                                 onAction,
                                 onReagentsRefresh,
                                 canEdit,
-                                canDelete
+                                canDelete,
+                                canDeleteBatch
                               }) => {
   const [batches, setBatches] = useState([]);
   const [loadingBatches, setLoadingBatches] = useState(false);
@@ -639,7 +640,7 @@ const ReagentAccordionItem = ({
                               
                               {/* Edit & Delete */}
                               {canEdit && <Button size="small" variant="secondary" onClick={() => { setSelectedBatch(batch); setShowEditBatch(true); }} icon={<EditIcon size={14} />}>Edit</Button>}
-                              {canDelete && <Button size="small" variant="danger" onClick={() => handleDeleteBatch(batch)} icon={<TrashIcon size={14} />}>Delete</Button>}
+                              {canDeleteBatch && <Button size="small" variant="danger" onClick={() => handleDeleteBatch(batch)} icon={<TrashIcon size={14} />}>Delete</Button>}
                             </div>
                           </div>
                       );
@@ -743,11 +744,37 @@ const Reagents = ({ user }) => {
 
   // Debug: uncomment to see user role
   // console.log('User role:', user?.role, 'typeof:', typeof user?.role);
+  // console.log('User permissions:', user?.permissions);
   
   const userRole = (user?.role || '').toString().toLowerCase();
   const isAdmin = userRole === 'admin';
   const isResearcher = userRole === 'researcher';
-  const canEditReagents = () => isAdmin || isResearcher;
+  
+  // Helper to check if user has a specific permission
+  // permissions comes as array of strings from backend: ["delete_reagent", "edit_batch", ...]
+  const hasPermission = (permissionKey) => {
+    // Admin has all permissions
+    if (isAdmin) return true;
+    
+    // Check permissions from user object
+    const perms = user?.permissions;
+    if (!perms) return false;
+    
+    // permissions is array of strings
+    if (Array.isArray(perms)) {
+      return perms.includes(permissionKey);
+    }
+    // fallback: permissions as object { key: boolean }
+    if (typeof perms === 'object') {
+      return perms[permissionKey] === true;
+    }
+    return false;
+  };
+  
+  // Permission checks
+  const canEditReagents = () => isAdmin || isResearcher || hasPermission('edit_reagent');
+  const canDeleteReagents = () => hasPermission('delete_reagent');
+  const canDeleteBatches = () => hasPermission('delete_batch');
 
   const handleAction = async (action, reagent) => {
     switch (action) {
@@ -939,7 +966,8 @@ const Reagents = ({ user }) => {
                       onAction={handleAction}
                       onReagentsRefresh={refresh}
                       canEdit={canEditReagents()}
-                      canDelete={isAdmin}
+                      canDelete={canDeleteReagents()}
+                      canDeleteBatch={canDeleteBatches()}
                   />
               ))
           )}

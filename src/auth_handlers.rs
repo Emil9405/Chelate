@@ -22,6 +22,12 @@ pub use crate::auth::get_current_user as get_claims_from_request;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateUserRequest {
+    #[validate(length(min = 3, max = 50, message = "Username must be 3-50 characters"))]
+    pub username: Option<String>,
+    #[validate(email(message = "Invalid email format"))]
+    pub email: Option<String>,
+    #[validate(length(max = 100, message = "Name cannot exceed 100 characters"))]
+    pub name: Option<String>,
     pub role: Option<String>,
     pub is_active: Option<bool>,
 }
@@ -43,6 +49,8 @@ pub struct CreateUserRequest {
     pub password: String,
     #[validate(length(min = 1, message = "Role is required"))]
     pub role: String,
+    #[validate(length(max = 100, message = "Name cannot exceed 100 characters"))]
+    pub name: Option<String>,
 }
 // ✅ ADDED MISSING LOGOUT FUNCTION
 pub async fn logout() -> ApiResult<HttpResponse> {
@@ -366,14 +374,42 @@ pub async fn register(
     )))
 }
 
-pub async fn get_profile(http_request: HttpRequest) -> ApiResult<HttpResponse> {
+pub async fn get_profile(
+    app_state: web::Data<Arc<AppState>>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
     let claims = get_current_user(&http_request)?;
 
-    // Get role permissions
-    let permissions: Vec<String> = get_role_permissions(&claims.role)
+    // Fetch full user from database
+    let user = User::find_by_id(&app_state.db_pool, &claims.sub).await?;
+    let user_info: UserInfo = user.into();
+
+    // Get role-based permissions
+    let mut permissions: std::collections::HashSet<String> = get_role_permissions(&claims.role)
         .iter()
         .map(|p| p.as_str().to_string())
         .collect();
+
+    // Load custom permissions from user_permissions table
+    let custom_perms: Option<(String,)> = sqlx::query_as(
+        "SELECT permissions FROM user_permissions WHERE user_id = ?"
+    )
+    .bind(&claims.sub)
+    .fetch_optional(&app_state.db_pool)
+    .await
+    .unwrap_or(None);
+
+    if let Some((perms_json,)) = custom_perms {
+        if let Ok(perms) = serde_json::from_str::<std::collections::HashMap<String, bool>>(&perms_json) {
+            for (key, value) in perms {
+                if value {
+                    permissions.insert(key);
+                }
+            }
+        }
+    }
+
+    let permissions_vec: Vec<String> = permissions.into_iter().collect();
 
     #[derive(Serialize)]
     struct ProfileResponse {
@@ -382,18 +418,9 @@ pub async fn get_profile(http_request: HttpRequest) -> ApiResult<HttpResponse> {
         permissions: Vec<String>,
     }
 
-    let user_info = UserInfo {
-        id: claims.sub,
-        username: claims.username,
-        email: claims.email,
-        role: claims.role.clone(),
-        is_active: true,
-        last_login: None,
-    };
-
     let response = ProfileResponse {
         user: user_info,
-        permissions,
+        permissions: permissions_vec,
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
@@ -523,14 +550,15 @@ pub async fn create_user(
     // Create user
     sqlx::query(
         r#"INSERT INTO users (
-            id, username, email, password_hash, role, is_active,
+            id, username, email, password_hash, name, role, is_active,
             created_at, updated_at, failed_login_attempts, locked_until
-        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0, NULL)"#
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0, NULL)"#
     )
     .bind(&id)
     .bind(&request.username)
     .bind(&request.email)
     .bind(&password_hash)
+    .bind(&request.name)
     .bind(role.as_str())
     .bind(&now)
     .bind(&now)
@@ -587,7 +615,8 @@ pub async fn update_user(
     // Prevent admin from demoting themselves
     if user_id == claims.sub {
         if let Some(ref role_str) = request.role {
-            if role_str != claims.role.as_str() {
+            // Case-insensitive comparison
+            if role_str.to_lowercase() != claims.role.as_str().to_lowercase() {
                 return Err(ApiError::BadRequest(
                     "Cannot change your own role".to_string()
                 ));
@@ -602,97 +631,85 @@ pub async fn update_user(
         }
     }
 
-    // Build update query based on provided fields
-    if let Some(ref role) = request.role {
-        if let Some(is_active) = request.is_active {
-            // Update both role and status
-            let result = sqlx::query(
-                "UPDATE users SET updated_at = ?, role = ?, is_active = ? WHERE id = ?"
-            )
-                .bind(now)
-                .bind(role)
-                .bind(is_active)
-                .bind(&user_id)
-                .execute(&app_state.db_pool)
-                .await?;
+    // Fetch existing user to check for conflicts
+    let existing_user = User::find_by_id(&app_state.db_pool, &user_id).await?;
 
-            if result.rows_affected() > 0 {
-                log::info!("Admin {} updated user {} (role and status)", claims.username, user_id);
-                crate::audit::audit(
-                    &app_state.db_pool, &claims.sub, "update_user", "user", &user_id,
-                    &format!("Updated user {} role and status", user_id), &http_request,
-                ).await;
-                return Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
-                    (),
-                    "User updated successfully".to_string(),
-                )));
-            }
-        } else {
-            // Update only role
-            let result = sqlx::query(
-                "UPDATE users SET updated_at = ?, role = ? WHERE id = ?"
+    // Check username uniqueness if changing
+    if let Some(ref new_username) = request.username {
+        if new_username != &existing_user.username {
+            let conflict: Option<(String,)> = sqlx::query_as(
+                "SELECT id FROM users WHERE username = ? AND id != ?"
             )
-                .bind(now)
-                .bind(role)
-                .bind(&user_id)
-                .execute(&app_state.db_pool)
-                .await?;
+            .bind(new_username)
+            .bind(&user_id)
+            .fetch_optional(&app_state.db_pool)
+            .await?;
 
-            if result.rows_affected() > 0 {
-                log::info!("Admin {} updated user {} (role only)", claims.username, user_id);
-                crate::audit::audit(
-                    &app_state.db_pool, &claims.sub, "update_user", "user", &user_id,
-                    &format!("Updated user {} role", user_id), &http_request,
-                ).await;
-                return Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
-                    (),
-                    "User updated successfully".to_string(),
+            if conflict.is_some() {
+                return Err(ApiError::BadRequest(format!(
+                    "Username '{}' already exists", new_username
                 )));
             }
         }
-    } else if let Some(is_active) = request.is_active {
-        // Update only status
-        let result = sqlx::query(
-            "UPDATE users SET updated_at = ?, is_active = ? WHERE id = ?"
-        )
-            .bind(now)
-            .bind(is_active)
+    }
+
+    // Check email uniqueness if changing
+    if let Some(ref new_email) = request.email {
+        if new_email != &existing_user.email {
+            let conflict: Option<(String,)> = sqlx::query_as(
+                "SELECT id FROM users WHERE email = ? AND id != ?"
+            )
+            .bind(new_email)
             .bind(&user_id)
-            .execute(&app_state.db_pool)
+            .fetch_optional(&app_state.db_pool)
             .await?;
 
-        if result.rows_affected() > 0 {
-            log::info!("Admin {} updated user {} (status only)", claims.username, user_id);
-            crate::audit::audit(
-                &app_state.db_pool, &claims.sub, "update_user", "user", &user_id,
-                &format!("Updated user {} status", user_id), &http_request,
-            ).await;
-            return Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
-                (),
-                "User updated successfully".to_string(),
-            )));
+            if conflict.is_some() {
+                return Err(ApiError::BadRequest(format!(
+                    "Email '{}' already exists", new_email
+                )));
+            }
         }
-    } else {
-        // Update only timestamp
-        let result = sqlx::query(
-            "UPDATE users SET updated_at = ? WHERE id = ?"
-        )
-            .bind(now)
-            .bind(&user_id)
-            .execute(&app_state.db_pool)
-            .await?;
+    }
 
-        if result.rows_affected() > 0 {
-            log::info!("Admin {} updated user {} (timestamp only)", claims.username, user_id);
-            crate::audit::audit(
-                &app_state.db_pool, &claims.sub, "update_user", "user", &user_id,
-                &format!("Updated user {}", user_id), &http_request,
-            ).await;
-            return Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
-                (),
-                "User updated successfully".to_string(),
-            )));
-        }
+    // Build dynamic update query
+    let mut updates = vec!["updated_at = ?".to_string()];
+    let mut has_changes = false;
+
+    if request.username.is_some() { updates.push("username = ?".to_string()); has_changes = true; }
+    if request.email.is_some() { updates.push("email = ?".to_string()); has_changes = true; }
+    if request.name.is_some() { updates.push("name = ?".to_string()); has_changes = true; }
+    if request.role.is_some() { updates.push("role = ?".to_string()); has_changes = true; }
+    if request.is_active.is_some() { updates.push("is_active = ?".to_string()); has_changes = true; }
+
+    let sql = format!("UPDATE users SET {} WHERE id = ?", updates.join(", "));
+
+    // Build query with dynamic bindings
+    let mut query = sqlx::query(&sql).bind(now);
+
+    if let Some(ref username) = request.username { query = query.bind(username); }
+    if let Some(ref email) = request.email { query = query.bind(email); }
+    if let Some(ref name) = request.name { query = query.bind(name); }
+    if let Some(ref role) = request.role { 
+        // Normalize role to lowercase for storage
+        query = query.bind(role.to_lowercase()); 
+    }
+    if let Some(is_active) = request.is_active { query = query.bind(is_active); }
+
+    query = query.bind(&user_id);
+
+    let result = query.execute(&app_state.db_pool).await?;
+
+    if result.rows_affected() > 0 {
+        log::info!("Admin {} updated user {}", claims.username, user_id);
+        crate::audit::audit(
+            &app_state.db_pool, &claims.sub, "update_user", "user", &user_id,
+            &format!("Updated user {}", user_id), &http_request,
+        ).await;
+        return Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
+            (),
+            "User updated successfully".to_string(),
+        )));
     }
 
     Err(ApiError::NotFound("User not found".to_string()))
@@ -874,6 +891,7 @@ pub async fn check_batch_permission_async(
     };
 
     if role_allowed {
+        log::debug!("User {} allowed {:?} via role {:?}", claims.username, action, claims.role);
         return Ok(());
     }
 
@@ -884,6 +902,8 @@ pub async fn check_batch_permission_async(
         BatchAction::Delete => "delete_batch",
         BatchAction::View => return Ok(()),
     };
+
+    log::info!("Checking custom permissions for user {} ({}), action: {}", claims.username, claims.sub, permission_key);
 
     let result: Option<(String,)> = sqlx::query_as(
         "SELECT permissions FROM user_permissions WHERE user_id = ?"
@@ -897,12 +917,24 @@ pub async fn check_batch_permission_async(
     })?;
 
     if let Some((perms_json,)) = result {
-        if let Ok(perms) = serde_json::from_str::<std::collections::HashMap<String, bool>>(&perms_json) {
-            if perms.get(permission_key).copied().unwrap_or(false) {
-                log::info!("User {} granted {} via custom permissions", claims.username, permission_key);
-                return Ok(());
+        log::info!("Found custom permissions for user {}: {}", claims.username, perms_json);
+        match serde_json::from_str::<std::collections::HashMap<String, bool>>(&perms_json) {
+            Ok(perms) => {
+                log::info!("Parsed permissions: {:?}", perms);
+                if perms.get(permission_key).copied().unwrap_or(false) {
+                    log::info!("User {} granted {} via custom permissions", claims.username, permission_key);
+                    return Ok(());
+                } else {
+                    log::info!("Permission {} not granted for user {} (value: {:?})", 
+                        permission_key, claims.username, perms.get(permission_key));
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to parse permissions JSON for user {}: {:?}", claims.username, e);
             }
         }
+    } else {
+        log::info!("No custom permissions found for user {} ({})", claims.username, claims.sub);
     }
 
     Err(ApiError::Forbidden("Insufficient permissions".to_string()))
@@ -924,6 +956,7 @@ pub async fn check_reagent_permission_async(
     };
 
     if role_allowed {
+        log::debug!("User {} allowed {:?} via role {:?}", claims.username, action, claims.role);
         return Ok(());
     }
 
@@ -934,20 +967,38 @@ pub async fn check_reagent_permission_async(
         ReagentAction::View => return Ok(()),
     };
 
+    log::info!("Checking custom permissions for user {} ({}), action: {}", claims.username, claims.sub, permission_key);
+
     let result: Option<(String,)> = sqlx::query_as(
         "SELECT permissions FROM user_permissions WHERE user_id = ?"
     )
     .bind(&claims.sub)
     .fetch_optional(pool)
     .await
-    .map_err(|_| ApiError::InternalServerError("Database error".to_string()))?;
+    .map_err(|e| {
+        log::error!("DB error checking permissions: {:?}", e);
+        ApiError::InternalServerError("Database error".to_string())
+    })?;
 
     if let Some((perms_json,)) = result {
-        if let Ok(perms) = serde_json::from_str::<std::collections::HashMap<String, bool>>(&perms_json) {
-            if perms.get(permission_key).copied().unwrap_or(false) {
-                return Ok(());
+        log::info!("Found custom permissions for user {}: {}", claims.username, perms_json);
+        match serde_json::from_str::<std::collections::HashMap<String, bool>>(&perms_json) {
+            Ok(perms) => {
+                log::info!("Parsed permissions: {:?}", perms);
+                if perms.get(permission_key).copied().unwrap_or(false) {
+                    log::info!("User {} granted {} via custom permissions", claims.username, permission_key);
+                    return Ok(());
+                } else {
+                    log::info!("Permission {} not granted for user {} (value: {:?})", 
+                        permission_key, claims.username, perms.get(permission_key));
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to parse permissions JSON for user {}: {:?}", claims.username, e);
             }
         }
+    } else {
+        log::info!("No custom permissions found for user {} ({})", claims.username, claims.sub);
     }
 
     Err(ApiError::Forbidden("Insufficient permissions".to_string()))
@@ -1086,6 +1137,7 @@ pub async fn check_room_permission(
 
 // ======== ACTION ENUMS ========
 
+#[derive(Debug)]
 pub enum ReagentAction {
     Create,
     Edit,
@@ -1093,6 +1145,7 @@ pub enum ReagentAction {
     View,
 }
 
+#[derive(Debug)]
 pub enum BatchAction {
     Create,
     Edit,
@@ -1100,6 +1153,7 @@ pub enum BatchAction {
     View,
 }
 
+#[derive(Debug)]
 pub enum EquipmentAction {
     Create,
     Edit,
@@ -1178,10 +1232,13 @@ pub async fn update_user_permissions(
     check_permission(&claims, |role| role.can_manage_users())?;
 
     // Verify user exists
-    let _ = User::find_by_id(&app_state.db_pool, &user_id).await?;
+    let target_user = User::find_by_id(&app_state.db_pool, &user_id).await?;
 
     let permissions_json = serde_json::to_string(&request.permissions)
         .map_err(|_| ApiError::InternalServerError("Failed to serialize permissions".to_string()))?;
+
+    log::info!("Admin {} saving permissions for user {} ({}): {}", 
+        claims.username, target_user.username, user_id, permissions_json);
 
     // Upsert permissions
     sqlx::query(

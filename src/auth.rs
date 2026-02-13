@@ -19,6 +19,7 @@ pub struct User {
     pub username: String,
     pub email: String,
     pub password_hash: String,
+    pub name: Option<String>,
     pub role: String,
     pub is_active: bool,
     pub last_login: Option<DateTime<Utc>>,
@@ -262,9 +263,11 @@ pub struct UserInfo {
     pub id: String,
     pub username: String,
     pub email: String,
+    pub name: Option<String>,
     pub role: UserRole,
     pub is_active: bool,
     pub last_login: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 impl From<User> for UserInfo {
@@ -273,9 +276,11 @@ impl From<User> for UserInfo {
             id: user.id,
             username: user.username,
             email: user.email,
+            name: user.name,
             role: UserRole::from_str(&user.role).unwrap_or(UserRole::Viewer),
             is_active: user.is_active,
             last_login: user.last_login,
+            created_at: user.created_at,
         }
     }
 }
@@ -421,6 +426,7 @@ impl User {
             username: request.username,
             email: request.email,
             password_hash,
+            name: None,
             role: role.as_str().to_string(),
             is_active: true,
             last_login: None,

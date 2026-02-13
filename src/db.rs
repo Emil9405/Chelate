@@ -61,6 +61,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             username TEXT NOT NULL UNIQUE CHECK(length(username) >= 3 AND length(username) <= 50),
             email TEXT NOT NULL UNIQUE CHECK(length(email) >= 5 AND length(email) <= 255),
             password_hash TEXT NOT NULL,
+            name TEXT CHECK(name IS NULL OR length(name) <= 100),
             role TEXT NOT NULL DEFAULT 'viewer' CHECK(
                 role IN ('admin', 'researcher', 'viewer')
             ),
@@ -660,6 +661,7 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         // ==================== USERS ====================
         "ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN locked_until DATETIME",
+        "ALTER TABLE users ADD COLUMN name TEXT CHECK(name IS NULL OR length(name) <= 100)",
 
         // ==================== BATCHES ====================
         "ALTER TABLE batches ADD COLUMN lot_number TEXT CHECK(lot_number IS NULL OR length(lot_number) <= 100)",

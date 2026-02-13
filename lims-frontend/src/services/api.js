@@ -161,7 +161,21 @@ export const api = {
         if (data.token) {
             localStorage.setItem('token', data.token);
             api.token = data.token;
-            if (data.user) localStorage.setItem('user', JSON.stringify(data.user));
+            
+            // После получения токена загружаем полный профиль с permissions
+            try {
+                const profileResponse = await apiCall(`${API_V1_BASE}/auth/profile`);
+                const profileData = profileResponse.data || profileResponse;
+                localStorage.setItem('user', JSON.stringify(profileData));
+                return profileData;
+            } catch (e) {
+                console.warn('Failed to load profile after login:', e);
+                // Fallback: сохраняем базовые данные пользователя
+                if (data.user) {
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                }
+                return data.user || data;
+            }
         }
 
         return data.user || data;
@@ -173,7 +187,21 @@ export const api = {
 
     getProfile: async () => {
         const response = await apiCall(`${API_V1_BASE}/auth/profile`);
-        return { success: true, data: response.data || response };
+        const data = response.data || response;
+        
+        // Сохраняем user с permissions в localStorage
+        if (data) {
+            const existingUser = JSON.parse(localStorage.getItem('user') || '{}');
+            const updatedUser = {
+                ...existingUser,
+                ...data,
+                // permissions приходит отдельным полем в ProfileResponse
+                permissions: data.permissions || existingUser.permissions || []
+            };
+            localStorage.setItem('user', JSON.stringify(updatedUser));
+        }
+        
+        return { success: true, data };
     },
 
     changePassword: async (passwordData) => {
@@ -238,10 +266,19 @@ export const api = {
     },
 
     updateUserPermissions: async (userId, permissions) => {
-        return await apiCall(`${API_V1_BASE}/auth/users/${userId}/permissions`, {
+        const result = await apiCall(`${API_V1_BASE}/auth/users/${userId}/permissions`, {
             method: 'PUT',
             body: JSON.stringify({ permissions }),
         });
+        
+        // Если обновляем permissions текущего пользователя - обновляем localStorage
+        const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+        if (currentUser.id === userId) {
+            currentUser.permissions = permissions;
+            localStorage.setItem('user', JSON.stringify(currentUser));
+        }
+        
+        return result;
     },
 
     // ==================== USER ACTIVITY ====================
