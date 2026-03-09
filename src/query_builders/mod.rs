@@ -13,7 +13,6 @@ pub use fts::{FtsQueryBuilder, escape_fts_query};
 
 use serde::{Serialize, Deserialize};
 use strum::{EnumString, Display, AsRefStr};
-use std::str::FromStr;
 
 
 

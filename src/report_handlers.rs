@@ -7,7 +7,7 @@ use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 
 use crate::AppState;
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 use crate::handlers::ApiResponse;
 use crate::query_builders::{
     FieldWhitelist, ReportConfig, ReportFilter, ReportColumn,

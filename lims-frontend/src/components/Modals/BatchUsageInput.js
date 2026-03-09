@@ -4,7 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../services/api';
 import Button from '../Button';
-import { FlaskIcon, HistoryIcon } from '../Icons';
+import { FlaskIcon } from '../Icons';
 
 // Stepper component for unit-based dispensing
 const Stepper = ({ value, onChange, min = 1, max = 999, disabled = false }) => {
@@ -103,6 +103,20 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [selectedPlacementId, setSelectedPlacementId] = useState(null);
+
+  const placements = batch?.placements || [];
+  const hasMultiplePlacements = placements.length > 1;
+  const hasSinglePlacement = placements.length === 1;
+
+  // Auto-select single placement
+  useEffect(() => {
+    if (hasSinglePlacement) {
+      setSelectedPlacementId(placements[0].id);
+    } else if (!hasMultiplePlacements) {
+      setSelectedPlacementId(null);
+    }
+  }, [placements.length, hasSinglePlacement, hasMultiplePlacements]);
 
   const canUseUnits = unitsInfo?.can_dispense_by_units && unitsInfo?.pack_size > 0;
   const availableQuantity = unitsInfo?.available_quantity ?? batch?.quantity ?? 0;
@@ -140,7 +154,10 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
     setSuccess('');
 
     try {
-      await api.useReagent(reagentId, batch.id, { quantity_used: qty });
+      await api.useReagent(reagentId, batch.id, { 
+        quantity_used: qty,
+        ...(selectedPlacementId ? { placement_id: selectedPlacementId } : {})
+      });
       setSuccess(`−${qty} ${batch.unit}`);
       setQuantity('');
       if (onUsageComplete) onUsageComplete();
@@ -167,7 +184,8 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
 
     try {
       const result = await api.dispenseUnits(reagentId, batch.id, { 
-        units_to_dispense: units 
+        units_to_dispense: units,
+        ...(selectedPlacementId ? { placement_id: selectedPlacementId } : {})
       });
       setSuccess(`−${result.units_dispensed} pcs`);
       setUnits(1);
@@ -181,10 +199,52 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
     }
   };
 
+  // Room selector for multi-placement batches
+  const RoomSelector = () => {
+    if (placements.length === 0) return null;
+
+    if (hasSinglePlacement) {
+      const p = placements[0];
+      return (
+        <span style={{
+          fontSize: '10px', color: '#4a5568', background: '#edf2f7',
+          padding: '2px 6px', borderRadius: '4px', whiteSpace: 'nowrap',
+          display: 'inline-flex', alignItems: 'center', gap: '3px',
+        }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: p.room_color || '#a0aec0' }} />
+          {p.room_name}{p.shelf ? ` / ${p.shelf}` : ''}
+        </span>
+      );
+    }
+
+    return (
+      <select
+        value={selectedPlacementId || ''}
+        onChange={(e) => setSelectedPlacementId(e.target.value || null)}
+        style={{
+          height: '28px', fontSize: '11px', padding: '0 4px',
+          border: !selectedPlacementId ? '1px solid #e53e3e' : '1px solid #e2e8f0',
+          borderRadius: '5px', background: 'white', maxWidth: '100px',
+          color: '#2d3748',
+        }}
+      >
+        <option value="">Room…</option>
+        {placements.map(p => (
+          <option key={p.id} value={p.id}>
+            {p.room_name}{p.shelf ? ` / ${p.shelf}` : ''} ({p.quantity})
+          </option>
+        ))}
+      </select>
+    );
+  };
+
   // Если штучный режим доступен
   if (canUseUnits) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        {/* Room selector */}
+        <RoomSelector />
+
         {/* Stepper */}
         <Stepper 
           value={units} 
@@ -209,7 +269,7 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
           variant="secondary" 
           onClick={handleUnitsUse}
           loading={loading}
-          disabled={availableUnits === 0}
+          disabled={availableUnits === 0 || (hasMultiplePlacements && !selectedPlacementId)}
           icon={<FlaskIcon size={12} />}
           title={`Dispense ${units} × ${unitsInfo.pack_size} = ${units * unitsInfo.pack_size} ${batch.unit}`}
         >
@@ -242,7 +302,10 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
 
   // Обычный режим - ввод количества
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+      {/* Room selector */}
+      <RoomSelector />
+
       {/* Quantity input */}
       <input
         type="number"
@@ -288,7 +351,7 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
         variant="secondary" 
         onClick={handleQuantityUse}
         loading={loading}
-        disabled={availableQuantity === 0 || !quantity}
+        disabled={availableQuantity === 0 || !quantity || (hasMultiplePlacements && !selectedPlacementId)}
         icon={<FlaskIcon size={12} />}
       >
         Use

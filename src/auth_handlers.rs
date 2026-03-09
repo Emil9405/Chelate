@@ -682,13 +682,11 @@ pub async fn update_user(
 
     // Build dynamic update query
     let mut updates = vec!["updated_at = ?".to_string()];
-    let mut has_changes = false;
-
-    if request.username.is_some() { updates.push("username = ?".to_string()); has_changes = true; }
-    if request.email.is_some() { updates.push("email = ?".to_string()); has_changes = true; }
-    if request.name.is_some() { updates.push("name = ?".to_string()); has_changes = true; }
-    if request.role.is_some() { updates.push("role = ?".to_string()); has_changes = true; }
-    if request.is_active.is_some() { updates.push("is_active = ?".to_string()); has_changes = true; }
+    if request.username.is_some() { updates.push("username = ?".to_string()); }
+    if request.email.is_some() { updates.push("email = ?".to_string()); }
+    if request.name.is_some() { updates.push("name = ?".to_string()); }
+    if request.role.is_some() { updates.push("role = ?".to_string()); }
+    if request.is_active.is_some() { updates.push("is_active = ?".to_string()); }
 
     let sql = format!("UPDATE users SET {} WHERE id = ?", updates.join(", "));
 

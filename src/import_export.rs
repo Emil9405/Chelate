@@ -23,7 +23,7 @@ use uuid::Uuid;
 use std::time::Instant;
 use std::collections::HashMap;
 use sqlx::Row;
-use chrono::{Utc, NaiveDate, NaiveDateTime}; // Added Chrono types
+use chrono::{Utc, NaiveDate, NaiveDateTime, DateTime}; // Added Chrono types
 use crate::{AppState, error::{ApiResult, ApiError}, handlers::ApiResponse};
 use crate::query_builders::{SafeQueryBuilder, FieldWhitelist};
 use crate::auth::get_current_user;
@@ -55,8 +55,8 @@ where
             let seconds = (f - 25569.0) * 86400.0;
             // Handle negative or invalid timestamps gracefully
             if seconds >= 0.0 {
-                if let Some(dt) = NaiveDateTime::from_timestamp_opt(seconds as i64, 0) {
-                    return Ok(Some(dt.format("%Y-%m-%dT%H:%M:%S").to_string()));
+                if let Some(dt) = DateTime::from_timestamp(seconds as i64, 0) {
+                    return Ok(Some(dt.naive_utc().format("%Y-%m-%dT%H:%M:%S").to_string()));
                 }
             }
             Ok(None)
@@ -65,8 +65,8 @@ where
             // Same logic if Excel passes it as integer
             let seconds = (i as f64 - 25569.0) * 86400.0;
             if seconds >= 0.0 {
-                if let Some(dt) = NaiveDateTime::from_timestamp_opt(seconds as i64, 0) {
-                    return Ok(Some(dt.format("%Y-%m-%dT%H:%M:%S").to_string()));
+                if let Some(dt) = DateTime::from_timestamp(seconds as i64, 0) {
+                    return Ok(Some(dt.naive_utc().format("%Y-%m-%dT%H:%M:%S").to_string()));
                 }
             }
             Ok(None)

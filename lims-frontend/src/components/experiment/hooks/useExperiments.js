@@ -29,7 +29,6 @@ export const useExperiments = (user) => {
     currentDate: new Date(),
     showForm: false,
     showDetails: false,
-    showRoomManager: false,
   });
 
   // === Выбранные элементы ===
@@ -193,15 +192,6 @@ export const useExperiments = (user) => {
     loadData();
   }, [closeForm, loadData]);
 
-  // === Управление комнатами ===
-  const openRoomManager = useCallback(() => {
-    setUi(prev => ({ ...prev, showRoomManager: true }));
-  }, []);
-
-  const closeRoomManager = useCallback(() => {
-    setUi(prev => ({ ...prev, showRoomManager: false }));
-  }, []);
-
   // === Утилиты ===
   const getRoomColor = useCallback((location) => {
     const room = rooms.find(r => r.name === location || r.id === location);
@@ -285,10 +275,6 @@ export const useExperiments = (user) => {
     openEditForm,
     closeForm,
     onFormSuccess,
-
-    // Комнаты
-    openRoomManager,
-    closeRoomManager,
 
     // Утилиты
     getRoomColor,

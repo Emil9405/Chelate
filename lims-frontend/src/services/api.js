@@ -1,5 +1,5 @@
 // src/services/api.js
-// v7.2: Fixed Auth + Optimized Pagination Support
+// v7.2: Fixed Auth + Optimized Pagination Support + Storage Hierarchy
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const API_V1_BASE = `${API_BASE_URL}/api/v1`;
@@ -400,39 +400,91 @@ export const api = {
         });
     },
 
-// ==================== BATCH PLACEMENTS ====================
 
-    getPlacements: async (batchId) => {
-        const response = await apiCall(`${API_V1_BASE}/batches/${batchId}/placements`);
-        return response;
+// ==================== BATCH CONTAINERS ====================
+
+    getContainers: async (batchId) => {
+        const response = await apiCall(`${API_V1_BASE}/batches/${batchId}/containers`);
+        return response.data || response;
     },
 
-    createPlacement: async (batchId, data) => {
-        return await apiCall(`${API_V1_BASE}/batches/${batchId}/placements`, {
+    createContainer: async (batchId, data) => {
+        return await apiCall(`${API_V1_BASE}/batches/${batchId}/containers`, {
             method: 'POST',
             body: JSON.stringify(data),
         });
     },
 
-    updatePlacement: async (batchId, placementId, data) => {
-        return await apiCall(`${API_V1_BASE}/batches/${batchId}/placements/${placementId}`, {
-            method: 'PUT',
+    splitBatchIntoContainers: async (batchId, packSize) => {
+        return await apiCall(`${API_V1_BASE}/batches/${batchId}/containers/split`, {
+            method: 'POST',
+            body: JSON.stringify({ pack_size: packSize }),
+        });
+    },
+
+    placeContainer: async (containerId, data) => {
+        return await apiCall(`${API_V1_BASE}/containers/${containerId}/place`, {
+            method: 'POST',
             body: JSON.stringify(data),
         });
     },
 
-    deletePlacement: async (batchId, placementId) => {
-        return await apiCall(`${API_V1_BASE}/batches/${batchId}/placements/${placementId}`, {
+    moveContainer: async (containerId, newPositionId) => {
+        return await apiCall(`${API_V1_BASE}/containers/${containerId}/move`, {
+            method: 'PUT',
+            body: JSON.stringify({ new_position_id: newPositionId }),
+        });
+    },
+
+    unplaceContainer: async (containerId) => {
+        return await apiCall(`${API_V1_BASE}/containers/${containerId}/unplace`, {
             method: 'DELETE',
         });
     },
 
-    movePlacement: async (batchId, data) => {
-        return await apiCall(`${API_V1_BASE}/batches/${batchId}/placements/move`, {
+    useFromContainer: async (containerId, data) => {
+        return await apiCall(`${API_V1_BASE}/containers/${containerId}/use`, {
             method: 'POST',
             body: JSON.stringify(data),
         });
     },
+
+    disposeContainer: async (containerId) => {
+        return await apiCall(`${API_V1_BASE}/containers/${containerId}`, {
+            method: 'DELETE',
+        });
+    },
+
+    placeContainersBulk: async (containerIds, positionId) => {
+    return await apiCall(`${API_V1_BASE}/containers/place-bulk`, {
+        method: 'POST',
+        body: JSON.stringify({ container_ids: containerIds, position_id: positionId }),
+    });
+    },
+    moveContainersBulk: async (containerIds, newPositionId) => {
+    return await apiCall(`${API_V1_BASE}/containers/move-bulk`, {
+        method: 'POST',
+        body: JSON.stringify({ container_ids: containerIds, new_position_id: newPositionId }),
+    });
+    },
+
+    // ==================== BATCH PLACEMENTS (backward compat — read-only) ====================
+
+    getPlacements: async (batchId) => {
+        const response = await apiCall(`${API_V1_BASE}/batches/${batchId}/placements`);
+        return response.data || response;
+    },
+
+    getRoomInventory: async (roomId) => {
+        const response = await apiCall(`${API_V1_BASE}/rooms/${roomId}/inventory`);
+        return response.data || response;
+    },
+
+    getRoomPlacements: async (roomId) => {
+        const response = await apiCall(`${API_V1_BASE}/rooms/${roomId}/placements`);
+        return response.data || response;
+    },
+
 
     getRoomInventory: async (roomId) => {
         const response = await apiCall(`${API_V1_BASE}/rooms/${roomId}/inventory`);
@@ -454,43 +506,11 @@ export const api = {
 
     // ==================== UNIT-BASED DISPENSING ====================
 
-    /**
-     * Получить информацию о доступных единицах в батче
-     * @param {string} reagentId - ID реагента
-     * @param {string} batchId - ID батча
-     * @returns {Promise<{
-     *   batch_id: string,
-     *   total_quantity: number,
-     *   reserved_quantity: number,
-     *   available_quantity: number,
-     *   unit: string,
-     *   pack_size: number|null,
-     *   total_units: number|null,
-     *   available_units: number|null,
-     *   can_dispense_by_units: boolean,
-     *   status: string
-     * }>}
-     */
     getBatchUnitsInfo: async (reagentId, batchId) => {
         const response = await apiCall(`${API_V1_BASE}/reagents/${reagentId}/batches/${batchId}/units-info`);
         return response.data || response;
     },
 
-    /**
-     * Штучное списание из батча
-     * @param {string} reagentId - ID реагента
-     * @param {string} batchId - ID батча
-     * @param {object} data - { units_to_dispense: number, purpose?: string, notes?: string }
-     * @returns {Promise<{
-     *   usage_id: string,
-     *   units_dispensed: number,
-     *   quantity_dispensed: number,
-     *   unit: string,
-     *   remaining_quantity: number,
-     *   remaining_units: number,
-     *   status: string
-     * }>}
-     */
     dispenseUnits: async (reagentId, batchId, data) => {
         const response = await apiCall(`${API_V1_BASE}/reagents/${reagentId}/batches/${batchId}/dispense-units`, {
             method: 'POST',
@@ -844,13 +864,12 @@ export const api = {
         const response = await apiCall(`${API_V1_BASE}/dashboard/stats`);
         return response.data || response;
     },
-    // Recent activity from audit logs
+    
     getRecentActivity: async () => {
         const response = await apiCall(`${API_V1_BASE}/dashboard/recent-activity`);
         return response.data || response;
     },
 
-    // Dashboard chart trends
     getDashboardTrends: async () => {
         const response = await apiCall(`${API_V1_BASE}/dashboard/trends`);
         return response.data || response;
@@ -961,6 +980,103 @@ export const api = {
     createRoom: async (data) => apiCall(`${API_V1_BASE}/rooms`, { method: 'POST', body: JSON.stringify(data) }),
     updateRoom: async (id, data) => apiCall(`${API_V1_BASE}/rooms/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteRoom: async (id) => apiCall(`${API_V1_BASE}/rooms/${id}`, { method: 'DELETE' }),
+
+    // ==================== STORAGE ZONES ====================
+
+    getStorageZones: async (roomId) => {
+        const params = roomId ? `?room_id=${roomId}` : '';
+        const response = await apiCall(`${API_V1_BASE}/storage/zones${params}`);
+        return response.data || response;
+    },
+
+    getStorageZone: async (id) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/zones/${id}`);
+        return response.data || response;
+    },
+
+    createStorageZone: async (data) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/zones`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+        return response.data || response;
+    },
+
+    updateStorageZone: async (id, data) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/zones/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+        return response.data || response;
+    },
+
+    deleteStorageZone: async (id) => {
+        return apiCall(`${API_V1_BASE}/storage/zones/${id}`, { method: 'DELETE' });
+    },
+
+    // ==================== STORAGE POSITIONS ====================
+
+    getStoragePositions: async (zoneId) => {
+        const params = zoneId ? `?zone_id=${zoneId}` : '';
+        const response = await apiCall(`${API_V1_BASE}/storage/positions${params}`);
+        return response.data || response;
+    },
+
+    createStoragePosition: async (data) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/positions`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+        return response.data || response;
+    },
+
+    updateStoragePosition: async (id, data) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/positions/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+        return response.data || response;
+    },
+
+    deleteStoragePosition: async (id) => {
+        return apiCall(`${API_V1_BASE}/storage/positions/${id}`, { method: 'DELETE' });
+    },
+
+    getPositionItems: async (id) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/positions/${id}/items`);
+        return response.data || response;
+    },
+
+    getZoneItems: async (id) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/zones/${id}/items`);
+        return response.data || response;
+    },
+
+    // ==================== HIERARCHY & SEARCH ====================
+
+    getStorageHierarchy: async () => {
+        const response = await apiCall(`${API_V1_BASE}/storage/hierarchy`);
+        return response.data || response;
+    },
+
+    getLocationPath: async (positionId) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/location-path/${positionId}`);
+        return response.data || response;
+    },
+
+    searchStorageLocations: async (query) => {
+        const response = await apiCall(`${API_V1_BASE}/storage/search?q=${encodeURIComponent(query)}`);
+        return response.data || response;
+    },
+
+    // ==================== BATCH MOVE ====================
+
+    moveBatch: async (batchId, storagePositionId) => {
+        return apiCall(`${API_V1_BASE}/batches/${batchId}/move`, {
+            method: 'PUT',
+            body: JSON.stringify({ storage_position_id: storagePositionId }),
+        });
+    },
 
     // ==================== UTILS ====================
 

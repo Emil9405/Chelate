@@ -169,6 +169,8 @@ pub struct UseReagentRequest {
     pub purpose: Option<String>,
     #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
     pub notes: Option<String>,
+    /// Optional: placement_id to deduct from specific room location
+    pub placement_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -248,6 +250,36 @@ pub async fn use_reagent(
         .bind(&batch_id)
         .execute(&mut *tx)
         .await?;
+
+    // Deduct from specific placement if placement_id is provided
+    if let Some(ref placement_id) = request.placement_id {
+        let placement: Option<(String, f64)> = sqlx::query_as(
+            "SELECT id, quantity FROM batch_placements WHERE id = ? AND batch_id = ?"
+        )
+        .bind(placement_id)
+        .bind(&batch_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some((_pid, p_qty)) = placement {
+            let new_p_qty = p_qty - request.quantity_used;
+            if new_p_qty <= 0.001 {
+                // Remove empty placement
+                sqlx::query("DELETE FROM batch_placements WHERE id = ?")
+                    .bind(placement_id)
+                    .execute(&mut *tx)
+                    .await?;
+            } else {
+                sqlx::query("UPDATE batch_placements SET quantity = ?, updated_at = ? WHERE id = ?")
+                    .bind(new_p_qty.max(0.0))
+                    .bind(&now)
+                    .bind(placement_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        // If placement not found, still proceed (backward compat — batch total was already decremented)
+    }
 
     tx.commit().await?;
 

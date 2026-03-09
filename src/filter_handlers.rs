@@ -10,7 +10,7 @@ use crate::query_builders::{
 };
 use crate::handlers::PaginatedResponse;
 use crate::error::{ApiError, ApiResult};
-use crate::models::{Experiment, Batch};
+use crate::models::Experiment;
 
 // ==================== КОНСТАНТЫ БЕЗОПАСНОСТИ ====================
 

@@ -1,7 +1,5 @@
 // src/models/mod.rs
 
-// src/models/mod.rs
-
 // 1. Объявляем модули
 pub mod batch;
 pub mod batch_placement;
@@ -9,15 +7,19 @@ pub mod equipment;
 pub mod experiment;
 pub mod reagent;
 pub mod room;
+pub mod storage_zone;
 pub mod user;
+pub mod batch_container;
 
-// 2. Ре-экспортируем содержимое (Re-export), чтобы структуры были доступны как crate::models::StructName
+// 2. Ре-экспортируем содержимое
 pub use batch::*;
+pub use batch_container::*;
 pub use batch_placement::*;
 pub use equipment::*;
 pub use experiment::*;
 pub use reagent::*;
 pub use room::*;
+pub use storage_zone::*;
 pub use user::*;
 
 use serde::{Deserialize, Serialize};

@@ -4,7 +4,6 @@
 import React from 'react';
 import {
   ExperimentDetailsModal,
-  RoomManager,
   ExperimentForm,
   CalendarView,
   useExperiments,
@@ -203,8 +202,6 @@ const Experiments = ({ user }) => {
     onFormSuccess,
     
     // Комнаты
-    openRoomManager,
-    closeRoomManager,
     loadData,
     
     // Утилиты
@@ -259,20 +256,12 @@ const Experiments = ({ user }) => {
           </div>
 
           {permissions.canCreate && (
-            <>
-              <button onClick={openRoomManager} style={{
-                padding: '10px 20px', backgroundColor: '#8b5cf6', color: 'white',
-                border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600',
-              }}>
-                <i className="fas fa-door-open"></i> Rooms
-              </button>
               <button onClick={openCreateForm} style={{
                 padding: '10px 20px', backgroundColor: '#10b981', color: 'white',
                 border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600',
               }}>
                 <i className="fas fa-plus"></i> New Experiment
               </button>
-            </>
           )}
         </div>
       </div>
@@ -328,14 +317,6 @@ const Experiments = ({ user }) => {
         />
       )}
 
-      {/* Room Manager */}
-      {ui.showRoomManager && (
-        <RoomManager
-          rooms={rooms}
-          onClose={closeRoomManager}
-          onUpdate={loadData}
-        />
-      )}
     </div>
   );
 };

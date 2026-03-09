@@ -22,9 +22,9 @@ use crate::AppState;
 use crate::models::{
     Equipment, CreateEquipmentRequest, UpdateEquipmentRequest,
     EquipmentPart, CreateEquipmentPartRequest, UpdateEquipmentPartRequest,
-    EquipmentMaintenance, EquipmentMaintenanceWithEquipment,
+    EquipmentMaintenance,
     CreateMaintenanceRequest, UpdateMaintenanceRequest, CompleteMaintenanceRequest,
-    EquipmentFile, UploadFileRequest, EquipmentDetailResponse
+    EquipmentFile, EquipmentDetailResponse
 };
 use crate::error::{ApiError, ApiResult};
 use crate::handlers::{ApiResponse, PaginatedResponse};

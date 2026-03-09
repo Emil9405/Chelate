@@ -10,8 +10,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../services/api';
 import Button from '../Button';
 import Input from '../Input';
-import Select from '../Select';
 import FormGroup from '../FormGroup';
+import LocationPicker from '../storage/LocationPicker'; // <-- Интеграция LocationPicker
 import { EditIcon, TrashIcon, CheckIcon, CloseIcon, AlertCircleIcon } from '../Icons';
 
 // ==================== STYLES ====================
@@ -93,7 +93,7 @@ const placementStyles = {
   },
   quickFormRow: {
     display: 'flex',
-    gap: '0.5rem',
+    gap: '0.75rem',
     alignItems: 'flex-end',
     flexWrap: 'wrap',
   },
@@ -105,7 +105,7 @@ const placementStyles = {
     border: '1px solid #e2e8f0',
     boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
     padding: '1rem',
-    minWidth: '280px',
+    minWidth: '320px',
   },
   popoverHeader: {
     fontSize: '0.85rem',
@@ -117,6 +117,7 @@ const placementStyles = {
     fontSize: '0.75rem',
     color: '#c53030',
     marginTop: '0.25rem',
+    marginBottom: '0.5rem',
   },
   fullPlaced: {
     fontSize: '0.75rem',
@@ -161,11 +162,11 @@ const BatchPlacementRow = ({ placement, unit, onEdit, onDelete, onMove, readOnly
       <span style={placementStyles.roomBadge(placement.room_color)}>
         {placement.room_name}
       </span>
-      {placement.shelf && (
-        <span style={placementStyles.shelfText}>/ {placement.shelf}</span>
+      {placement.zone_name && (
+        <span style={placementStyles.shelfText}>/ {placement.zone_name}</span>
       )}
-      {placement.position && (
-        <span style={placementStyles.shelfText}>/ {placement.position}</span>
+      {placement.position_name && (
+        <span style={placementStyles.shelfText}>/ {placement.position_name}</span>
       )}
       <span style={placementStyles.quantityText}>
         {placement.quantity} {unit}
@@ -205,33 +206,29 @@ const PlacementQuickForm = ({
   batchId,
   unplacedQty,
   unit,
-  rooms = [],
   onSave,
   onCancel,
   editPlacement = null,
 }) => {
   const isEdit = !!editPlacement;
-  const [roomId, setRoomId] = useState(editPlacement?.room_id || '');
-  const [shelf, setShelf] = useState(editPlacement?.shelf || '');
-  const [position, setPosition] = useState(editPlacement?.position || '');
+  const [positionId, setPositionId] = useState(editPlacement?.position_id || '');
   const [quantity, setQuantity] = useState(
     editPlacement ? editPlacement.quantity : unplacedQty
   );
-  const [notes, setNotes] = useState(editPlacement?.notes || '');
+  const [notes] = useState(editPlacement?.notes || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const handleSave = async () => {
-    if (!roomId) { setError('Select a room'); return; }
+    if (!positionId) { setError('Select a storage location'); return; }
     if (!quantity || parseFloat(quantity) <= 0) { setError('Quantity must be > 0'); return; }
 
     setLoading(true);
     setError('');
     try {
+      // ИСПРАВЛЕНИЕ: Отправляем position_id вместо старых полей (исправляет ошибку 400)
       const payload = {
-        room_id: roomId,
-        shelf: shelf || null,
-        position: position || null,
+        position_id: positionId,
         quantity: parseFloat(quantity),
         notes: notes || null,
       };
@@ -253,35 +250,15 @@ const PlacementQuickForm = ({
     <div style={placementStyles.quickForm}>
       {error && <div style={placementStyles.error}><AlertCircleIcon size={12} /> {error}</div>}
       <div style={placementStyles.quickFormRow}>
-        <FormGroup label="Room" style={{ margin: 0, flex: '1 1 120px' }}>
-          <Select
-            value={roomId}
-            onChange={(e) => setRoomId(e.target.value)}
-            style={{ fontSize: '0.8rem', padding: '0.35rem' }}
-          >
-            <option value="">Select room...</option>
-            {rooms.map(r => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </Select>
-        </FormGroup>
-        <FormGroup label="Shelf" style={{ margin: 0, flex: '0 1 80px' }}>
-          <Input
-            value={shelf}
-            onChange={(e) => setShelf(e.target.value)}
-            placeholder="A-2"
-            style={{ fontSize: '0.8rem', padding: '0.35rem' }}
+        <div style={{ flex: '1 1 200px' }}>
+          <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#4a5568', marginBottom: '4px' }}>Storage Location</label>
+          <LocationPicker
+            value={positionId}
+            onChange={setPositionId}
+            showLabel={false}
           />
-        </FormGroup>
-        <FormGroup label="Position" style={{ margin: 0, flex: '0 1 60px' }}>
-          <Input
-            value={position}
-            onChange={(e) => setPosition(e.target.value)}
-            placeholder="1"
-            style={{ fontSize: '0.8rem', padding: '0.35rem' }}
-          />
-        </FormGroup>
-        <FormGroup label={`Qty (${unit})`} style={{ margin: 0, flex: '0 1 80px' }}>
+        </div>
+        <FormGroup label={`Qty (${unit})`} style={{ margin: 0, flex: '0 1 100px' }}>
           <Input
             type="number"
             step="any"
@@ -292,7 +269,7 @@ const PlacementQuickForm = ({
             style={{ fontSize: '0.8rem', padding: '0.35rem' }}
           />
         </FormGroup>
-        <div style={{ display: 'flex', gap: '4px', paddingTop: '1.1rem' }}>
+        <div style={{ display: 'flex', gap: '4px', paddingTop: '1.1rem', marginBottom: '0.2rem' }}>
           <Button
             size="small"
             variant="primary"
@@ -316,19 +293,14 @@ const PlacementQuickForm = ({
 
 // ==================== MovePopover ====================
 
-const MovePopover = ({ placement, unit, rooms = [], batchId, onMove, onCancel }) => {
-  const [toRoomId, setToRoomId] = useState('');
-  const [toShelf, setToShelf] = useState('');
-  const [toPosition, setToPosition] = useState('');
+const MovePopover = ({ placement, unit, batchId, onMove, onCancel }) => {
+  const [toPositionId, setToPositionId] = useState('');
   const [quantity, setQuantity] = useState(placement.quantity);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Исключаем текущую комнату+полку из списка
-  const availableRooms = rooms;
-
   const handleMove = async () => {
-    if (!toRoomId) { setError('Select destination room'); return; }
+    if (!toPositionId) { setError('Select destination location'); return; }
     if (!quantity || parseFloat(quantity) <= 0) { setError('Quantity must be > 0'); return; }
     if (parseFloat(quantity) > placement.quantity) {
       setError(`Max: ${placement.quantity} ${unit}`); return;
@@ -337,13 +309,11 @@ const MovePopover = ({ placement, unit, rooms = [], batchId, onMove, onCancel })
     setLoading(true);
     setError('');
     try {
+      // ИСПРАВЛЕНИЕ: Отправляем from_position_id и to_position_id (исправляет ошибку 400)
       await api.movePlacement(batchId, {
-        from_room_id: placement.room_id,
-        from_shelf: placement.shelf || null,
-        to_room_id: toRoomId,
+        from_position_id: placement.position_id,
+        to_position_id: toPositionId,
         quantity: parseFloat(quantity),
-        to_shelf: toShelf || null,
-        to_position: toPosition || null,
       });
       onMove();
     } catch (err) {
@@ -356,28 +326,20 @@ const MovePopover = ({ placement, unit, rooms = [], batchId, onMove, onCancel })
   return (
     <div style={placementStyles.popover}>
       <div style={placementStyles.popoverHeader}>
-        <MoveIcon size={14} /> Move from {placement.room_name}
-        {placement.shelf ? ` / ${placement.shelf}` : ''}
+        <MoveIcon size={14} /> Move from {placement.room_name} / {placement.position_name}
       </div>
       {error && <div style={placementStyles.error}><AlertCircleIcon size={12} /> {error}</div>}
 
-      <FormGroup label="To room" style={{ marginBottom: '0.5rem' }}>
-        <Select value={toRoomId} onChange={(e) => setToRoomId(e.target.value)}>
-          <option value="">Select...</option>
-          {availableRooms.map(r => (
-            <option key={r.id} value={r.id}>{r.name}</option>
-          ))}
-        </Select>
-      </FormGroup>
+      <div style={{ marginBottom: '0.75rem' }}>
+        <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#4a5568', marginBottom: '4px' }}>To Location</label>
+        <LocationPicker
+          value={toPositionId}
+          onChange={setToPositionId}
+          showLabel={false}
+        />
+      </div>
 
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <FormGroup label="Shelf" style={{ margin: 0, flex: 1 }}>
-          <Input
-            value={toShelf}
-            onChange={(e) => setToShelf(e.target.value)}
-            placeholder="B-1"
-          />
-        </FormGroup>
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
         <FormGroup label={`Qty (max ${placement.quantity})`} style={{ margin: 0, flex: 1 }}>
           <Input
             type="number"
@@ -409,11 +371,9 @@ const MovePopover = ({ placement, unit, rooms = [], batchId, onMove, onCancel })
 };
 
 // ==================== PlacementSummary ====================
-// Полный блок размещений для одного батча: rows + unplaced + quick form
 
 const PlacementSummary = ({
   batch,
-  rooms = [],
   onRefresh,
   readOnly = false,
 }) => {
@@ -459,7 +419,7 @@ const PlacementSummary = ({
 
   const handleDelete = async (placement) => {
     if (!window.confirm(
-      `Remove ${placement.quantity} ${batch.unit} from ${placement.room_name}${placement.shelf ? ' / ' + placement.shelf : ''}?`
+      `Remove ${placement.quantity} ${batch.unit} from ${placement.room_name} / ${placement.position_name}?`
     )) return;
 
     try {
@@ -499,7 +459,6 @@ const PlacementSummary = ({
             <MovePopover
               placement={p}
               unit={batch.unit}
-              rooms={rooms}
               batchId={batch.id}
               onMove={handleMoveComplete}
               onCancel={() => setMovePlacement(null)}
@@ -566,11 +525,91 @@ const PlacementSummary = ({
           batchId={batch.id}
           unplacedQty={editPlacement ? editPlacement.quantity : unplacedQty}
           unit={batch.unit}
-          rooms={rooms}
           editPlacement={editPlacement}
           onSave={handleSave}
           onCancel={() => { setShowForm(false); setEditPlacement(null); }}
         />
+      )}
+    </div>
+  );
+};
+
+// ==================== COMPACT VIEW (для ячейки grid/table) ====================
+
+const CompactPlacements = ({ batch }) => {
+  const placements = batch.placements || [];
+  const unplaced = batch.unplaced_quantity || 0;
+  const legacy = batch.storage_location || batch.location;
+
+  if (placements.length === 0 && !legacy) {
+    if (unplaced > 0.01) {
+      return <span style={{ fontSize: '0.68rem', color: '#dd6b20' }}>⚠ {unplaced.toFixed(1)} unplaced</span>;
+    }
+    return <span style={{ color: '#a0aec0', fontSize: '0.8rem' }}>—</span>;
+  }
+
+  if (placements.length === 0) {
+    return <span style={{ fontSize: '0.8rem', color: '#4a5568' }} title={legacy}>{legacy}</span>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      {placements.slice(0, 3).map(p => (
+        <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.73rem', lineHeight: 1.2 }}>
+          <span style={{
+            width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0,
+            backgroundColor: p.room_color || '#a0aec0', display: 'inline-block',
+          }} />
+          <span style={{ color: '#2d3748', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60px' }}>
+            {p.room_name}
+          </span>
+          {p.zone_name && <span style={{ color: '#a0aec0', fontSize: '0.68rem' }}>/{p.zone_name}</span>}
+          {p.position_name && <span style={{ color: '#a0aec0', fontSize: '0.68rem' }}>/{p.position_name}</span>}
+          <span style={{ color: '#718096', fontSize: '0.68rem', marginLeft: 'auto' }}>{p.quantity}</span>
+        </div>
+      ))}
+      {placements.length > 3 && (
+        <span style={{ fontSize: '0.68rem', color: '#718096' }}>+{placements.length - 3} more</span>
+      )}
+      {unplaced > 0.01 && (
+        <span style={{ fontSize: '0.68rem', color: '#dd6b20' }}>⚠ {unplaced.toFixed(1)} unplaced</span>
+      )}
+    </div>
+  );
+};
+
+// ==================== EXPANDABLE LOCATION (для Table ячейки) ====================
+
+const ExpandableLocation = ({ batch, onRefresh }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
+        }}
+        title={expanded ? 'Click to collapse' : 'Click to manage placements'}
+      >
+        <CompactPlacements batch={batch} />
+        <span style={{
+          fontSize: '10px', color: '#a0aec0', transition: 'transform 0.2s',
+          transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+          flexShrink: 0,
+        }}>▼</span>
+      </div>
+      {expanded && (
+        <div style={{ marginTop: '6px', borderTop: '1px solid #e2e8f0', paddingTop: '6px' }}>
+          <PlacementSummary
+            batch={batch}
+            onRefresh={() => { onRefresh?.(); }}
+            readOnly={false}
+          />
+        </div>
       )}
     </div>
   );
@@ -583,6 +622,8 @@ export {
   PlacementQuickForm,
   MovePopover,
   PlacementSummary,
+  CompactPlacements,
+  ExpandableLocation,
   MoveIcon,
   MapPinIcon,
 };

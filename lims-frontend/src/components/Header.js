@@ -10,7 +10,8 @@ import {
   UsersIcon,
   KeyIcon,
   LogoutIcon,
-  ChevronDownIcon
+  ChevronDownIcon,
+  ArchiveIcon // <-- Добавили иконку для Storage
 } from './Icons';
 import ChelateLogo from './ChelateLogo';
 
@@ -31,6 +32,7 @@ const Header = ({ user, onLogout, currentPage, setCurrentPage }) => {
     { id: 'reagents', label: 'Reagents', Icon: FlaskIcon },
     { id: 'experiments', label: 'Experiments', Icon: MicroscopeIcon },
     { id: 'equipment', label: 'Equipment', Icon: CogsIcon },
+    { id: 'storage', label: 'Storage', Icon: ArchiveIcon }, // <-- Добавили кнопку Storage
     { id: 'reports', label: 'Reports', Icon: ChartBarIcon },
     { id: 'users', label: 'Users', Icon: UsersIcon }
   ];

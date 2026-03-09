@@ -55,6 +55,14 @@ pub struct BatchResponse {
     pub placements: Option<Vec<PlacementWithRoom>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unplaced_quantity: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placed_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unplaced_count: Option<i64>,
 }
 
 /// Партия с именем реагента
@@ -255,86 +263,91 @@ pub async fn get_all_batches(
     let batches: Vec<BatchWithReagent> = select_query.fetch_all(&app_state.db_pool).await?;
 
     // Transform to response with expiration status
-    // Загрузка placements для всех батчей одним запросом
-let batch_ids: Vec<&str> = batches.iter().map(|b| b.id.as_str()).collect();
-let placements_map = if !batch_ids.is_empty() {
-    let placeholders = batch_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        r#"SELECT 
-            bp.id, bp.batch_id, bp.room_id,
-            r.name as room_name, r.color as room_color,
-            bp.shelf, bp.position, bp.quantity,
-            bp.notes, bp.placed_by,
-            bp.created_at, bp.updated_at
-        FROM batch_placements bp
-        JOIN rooms r ON bp.room_id = r.id
-        WHERE bp.batch_id IN ({})
-        ORDER BY r.name, bp.shelf"#,
-        placeholders
-    );
-    let mut query = sqlx::query_as::<_, PlacementWithRoom>(&sql);
-    for id in &batch_ids {
-        query = query.bind(id);
-    }
-    let all_placements: Vec<PlacementWithRoom> = query
-        .fetch_all(&app_state.db_pool)
-        .await
-        .unwrap_or_default();
-
-    // Группируем по batch_id
-    let mut map: std::collections::HashMap<String, Vec<PlacementWithRoom>> =
-        std::collections::HashMap::new();
-    for p in all_placements {
-        map.entry(p.batch_id.clone()).or_default().push(p);
-    }
-    map
-} else {
-    std::collections::HashMap::new()
-};
-
-let response_batches: Vec<BatchResponse> = batches
-    .into_iter()
-    .map(|b| {
-        let (expiration_status, days_until_expiration) = calculate_expiration_status(b.expiry_date);
-        let pack_count = calculate_pack_count(b.quantity, b.pack_size);
-        let batch_placements = placements_map.get(&b.id).cloned().unwrap_or_default();
-        let placed_qty: f64 = batch_placements.iter().map(|p| p.quantity).sum();
-        let unplaced = (b.quantity - placed_qty).max(0.0);
-
-        BatchResponse {
-            id: b.id,
-            reagent_id: b.reagent_id,
-            lot_number: b.lot_number,
-            batch_number: b.batch_number,
-            cat_number: b.cat_number,
-            quantity: b.quantity,
-            original_quantity: b.original_quantity,
-            reserved_quantity: b.reserved_quantity,
-            unit: b.unit,
-            pack_size: b.pack_size,
-            pack_count,
-            expiry_date: b.expiry_date,
-            supplier: b.supplier,
-            manufacturer: b.manufacturer,
-            received_date: b.received_date,
-            status: b.status,
-            location: b.location,
-            notes: b.notes,
-            created_by: b.created_by,
-            updated_by: b.updated_by,
-            created_at: b.created_at,
-            updated_at: b.updated_at,
-            expiration_status,
-            days_until_expiration,
-            converted_quantity: None,
-            converted_unit: None,
-            original_unit: None,
-            placements: if batch_placements.is_empty() { None } else { Some(batch_placements) },
-            unplaced_quantity: Some(unplaced),
+    let batch_ids: Vec<&str> = batches.iter().map(|b| b.id.as_str()).collect();
+    
+    // Container stats per batch
+    let container_stats_map = if !batch_ids.is_empty() {
+        let placeholders = batch_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        #[derive(sqlx::FromRow)]
+        struct CStats {
+            batch_id: String,
+            container_count: i64,
+            opened_count: i64,
+            placed_count: i64,
         }
-    })
-    .collect();
-        let total_pages = (total + per_page - 1) / per_page;
+        let sql = format!(
+            r#"SELECT 
+                bc.batch_id, 
+                COUNT(*) as container_count, 
+                SUM(CASE WHEN bc.is_opened = 1 THEN 1 ELSE 0 END) as opened_count, 
+                SUM(CASE WHEN bp.id IS NOT NULL THEN 1 ELSE 0 END) as placed_count 
+            FROM batch_containers bc 
+            LEFT JOIN batch_placements bp ON bp.container_id = bc.id 
+            WHERE bc.batch_id IN ({}) AND bc.status != 'disposed' 
+            GROUP BY bc.batch_id"#,
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, CStats>(&sql);
+        for id in &batch_ids { q = q.bind(id); }
+        let rows: Vec<CStats> = q.fetch_all(&app_state.db_pool).await.unwrap_or_default();
+        let mut map: std::collections::HashMap<String, (i64, i64, i64)> = std::collections::HashMap::new();
+        for r in rows { map.insert(r.batch_id, (r.container_count, r.opened_count, r.placed_count)); }
+        map
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let response_batches: Vec<BatchResponse> = batches
+        .into_iter()
+        .map(|b| {
+            let (expiration_status, days_until_expiration) = calculate_expiration_status(b.expiry_date);
+            let (cnt_count, cnt_opened, cnt_placed) =
+                container_stats_map.get(&b.id).copied().unwrap_or((0, 0, 0));
+            let pack_count = if cnt_count > 0 {
+                Some(cnt_count)
+            } else {
+                calculate_pack_count(b.quantity, b.pack_size)
+            };
+
+            BatchResponse {
+                id: b.id,
+                reagent_id: b.reagent_id,
+                lot_number: b.lot_number,
+                batch_number: b.batch_number,
+                cat_number: b.cat_number,
+                quantity: b.quantity,
+                original_quantity: b.original_quantity,
+                reserved_quantity: b.reserved_quantity,
+                unit: b.unit,
+                pack_size: b.pack_size,
+                pack_count,
+                expiry_date: b.expiry_date,
+                supplier: b.supplier,
+                manufacturer: b.manufacturer,
+                received_date: b.received_date,
+                status: b.status,
+                location: b.location,
+                notes: b.notes,
+                created_by: b.created_by,
+                updated_by: b.updated_by,
+                created_at: b.created_at,
+                updated_at: b.updated_at,
+                expiration_status,
+                days_until_expiration,
+                converted_quantity: None,
+                converted_unit: None,
+                original_unit: None,
+                placements: None,
+                unplaced_quantity: None,
+                container_count: if cnt_count > 0 { Some(cnt_count) } else { None },
+                opened_count: if cnt_count > 0 { Some(cnt_opened) } else { None },
+                placed_count: if cnt_count > 0 { Some(cnt_placed) } else { None },
+                unplaced_count: if cnt_count > 0 { Some(cnt_count - cnt_placed) } else { None },
+            }
+        })
+        .collect();
+    
+    let total_pages = (total + per_page - 1) / per_page;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(PaginatedResponse {
         data: response_batches,
@@ -344,6 +357,7 @@ let response_batches: Vec<BatchResponse> = batches
         total_pages,
     })))
 }
+
 /// Получить одну партию по ID
 pub async fn get_batch(
     app_state: web::Data<Arc<AppState>>,
@@ -406,6 +420,10 @@ pub async fn get_batch(
         original_unit: None,
         placements: None,
         unplaced_quantity: None,
+        container_count: None,
+        opened_count: None,
+        placed_count: None,
+        unplaced_count: None,
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
@@ -508,6 +526,10 @@ pub async fn create_batch(
         original_unit: None,
         placements: None,
         unplaced_quantity: None,
+        container_count: None,
+        opened_count: None,
+        placed_count: None,
+        unplaced_count: None,
     };
 
     Ok(HttpResponse::Created().json(ApiResponse::success(response)))
@@ -609,6 +631,10 @@ pub async fn update_batch(
         original_unit: None,
         placements: None,
         unplaced_quantity: None,
+        container_count: None,
+        opened_count: None,
+        placed_count: None,
+        unplaced_count: None,
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
@@ -874,12 +900,52 @@ pub async fn get_batches_for_reagent(
     }
     let batches: Vec<Batch> = select_query.fetch_all(&app_state.db_pool).await?;
 
-    // Transform
+    // === Load container stats per batch ===
+    let batch_ids: Vec<&str> = batches.iter().map(|b| b.id.as_str()).collect();
+    let container_stats_map = if !batch_ids.is_empty() {
+        let placeholders = batch_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        #[derive(sqlx::FromRow)]
+        struct CStats {
+            batch_id: String,
+            container_count: i64,
+            opened_count: i64,
+            placed_count: i64,
+        }
+        let sql = format!(
+            r#"SELECT 
+                bc.batch_id, 
+                COUNT(*) as container_count, 
+                SUM(CASE WHEN bc.is_opened = 1 THEN 1 ELSE 0 END) as opened_count, 
+                SUM(CASE WHEN bp.id IS NOT NULL THEN 1 ELSE 0 END) as placed_count 
+            FROM batch_containers bc 
+            LEFT JOIN batch_placements bp ON bp.container_id = bc.id 
+            WHERE bc.batch_id IN ({}) AND bc.status != 'disposed' 
+            GROUP BY bc.batch_id"#,
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, CStats>(&sql);
+        for id in &batch_ids { q = q.bind(id); }
+        let rows: Vec<CStats> = q.fetch_all(&app_state.db_pool).await.unwrap_or_default();
+        let mut map: std::collections::HashMap<String, (i64, i64, i64)> = std::collections::HashMap::new();
+        for r in rows { map.insert(r.batch_id, (r.container_count, r.opened_count, r.placed_count)); }
+        map
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // Transform with container stats
     let response_batches: Vec<BatchResponse> = batches
         .into_iter()
         .map(|b| {
             let (expiration_status, days_until_expiration) = calculate_expiration_status(b.expiry_date);
-            let pack_count = calculate_pack_count(b.quantity, b.pack_size);
+            let (cnt_count, cnt_opened, cnt_placed) =
+                container_stats_map.get(&b.id).copied().unwrap_or((0, 0, 0));
+            let pack_count = if cnt_count > 0 {
+                Some(cnt_count)
+            } else {
+                calculate_pack_count(b.quantity, b.pack_size)
+            };
+
             BatchResponse {
                 id: b.id,
                 reagent_id: b.reagent_id,
@@ -910,6 +976,10 @@ pub async fn get_batches_for_reagent(
                 original_unit: None,
                 placements: None,
                 unplaced_quantity: None,
+                container_count: if cnt_count > 0 { Some(cnt_count) } else { None },
+                opened_count: if cnt_count > 0 { Some(cnt_opened) } else { None },
+                placed_count: if cnt_count > 0 { Some(cnt_placed) } else { None },
+                unplaced_count: if cnt_count > 0 { Some(cnt_count - cnt_placed) } else { None },
             }
         })
         .collect();
@@ -943,6 +1013,9 @@ pub struct DispenseUnitsRequest {
     /// Дополнительные заметки
     #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
     pub notes: Option<String>,
+
+    /// Optional: placement_id to deduct from specific room location
+    pub placement_id: Option<String>,
 }
 
 /// Ответ на штучное списание
@@ -1087,6 +1160,34 @@ pub async fn dispense_units(
     .bind(&batch_id)
     .execute(&mut *tx)
     .await?;
+
+    // Deduct from specific placement if placement_id is provided
+    if let Some(ref placement_id) = request.placement_id {
+        let placement: Option<(String, f64)> = sqlx::query_as(
+            "SELECT id, quantity FROM batch_placements WHERE id = ? AND batch_id = ?"
+        )
+        .bind(placement_id)
+        .bind(&batch_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some((_pid, p_qty)) = placement {
+            let new_p_qty = p_qty - quantity_to_dispense;
+            if new_p_qty <= 0.001 {
+                sqlx::query("DELETE FROM batch_placements WHERE id = ?")
+                    .bind(placement_id)
+                    .execute(&mut *tx)
+                    .await?;
+            } else {
+                sqlx::query("UPDATE batch_placements SET quantity = ?, updated_at = ? WHERE id = ?")
+                    .bind(new_p_qty.max(0.0))
+                    .bind(&now)
+                    .bind(placement_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+    }
 
     // Коммитим транзакцию
     tx.commit().await?;

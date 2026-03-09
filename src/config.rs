@@ -2,12 +2,7 @@
 use serde::Deserialize;
 use std::env;
 use std::sync::{Arc, RwLock};
-use std::thread;
-use std::time::Duration;
 use anyhow::{Context, Result};
-use notify::{RecursiveMode, Event};
-use notify_debouncer_mini::new_debouncer;
-use walkdir::WalkDir;
 use rand::{thread_rng, Rng, distributions::Alphanumeric};
 use std::path::Path;
 use std::fs;

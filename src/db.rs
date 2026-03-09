@@ -28,6 +28,11 @@ pub async fn ensure_performance_indexes(pool: &SqlitePool) -> Result<(), sqlx::E
         r#"CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);"#,
         r#"CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);"#,
         r#"CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_type ON audit_logs(entity_type);"#,
+        // Storage and placements
+        r#"CREATE INDEX IF NOT EXISTS idx_storage_zones_room ON storage_zones(room_id);"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_storage_positions_zone ON storage_positions(zone_id);"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_batch_placements_position ON batch_placements(position_id);"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_batch_placements_container ON batch_placements(container_id);"#,
 
         // User permissions
         r#"CREATE INDEX IF NOT EXISTS idx_user_permissions_user_id ON user_permissions(user_id);"#,
@@ -131,7 +136,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             manufacturer TEXT CHECK(manufacturer IS NULL OR length(manufacturer) <= 255),
             received_date DATETIME NOT NULL,
             status TEXT NOT NULL DEFAULT 'available' CHECK(
-                status IN ('available', 'in_use', 'expired', 'depleted')
+                status IN ('available', 'in_use', 'expired', 'depleted', 'low_stock')
             ),
             location TEXT CHECK(location IS NULL OR length(location) <= 255),
             notes TEXT CHECK(notes IS NULL OR length(notes) <= 1000),
@@ -149,29 +154,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
         .execute(pool)
         .await?;
-// ==================== BATCH PLACEMENTS ====================
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS batch_placements (
-            id TEXT PRIMARY KEY,
-            batch_id TEXT NOT NULL,
-            room_id TEXT NOT NULL,
-            shelf TEXT CHECK(shelf IS NULL OR length(shelf) <= 100),
-            position TEXT CHECK(position IS NULL OR length(position) <= 100),
-            quantity REAL NOT NULL CHECK(quantity > 0),
-            notes TEXT CHECK(notes IS NULL OR length(notes) <= 500),
-            placed_by TEXT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE,
-            FOREIGN KEY (room_id) REFERENCES rooms(id),
-            FOREIGN KEY (placed_by) REFERENCES users(id),
-            UNIQUE(batch_id, room_id, shelf)
-        )
-        "#
-    )
-    .execute(pool)
-    .await?;
+
 
     // ==================== EQUIPMENT TABLE ====================
     sqlx::query(
@@ -229,7 +212,100 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
         .execute(pool)
         .await?;
+    // ==================== STORAGE ZONES TABLE ====================
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS storage_zones (
+            id TEXT PRIMARY KEY,
+            room_id TEXT NOT NULL,
+            name TEXT NOT NULL CHECK(length(name) > 0 AND length(name) <= 100),
+            zone_type TEXT NOT NULL DEFAULT 'cabinet' CHECK(
+                zone_type IN ('cabinet', 'refrigerator', 'freezer', 'fume_hood',
+                            'safety_cabinet', 'desiccator', 'shelf', 'drawer', 'other')
+            ),
+            storage_condition TEXT CHECK(
+                storage_condition IS NULL OR storage_condition IN (
+                    'room_temperature', 'cool', 'frozen', 'deep_frozen',
+                    'ventilated', 'dry_storage', 'light_protected'
+                )
+            ),
+            description TEXT CHECK(description IS NULL OR length(description) <= 500),
+            temperature_min REAL,
+            temperature_max REAL,
+            is_locked INTEGER NOT NULL DEFAULT 0 CHECK(is_locked IN (0, 1)),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'available' CHECK(
+                status IN ('available', 'maintenance', 'unavailable')
+            ),
+            created_by TEXT,
+            updated_by TEXT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY (room_id) REFERENCES rooms (id) ON DELETE RESTRICT,
+            UNIQUE(room_id, name)
+        )
+        "#,
+    ).execute(pool).await?;
 
+    // ==================== STORAGE POSITIONS TABLE ====================
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS storage_positions (
+            id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            name TEXT NOT NULL CHECK(length(name) > 0 AND length(name) <= 100),
+            position_label TEXT CHECK(position_label IS NULL OR length(position_label) <= 20),
+            max_capacity INTEGER CHECK(max_capacity IS NULL OR max_capacity > 0),
+            current_count INTEGER NOT NULL DEFAULT 0 CHECK(current_count >= 0),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            description TEXT CHECK(description IS NULL OR length(description) <= 500),
+            status TEXT NOT NULL DEFAULT 'available' CHECK(
+                status IN ('available', 'full', 'maintenance', 'unavailable')
+            ),
+            created_by TEXT,
+            updated_by TEXT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY (zone_id) REFERENCES storage_zones (id) ON DELETE RESTRICT,
+            UNIQUE(zone_id, name)
+        )
+        "#,
+    ).execute(pool).await?;
+
+    // ==================== BATCH PLACEMENTS v2 ====================
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS batch_containers (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+            sequence_number INTEGER NOT NULL,
+            quantity REAL NOT NULL DEFAULT 0.0,      
+            original_quantity REAL NOT NULL,         
+            is_opened INTEGER NOT NULL DEFAULT 0,   
+            opened_at TEXT,                          
+            opened_by TEXT,                          
+            status TEXT NOT NULL DEFAULT 'full', 
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(batch_id, sequence_number)
+        )
+        "#,
+    ).execute(pool).await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS batch_placements (
+            id TEXT PRIMARY KEY,
+            container_id TEXT NOT NULL REFERENCES batch_containers(id) ON DELETE CASCADE,
+            position_id TEXT NOT NULL REFERENCES storage_positions(id),
+            placed_by TEXT,
+            placed_at TEXT NOT NULL,
+            notes TEXT,
+            UNIQUE(container_id)
+        )
+        "#,
+    ).execute(pool).await?;
    // ==================== EXPERIMENTS TABLE ====================
     sqlx::query(
         r#"
@@ -442,6 +518,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
     // ==================== RUN ADDITIONAL MIGRATIONS ====================
     run_additional_migrations(pool).await?;
+    
 
     // ==================== CREATE BATCH TRIGGERS ====================
     create_batch_triggers(pool).await?;
@@ -730,10 +807,10 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE rooms ADD COLUMN color TEXT CHECK(color IS NULL OR length(color) <= 20)",
         "ALTER TABLE rooms ADD COLUMN created_by TEXT REFERENCES users(id)",
         "ALTER TABLE rooms ADD COLUMN updated_by TEXT REFERENCES users(id)",
+        "ALTER TABLE rooms ADD COLUMN room_type TEXT DEFAULT 'general' CHECK(room_type IS NULL OR room_type IN ('general', 'wet_lab', 'dry_lab', 'storage_room', 'instrument_room', 'prep_room', 'cold_room'))",
+        
         // ==================== BATCH PLACEMENTS IDEXES ====================
-        "CREATE INDEX IF NOT EXISTS idx_placements_batch ON batch_placements(batch_id)",
-        "CREATE INDEX IF NOT EXISTS idx_placements_room ON batch_placements(room_id)",
-        "CREATE INDEX IF NOT EXISTS idx_placements_batch_room ON batch_placements(batch_id, room_id)",
+        "CREATE INDEX IF NOT EXISTS idx_placements_container ON batch_placements(container_id)",
     ];
 
     for query in migration_queries.iter() {
@@ -782,7 +859,11 @@ pub async fn reset_database(pool: &SqlitePool) -> Result<()> {
         "DROP TABLE IF EXISTS users",
         "DROP TABLE IF EXISTS reagent_stock_cache",
         "DROP TABLE IF EXISTS reagent_count_cache",
+        "DROP TABLE IF EXISTS batch_containers",
         "DROP TABLE IF EXISTS batch_placements",
+        "DROP TABLE IF EXISTS storage_positions",
+        "DROP TABLE IF EXISTS storage_zones",
+        
     ];
 
     for query in drop_queries.iter() {

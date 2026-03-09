@@ -1,53 +1,80 @@
 // src/models/batch_placement.rs
-//! Модель размещения батчей по локациям (rooms + shelves)
-//! Один batch может быть распределён по нескольким room/shelf комбинациям
-//! UNIQUE(batch_id, room_id, shelf)
+//! Placement model (v3 — container-based)
+//! Links a BatchContainer to a StoragePosition.
+//! One container can be in at most one position (UNIQUE container_id).
 
 use serde::{Deserialize, Serialize};
-use validator::Validate;
 use chrono::{DateTime, Utc};
 
-// ==================== BATCH PLACEMENT ====================
+// ==================== BATCH PLACEMENT (v3 — container → position) ====================
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow, Clone)]
 pub struct BatchPlacement {
     pub id: String,
-    pub batch_id: String,
-    pub room_id: String,
-    pub shelf: Option<String>,
-    pub position: Option<String>,
-    pub quantity: f64,
-    pub notes: Option<String>,
+    pub container_id: String,
+    pub position_id: String,
     pub placed_by: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub placed_at: DateTime<Utc>,
+    pub notes: Option<String>,
 }
 
-/// Placement с данными комнаты (для отображения)
+/// Backward-compat alias: PlacementWithRoom
+/// Used by batch_handlers BatchResponse. 
+/// Now returns container-based placement with full location path.
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow, Clone)]
-pub struct PlacementWithRoom {
-    pub id: String,
-    pub batch_id: String,
-    pub room_id: String,
-    pub room_name: String,
-    pub room_color: Option<String>,
-    pub shelf: Option<String>,
-    pub position: Option<String>,
-    pub quantity: f64,
-    pub notes: Option<String>,
+pub struct PlacementWithLocation {
+    // Container data
+    pub container_id: String,
+    pub sequence_number: i64,
+    pub container_quantity: f64,
+    pub is_opened: bool,
+    pub container_status: String,
+    // Placement data
+    pub placement_id: Option<String>,
+    pub position_id: Option<String>,
     pub placed_by: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    // Location hierarchy
+    pub position_name: Option<String>,
+    pub position_label: Option<String>,
+    pub zone_id: Option<String>,
+    pub zone_name: Option<String>,
+    pub zone_type: Option<String>,
+    pub room_id: Option<String>,
+    pub room_name: Option<String>,
+    pub room_color: Option<String>,
 }
 
-/// Элемент инвентаризации комнаты
+impl PlacementWithLocation {
+    /// "Lab-1 → Cabinet A → Shelf 2" or "Not placed"
+    pub fn full_path(&self) -> String {
+        match (&self.room_name, &self.zone_name, &self.position_name) {
+            (Some(room), Some(zone), Some(pos)) => {
+                format!("{} → {} → {}", room, zone, pos)
+            }
+            _ => "Not placed".to_string(),
+        }
+    }
+
+    pub fn is_placed(&self) -> bool {
+        self.placement_id.is_some()
+    }
+}
+
+/// Backward-compat alias
+pub type PlacementWithRoom = PlacementWithLocation;
+
+/// Inventory item for a position (room inventory view)
 #[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct RoomInventoryItem {
-    // Placement
-    pub placement_id: String,
-    pub placed_quantity: f64,
-    pub shelf: Option<String>,
-    pub position: Option<String>,
+pub struct PositionInventoryItem {
+    // Container
+    pub container_id: String,
+    pub sequence_number: i64,
+    pub container_quantity: f64,
+    pub is_opened: bool,
+    pub container_status: String,
+    // Position
+    pub position_id: String,
+    pub position_name: String,
     // Batch
     pub batch_id: String,
     pub batch_number: String,
@@ -62,59 +89,4 @@ pub struct RoomInventoryItem {
     pub formula: Option<String>,
     pub cas_number: Option<String>,
     pub hazard_pictograms: Option<String>,
-}
-
-// ==================== REQUESTS ====================
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct CreatePlacementRequest {
-    pub room_id: String,
-
-    #[validate(length(max = 100, message = "Shelf name cannot exceed 100 characters"))]
-    pub shelf: Option<String>,
-
-    #[validate(length(max = 100, message = "Position cannot exceed 100 characters"))]
-    pub position: Option<String>,
-
-    #[validate(range(min = 0.001, message = "Quantity must be positive"))]
-    pub quantity: f64,
-
-    #[validate(length(max = 500, message = "Notes cannot exceed 500 characters"))]
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct UpdatePlacementRequest {
-    pub room_id: Option<String>,
-
-    #[validate(length(max = 100, message = "Shelf name cannot exceed 100 characters"))]
-    pub shelf: Option<String>,
-
-    #[validate(length(max = 100, message = "Position cannot exceed 100 characters"))]
-    pub position: Option<String>,
-
-    #[validate(range(min = 0.001, message = "Quantity must be positive"))]
-    pub quantity: Option<f64>,
-
-    #[validate(length(max = 500, message = "Notes cannot exceed 500 characters"))]
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct MovePlacementRequest {
-    pub from_room_id: String,
-
-    #[validate(length(max = 100))]
-    pub from_shelf: Option<String>,
-
-    pub to_room_id: String,
-
-    #[validate(range(min = 0.001, message = "Quantity must be positive"))]
-    pub quantity: f64,
-
-    #[validate(length(max = 100, message = "Shelf name cannot exceed 100 characters"))]
-    pub to_shelf: Option<String>,
-
-    #[validate(length(max = 100, message = "Position cannot exceed 100 characters"))]
-    pub to_position: Option<String>,
 }

@@ -26,7 +26,7 @@ import { PrintStickerModal, PrinterIcon } from './PrintComponents';
 import { CreateBatchModal, EditBatchModal } from './BatchModals';
 import { UsageHistoryModal } from './UsageHistoryModal';
 import { BatchUsageInput } from './BatchUsageInput';
-import { PlacementSummary } from './PlacementComponents';
+import { ExpandableLocation } from './PlacementComponents';
 import { useRooms } from '../hooks/useRooms';
 
 // ==================== CreateReagentModal (with first batch) ====================
@@ -385,7 +385,7 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
 
 export const ViewReagentModal = ({ isOpen, onClose, reagent, onEdit }) => {
   const [batches, setBatches] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const [showCreateBatch, setShowCreateBatch] = useState(false);
   const [showEditBatch, setShowEditBatch] = useState(false);
   const [showUsageHistory, setShowUsageHistory] = useState(false);
@@ -615,7 +615,7 @@ export const ViewReagentModal = ({ isOpen, onClose, reagent, onEdit }) => {
               key: 'placements',
               label: 'Location',
               render: batch => (
-                <PlacementSummary
+                <ExpandableLocation
                   batch={batch}
                   rooms={rooms}
                   onRefresh={loadBatches}
