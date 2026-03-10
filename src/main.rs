@@ -193,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
             let build_dir_str = build_dir.to_string_lossy().to_string();
             app.service(Files::new("/static", format!("{}/static", build_dir_str)))
                 .service(Files::new("/assets", format!("{}/assets", build_dir_str)))
+                .service(Files::new("/logo.png", format!("{}/logo.png", build_dir_str)))
                 .default_service(web::route().to(serve_index))
         } else {
             app.route("/", web::get().to(serve_index))
