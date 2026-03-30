@@ -456,7 +456,24 @@ pub async fn create_batch(
     let now = Utc::now();
     let batch_id = Uuid::new_v4().to_string();
     let received_date = batch_data.received_date.unwrap_or(now);
+    
+    let deleted_dup: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM batches WHERE reagent_id = ? AND batch_number = ? AND deleted_at IS NOT NULL"
+    )
+    .bind(&reagent_id)
+    .bind(&batch_data.batch_number)
+    .fetch_optional(&app_state.db_pool)
+    .await?;
 
+    if let Some((old_id,)) = deleted_dup {
+        sqlx::query(
+            "UPDATE batches SET batch_number = batch_number || '_deleted_' || id WHERE id = ?"
+        )
+        .bind(&old_id)
+        .execute(&app_state.db_pool)
+        .await?;
+    }
+    
     sqlx::query(
         r#"INSERT INTO batches (
             id, reagent_id, lot_number, batch_number, cat_number,

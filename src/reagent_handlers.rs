@@ -469,6 +469,23 @@ pub async fn create_reagent(
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
 
+    // Free up the name if a soft-deleted reagent holds it
+    let deleted_dup: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM reagents WHERE LOWER(name) = LOWER(?) AND deleted_at IS NOT NULL"
+    )
+    .bind(&body.name)
+    .fetch_optional(&app_state.db_pool)
+    .await?;
+
+    if let Some((old_id,)) = deleted_dup {
+        sqlx::query(
+            "UPDATE reagents SET name = name || '_deleted_' || id WHERE id = ?"
+        )
+        .bind(&old_id)
+        .execute(&app_state.db_pool)
+        .await?;
+    }
+
     sqlx::query(r#"
         INSERT INTO reagents (
             id, name, formula, cas_number, manufacturer, molecular_weight,

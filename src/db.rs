@@ -811,7 +811,13 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         
         // ==================== BATCH PLACEMENTS IDEXES ====================
         "CREATE INDEX IF NOT EXISTS idx_placements_container ON batch_placements(container_id)",
+
+        // ==================== PARTIAL UNIQUE INDEXES FOR SOFT DELETE ====================
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_reagents_name_active ON reagents(name) WHERE deleted_at IS NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_reagent_batch_active ON batches(reagent_id, batch_number) WHERE deleted_at IS NULL",
     ];
+        
+
 
     for query in migration_queries.iter() {
         // Ignore errors for existing columns
