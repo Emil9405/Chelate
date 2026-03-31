@@ -17,17 +17,26 @@ pub fn escape_like_value(value: &str) -> String {
         .replace('[', "\\[")
 }
 
-/// Экранирование FTS-запроса (удаление опасных символов)
-pub fn escape_fts_query(query: &str) -> String {
-    query.chars()
-        .filter(|c| !matches!(c, '(' | ')' | '*' | '"' | ':' | '^' | '-' | '+' | '~' | '&' | '|'))
+/// Sanitize user input for FTS5 MATCH — whitelist approach.
+/// Keeps only alphanumeric + space. Adds * for prefix search.
+/// Returns ready-to-use FTS5 MATCH string, or empty if no valid tokens.
+pub fn sanitize_fts_query(query: &str) -> String {
+    query
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
         .collect::<String>()
         .split_whitespace()
         .filter(|s| !s.is_empty())
+        .map(|word| format!("{}*", word))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
+/// Backward compat alias
+#[deprecated(note = "Use sanitize_fts_query instead")]
+pub fn escape_fts_query(query: &str) -> String {
+    sanitize_fts_query(query)
+}
 // ==================== ВАЛИДАЦИЯ ПОЛЕЙ ====================
 
 /// Детальная валидация имени поля
@@ -82,7 +91,7 @@ pub fn is_safe_field_name(field: &str) -> bool {
 #[inline]
 pub fn validate_field_name(field: &str) -> Result<(), String> {
     validate_field_name_detailed(field, &FieldConfig::default())
-        .map_err(|e| e.to_string())
+        .map_err(|e: FieldValidationError| e.to_string())
 }
 
 /// Проверка безопасности имени таблицы (разрешены точки)
@@ -188,14 +197,19 @@ mod tests {
         assert_eq!(escape_like_value("test_value"), "test\\_value");
         assert_eq!(escape_like_value("test[value"), "test\\[value");
     }
-
-    #[test]
-    fn test_escape_fts_query() {
-        assert_eq!(escape_fts_query("hello world"), "hello world");
-        assert_eq!(escape_fts_query("hello (world)"), "hello world");
-        assert_eq!(escape_fts_query("test*query"), "testquery");
-        assert_eq!(escape_fts_query("a+b-c"), "abc");
-    }
+#[test]
+fn test_sanitize_fts_query() {
+    assert_eq!(sanitize_fts_query("hello world"), "hello* world*");
+    assert_eq!(sanitize_fts_query("hello (world)"), "hello* world*");
+    assert_eq!(sanitize_fts_query("test*query"), "testquery*");
+    assert_eq!(sanitize_fts_query("a+b-c"), "abc*");
+    // Previously crashing characters:
+    assert_eq!(sanitize_fts_query("!"), "");
+    assert_eq!(sanitize_fts_query("@#$%"), "");
+    assert_eq!(sanitize_fts_query("H2SO4!"), "H2SO4*");
+    assert_eq!(sanitize_fts_query("test.value"), "testvalue*");
+    assert_eq!(sanitize_fts_query("name='x'; DROP TABLE--"), "namex* DROP* TABLE*");
+}
 
     #[test]
     fn test_field_validation() {

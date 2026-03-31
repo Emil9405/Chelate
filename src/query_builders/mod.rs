@@ -3,6 +3,8 @@
 
 pub mod filters;
 pub mod fts;
+pub mod utils; 
+pub mod whitelist; // Утилиты: валидация полей, экранирование, файлы
 
 // Re-export основных типов
 pub use filters::{

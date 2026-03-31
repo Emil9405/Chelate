@@ -379,7 +379,7 @@ fn validate_password_strength(password: &str) -> Result<(), ApiError> {
 
 impl User {
     pub async fn find_by_username(pool: &SqlitePool, username: &str) -> ApiResult<User> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
+       sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ? COLLATE NOCASE")
             .bind(username)
             .fetch_one(pool)
             .await

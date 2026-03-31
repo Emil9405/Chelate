@@ -148,7 +148,7 @@ pub async fn get_reagent_with_batches(
         .map_err(|_| ApiError::reagent_not_found(&reagent_id))?;
 
     let batches: Vec<Batch> = sqlx::query_as(
-        "SELECT * FROM batches WHERE reagent_id = ? ORDER BY received_date DESC"
+        "SELECT * FROM batches WHERE reagent_id = ? AND deleted_at IS NULL ORDER BY received_date DESC"
     )
         .bind(&reagent_id)
         .fetch_all(&app_state.db_pool)
@@ -205,7 +205,7 @@ pub async fn use_reagent(
         .await
         .map_err(|_| ApiError::reagent_not_found(&reagent_id))?;
 
-    let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ?")
+    let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL")
         .bind(&batch_id)
         .bind(&reagent_id)
         .fetch_one(&app_state.db_pool)
@@ -329,7 +329,7 @@ pub async fn get_usage_history(
         .await
         .map_err(|_| ApiError::reagent_not_found(&reagent_id))?;
 
-    let _batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ?")
+    let _batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL")
         .bind(&batch_id)
         .bind(&reagent_id)
         .fetch_one(&app_state.db_pool)

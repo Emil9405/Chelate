@@ -29,25 +29,13 @@ impl FtsQueryBuilder {
 
     /// Построить FTS запрос (очистка и форматирование)
     pub fn build_fts_query(search: &str) -> String {
-        // Удаляем спецсимволы, которые могут сломать синтаксис FTS
-        let cleaned = search
-            .chars()
-            .filter(|c| !matches!(c, '(' | ')' | '*' | '"' | ':' | '^' | '-' | '+' | '~' | '&' | '|'))
-            .collect::<String>();
-        
-        // Разбиваем на слова и добавляем * к каждому (поиск по началу слова)
-        cleaned
-            .split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|word| format!("{}*", word))
-            .collect::<Vec<_>>()
-            .join(" ")
+        crate::query_builders::utils::sanitize_fts_query(search)
     }
 
-    /// Публичная обертка для эскейпинга
     pub fn escape_fts_query(query: &str) -> String {
-        Self::build_fts_query(query)
+        crate::query_builders::utils::sanitize_fts_query(query)
     }
+
 
     /// Построить общее условие поиска (FTS или LIKE)
     pub fn build_search_condition(
@@ -77,7 +65,7 @@ impl FtsQueryBuilder {
             (condition, vec![fts_query])
         } else {
             // Fallback на LIKE
-            let pattern = format!("%{}%", search_trimmed);
+            let pattern = format!("%{}%", crate::query_builders::utils::escape_like_value(search_trimmed));
             
             if like_fields.is_empty() {
                 return (String::new(), Vec::new());
@@ -108,7 +96,7 @@ impl FtsQueryBuilder {
             return (String::new(), Vec::new());
         }
 
-        let pattern = format!("%{}%", search_trimmed);
+        let pattern = format!("%{}%", crate::query_builders::utils::escape_like_value(search_trimmed));
 
         if use_fts {
             let fts_query = Self::build_fts_query(search_trimmed);

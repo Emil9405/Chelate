@@ -447,7 +447,7 @@ pub async fn create_batch(
     }
 
     // Проверка существования реагента
-    let _: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
+    let _: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ? AND deleted_at IS NULL")
         .bind(&reagent_id)
         .fetch_one(&app_state.db_pool)
         .await
@@ -564,7 +564,7 @@ pub async fn update_batch(
     batch_data.validate().map_err(|e| ApiError::ValidationError(e.to_string()))?;
 
     // Проверка существования
-    let existing: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ?")
+    let existing: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL")
         .bind(&batch_id)
         .bind(&reagent_id)
         .fetch_one(&app_state.db_pool)

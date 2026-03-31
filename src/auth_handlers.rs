@@ -1426,43 +1426,43 @@ pub async fn get_user_activity(
 
     // Build query with filters
     let mut sql = String::from(
-        r#"
-        SELECT id, user_id, action, entity_type, entity_id, 
+        r#"SELECT id, user_id, action, entity_type, entity_id,
                description, changes, ip_address, created_at
-        FROM audit_logs
-        WHERE user_id = ?
-        "#
+        FROM audit_logs WHERE user_id = ?"#
     );
+    let mut params: Vec<String> = vec![user_id.clone()];
 
-    let mut conditions = Vec::new();
-    
     if let Some(ref action_type) = query.action_type {
         if action_type != "all" {
-            conditions.push(format!("LOWER(action) LIKE '%{}%'", action_type.to_lowercase().replace('\'', "''")));
+            sql.push_str(" AND LOWER(action) LIKE ?");
+            let escaped = crate::query_builders::utils::escape_like_value(
+                &action_type.to_lowercase()
+            );
+            params.push(format!("%{}%", escaped));
         }
     }
-    
     if let Some(ref date_from) = query.date_from {
-        conditions.push(format!("created_at >= '{}'", date_from.replace('\'', "''")));
+        sql.push_str(" AND created_at >= ?");
+        params.push(date_from.clone());
     }
-    
     if let Some(ref date_to) = query.date_to {
-        conditions.push(format!("created_at <= '{}T23:59:59'", date_to.replace('\'', "''")));
-    }
-
-    for cond in conditions {
-        sql.push_str(&format!(" AND {}", cond));
+        sql.push_str(" AND created_at <= ?");
+        params.push(format!("{}T23:59:59", date_to));
     }
 
     sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
 
-    let rows: Vec<(String, Option<String>, String, String, Option<String>, Option<String>, Option<String>, Option<String>, String)> = 
-        sqlx::query_as(&sql)
-            .bind(&user_id)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&app_state.db_pool)
-            .await?;
+    let mut db_query = sqlx::query_as::<_, (
+        String, Option<String>, String, String, Option<String>,
+        Option<String>, Option<String>, Option<String>, String,
+    )>(&sql);
+
+    for p in &params {
+        db_query = db_query.bind(p);
+    }
+    db_query = db_query.bind(limit).bind(offset);
+
+    let rows = db_query.fetch_all(&app_state.db_pool).await?;
 
     let activities: Vec<ActivityRecord> = rows.into_iter()
         .map(|(id, user_id, action, entity_type, entity_id, description, changes, ip_address, created_at)| {

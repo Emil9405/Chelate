@@ -32,19 +32,7 @@ async fn check_fts_available(pool: &sqlx::SqlitePool) -> bool {
 
 /// Построение FTS запроса (очистка спецсимволов + prefix search)
 fn build_fts_query(search: &str) -> String {
-    // Удаляем спецсимволы FTS5
-    let cleaned: String = search
-        .chars()
-        .filter(|c| !matches!(c, '(' | ')' | '*' | '"' | ':' | '^' | '-' | '+' | '~' | '&' | '|'))
-        .collect();
-
-    // Разбиваем на слова и добавляем * для prefix search
-    cleaned
-        .split_whitespace()
-        .filter(|s| !s.is_empty())
-        .map(|word| format!("{}*", word))
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::query_builders::utils::sanitize_fts_query(search)
 }
 
 /// Добавляет условие поиска с FTS или LIKE fallback
@@ -362,7 +350,7 @@ pub async fn search_reagents(
                       hazard_pictograms, status, created_by, updated_by, created_at,
                       updated_at, total_quantity, batches_count, primary_unit
                FROM reagents
-               WHERE name LIKE ? OR cas_number LIKE ? OR formula LIKE ?
+               WHERE (name LIKE ? OR cas_number LIKE ? OR formula LIKE ?)
                AND deleted_at IS NULL
                ORDER BY total_quantity DESC
                LIMIT ?"#
@@ -403,15 +391,15 @@ pub async fn get_reagent_by_id(
             COUNT(CASE WHEN status = 'available' THEN 1 END) as available_batches,
             COUNT(CASE WHEN expiry_date IS NOT NULL AND expiry_date <= date('now', '+30 days') AND expiry_date > date('now') THEN 1 END) as expiring_soon_count,
             COUNT(CASE WHEN expiry_date IS NOT NULL AND expiry_date <= date('now') THEN 1 END) as expired_count,
-            (SELECT unit FROM batches WHERE reagent_id = ? AND status = 'available' LIMIT 1) as primary_unit
-        FROM batches WHERE reagent_id = ?
+            (SELECT unit FROM batches WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL LIMIT 1) as primary_unit
+            FROM batches WHERE reagent_id = ? AND deleted_at IS NULL
     "#)
         .bind(&id)
         .bind(&id)
         .fetch_one(pool)
         .await?;
 
-    let batches: Vec<Batch> = sqlx::query_as("SELECT * FROM batches WHERE reagent_id = ? ORDER BY created_at DESC")
+    let batches: Vec<Batch> = sqlx::query_as("SELECT * FROM batches WHERE reagent_id = ? AND deleted_at IS NULL ORDER BY created_at DESC")
         .bind(&id)
         .fetch_all(pool)
         .await?;
@@ -645,17 +633,17 @@ pub async fn refresh_reagent_cache(pool: &sqlx::SqlitePool, reagent_id: &str) ->
             total_quantity = (
                 SELECT COALESCE(SUM(quantity), 0)
                 FROM batches
-                WHERE reagent_id = ? AND status = 'available'
+                WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
             ),
             batches_count = (
                 SELECT COUNT(*)
                 FROM batches
-                WHERE reagent_id = ? AND status = 'available'
+                WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
             ),
             primary_unit = (
                 SELECT unit
                 FROM batches
-                WHERE reagent_id = ? AND status = 'available'
+                WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
                 LIMIT 1
             ),
             updated_at = datetime('now')
@@ -682,17 +670,17 @@ pub async fn rebuild_cache(
             total_quantity = (
                 SELECT COALESCE(SUM(quantity), 0)
                 FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available'
+                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
             ),
             batches_count = (
                 SELECT COUNT(*)
                 FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available'
+                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL      
             ),
             primary_unit = (
                 SELECT unit
                 FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available'
+                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
                 LIMIT 1
             ),
             updated_at = datetime('now')

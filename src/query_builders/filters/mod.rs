@@ -3,6 +3,7 @@
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashSet;
+pub mod whitelist;
 
 // ==================== FIELD WHITELIST ====================
 
