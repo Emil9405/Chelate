@@ -16,13 +16,19 @@ import './index.css';
 const App = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
-  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [currentPage, setCurrentPage] = useState(
+    () => localStorage.getItem('chelate_page') || 'dashboard'
+  );
   const [loading, setLoading] = useState(true);
   const [backendError, setBackendError] = useState(false);
 
   useEffect(() => {
     initializeApp();
   }, []);
+
+  useEffect(() => {
+  localStorage.setItem('chelate_page', currentPage);
+  }, [currentPage]);
 
   const initializeApp = async () => {
     api.init(); // Initialize token from localStorage
