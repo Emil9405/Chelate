@@ -10,19 +10,20 @@ import Button from '../Button';
 import FormGroup from '../FormGroup';
 import { CheckIcon, CloseIcon, AlertCircleIcon } from '../Icons';
 import { styles } from './styles';
-import { useFormSubmit, cleanPayload } from './helpers';
+import { useFormSubmit, cleanPayload, cleanPayloadForUpdate } from './helpers';
 
 const BatchFormModal = ({ isOpen, onClose, title, reagentId, batch = null, onSave }) => {
   const isEdit = !!batch;
   const [formData, setFormData] = useState({
     batch_number: '', 
+    lot_number: '',
     quantity: '', 
     unit: 'g', 
     pack_size: '',
     cat_number: '',
     supplier: '', 
     manufacturer: '',
-    received_date: '', 
+    received_date: new Date().toISOString().split('T')[0], 
     expiry_date: '', 
     location: '', 
     notes: ''
@@ -34,6 +35,7 @@ const BatchFormModal = ({ isOpen, onClose, title, reagentId, batch = null, onSav
     if (batch) {
       setFormData({
         batch_number: batch.batch_number || '',
+        lot_number: batch.lot_number || '',
         quantity: batch.quantity != null ? parseFloat(batch.quantity) : '',
         unit: batch.unit || '',
         pack_size: batch.pack_size != null ? parseFloat(batch.pack_size) : '',
@@ -50,14 +52,21 @@ const BatchFormModal = ({ isOpen, onClose, title, reagentId, batch = null, onSav
 
   const handleSubmit = useFormSubmit(async () => {
     setLoading(true);
-    const payload = cleanPayload({ 
+    const raw = { 
       ...formData, 
       quantity: parseFloat(formData.quantity),
       pack_size: formData.pack_size ? parseFloat(formData.pack_size) : null
+    };
+    // Use different cleaning strategy for create vs edit
+    const payload = isEdit ? cleanPayloadForUpdate(raw) : cleanPayload(raw);
+    // Format dates: non-empty → append timezone; empty → remove to avoid DateTime parse errors
+    ['received_date', 'expiry_date'].forEach(key => {
+      if (payload[key] && payload[key].length > 0) {
+        payload[key] = `${payload[key]}T00:00:00Z`;
+      } else {
+        delete payload[key];
+      }
     });
-    // Format dates with timezone
-    if (payload.received_date) payload.received_date = `${payload.received_date}T00:00:00Z`;
-    if (payload.expiry_date) payload.expiry_date = `${payload.expiry_date}T00:00:00Z`;
     
     try {
       let response;
@@ -104,6 +113,16 @@ const BatchFormModal = ({ isOpen, onClose, title, reagentId, batch = null, onSav
                 required 
               />
             </FormGroup>
+            <FormGroup label="Lot Number">
+              <Input 
+                name="lot_number" 
+                value={formData.lot_number} 
+                onChange={handleChange} 
+                placeholder="e.g. LOT-2024-001"
+              />
+            </FormGroup>
+          </div>
+          <div style={styles.twoColGrid}>
             <FormGroup label="Quantity" required>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <Input 

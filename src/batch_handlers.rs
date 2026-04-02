@@ -553,6 +553,8 @@ pub async fn create_batch(
 }
 
 /// Обновить партию
+/// Uses dynamic SET builder (like update_reagent) instead of COALESCE
+/// so that empty-string values can actually clear nullable text fields.
 pub async fn update_batch(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
@@ -573,42 +575,105 @@ pub async fn update_batch(
 
     let now = Utc::now();
 
-    sqlx::query(
-        r#"UPDATE batches SET
-            lot_number = COALESCE(?, lot_number),
-            batch_number = COALESCE(?, batch_number),
-            cat_number = COALESCE(?, cat_number),
-            quantity = COALESCE(?, quantity),
-            unit = COALESCE(?, unit),
-            pack_size = COALESCE(?, pack_size),
-            expiry_date = COALESCE(?, expiry_date),
-            supplier = COALESCE(?, supplier),
-            manufacturer = COALESCE(?, manufacturer),
-            status = COALESCE(?, status),
-            location = COALESCE(?, location),
-            notes = COALESCE(?, notes),
-            updated_by = ?,
-            updated_at = ?
-        WHERE id = ? AND reagent_id = ?"#,
-    )
-    .bind(&batch_data.lot_number)
-    .bind(&batch_data.batch_number)
-    .bind(&batch_data.cat_number)
-    .bind(&batch_data.quantity)
-    .bind(&batch_data.unit)
-    .bind(&batch_data.pack_size)
-    .bind(&batch_data.expiry_date)
-    .bind(&batch_data.supplier)
-    .bind(&batch_data.manufacturer)
-    .bind(&batch_data.status)
-    .bind(&batch_data.location)
-    .bind(&batch_data.notes)
-    .bind(&user_id)
-    .bind(&now)
-    .bind(&batch_id)
-    .bind(&reagent_id)
-    .execute(&app_state.db_pool)
-    .await?;
+    // Build dynamic SET clause — only include fields present in request
+    let mut sets: Vec<String> = Vec::new();
+    
+    // We'll collect typed bind values separately since they have different types
+    // Strategy: build the full SQL then bind in order
+
+    // Track which fields to bind (in order)
+    #[derive(Debug)]
+    enum BindValue {
+        Str(String),
+        OptStr(Option<String>),
+        F64(f64),
+        OptF64(Option<f64>),
+        DateTime(chrono::DateTime<Utc>),
+        OptDateTime(Option<chrono::DateTime<Utc>>),
+    }
+
+    let mut binds: Vec<BindValue> = Vec::new();
+
+    macro_rules! upd_str {
+        ($field:ident, $col:expr) => {
+            if let Some(ref v) = batch_data.$field {
+                sets.push(format!("{} = ?", $col));
+                // Empty string → NULL in DB for cleaner semantics
+                if v.is_empty() {
+                    binds.push(BindValue::OptStr(None));
+                } else {
+                    binds.push(BindValue::OptStr(Some(v.clone())));
+                }
+            }
+        };
+    }
+
+    macro_rules! upd_f64 {
+        ($field:ident, $col:expr) => {
+            if let Some(v) = batch_data.$field {
+                sets.push(format!("{} = ?", $col));
+                binds.push(BindValue::F64(v));
+            }
+        };
+    }
+
+    macro_rules! upd_dt {
+        ($field:ident, $col:expr) => {
+            if let Some(ref v) = batch_data.$field {
+                sets.push(format!("{} = ?", $col));
+                binds.push(BindValue::DateTime(*v));
+            }
+        };
+    }
+
+    upd_str!(lot_number, "lot_number");
+    upd_str!(batch_number, "batch_number");
+    upd_str!(cat_number, "cat_number");
+    upd_f64!(quantity, "quantity");
+    upd_str!(unit, "unit");
+    upd_f64!(pack_size, "pack_size");
+    upd_dt!(expiry_date, "expiry_date");
+    upd_str!(supplier, "supplier");
+    upd_str!(manufacturer, "manufacturer");
+    upd_str!(status, "status");
+    upd_str!(location, "location");
+    upd_str!(notes, "notes");
+    upd_dt!(received_date, "received_date");
+
+    if sets.is_empty() {
+        return Err(ApiError::BadRequest("No fields to update".to_string()));
+    }
+
+    // Always update audit fields
+    sets.push("updated_by = ?".to_string());
+    sets.push("updated_at = ?".to_string());
+
+    let sql = format!(
+        "UPDATE batches SET {} WHERE id = ? AND reagent_id = ?",
+        sets.join(", ")
+    );
+
+    let mut query = sqlx::query(&sql);
+
+    // Bind all dynamic values in order
+    for b in &binds {
+        match b {
+            BindValue::Str(v) => { query = query.bind(v); }
+            BindValue::OptStr(v) => { query = query.bind(v); }
+            BindValue::F64(v) => { query = query.bind(v); }
+            BindValue::OptF64(v) => { query = query.bind(v); }
+            BindValue::DateTime(v) => { query = query.bind(v); }
+            BindValue::OptDateTime(v) => { query = query.bind(v); }
+        }
+    }
+
+    // Bind audit + WHERE params
+    query = query.bind(&user_id);
+    query = query.bind(&now);
+    query = query.bind(&batch_id);
+    query = query.bind(&reagent_id);
+
+    query.execute(&app_state.db_pool).await?;
 
     let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
         .bind(&batch_id)

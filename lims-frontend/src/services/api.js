@@ -485,17 +485,6 @@ export const api = {
         return response.data || response;
     },
 
-
-    getRoomInventory: async (roomId) => {
-        const response = await apiCall(`${API_V1_BASE}/rooms/${roomId}/inventory`);
-        return response;
-    },
-
-    getRoomPlacements: async (roomId) => {
-        const response = await apiCall(`${API_V1_BASE}/rooms/${roomId}/placements`);
-        return response;
-    },
-
     useReagent: async (reagentId, batchId, usageData) => api.useBatch(reagentId, batchId, usageData),
 
     getUsageHistory: async (reagentId, batchId, params = {}) => {

@@ -19,12 +19,34 @@ export const useFormSubmit = (onSubmit, validate) => {
 };
 
 /**
- * Clean payload by removing empty strings and null values
+ * Clean payload by removing empty strings and null values.
+ * Use for CREATE requests where absent = use server default.
  */
 export function cleanPayload(data) {
   const payload = { ...data };
   Object.keys(payload).forEach(key => {
     if (payload[key] === '' || payload[key] === null) {
+      delete payload[key];
+    }
+  });
+  return payload;
+}
+
+/**
+ * Clean payload for UPDATE requests.
+ * Works with backend COALESCE(?, field) pattern:
+ * - undefined → removed from payload → null in Rust → COALESCE keeps old value
+ * - '' (empty string) → sent as '' → COALESCE returns '' → field "cleared"
+ * - null → removed from payload (same as undefined, keeps old value)
+ * - value → sent as value → COALESCE returns value → field updated
+ *
+ * To CLEAR a field: leave the input empty (sends '')
+ * To SKIP a field: don't include it (won't appear in form state)
+ */
+export function cleanPayloadForUpdate(data) {
+  const payload = { ...data };
+  Object.keys(payload).forEach(key => {
+    if (payload[key] === undefined || payload[key] === null) {
       delete payload[key];
     }
   });
@@ -61,6 +83,7 @@ export function getExpiryStatus(expiryDate) {
 export default {
   useFormSubmit,
   cleanPayload,
+  cleanPayloadForUpdate,
   formatDate,
   getExpiryStatus
 };

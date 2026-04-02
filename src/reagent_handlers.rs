@@ -536,11 +536,19 @@ pub async fn update_reagent(
     }
 
     let mut sets = Vec::new();
-    let mut vals: Vec<String> = Vec::new();
+    let mut vals: Vec<Option<String>> = Vec::new();
 
+    // upd! maps Some("") to None (clear → NULL) and Some(value) to Some(value)
     macro_rules! upd {
         ($f:ident, $c:expr) => {
-            if let Some(ref v) = body.$f { sets.push(concat!($c, " = ?")); vals.push(v.clone()); }
+            if let Some(ref v) = body.$f {
+                sets.push(concat!($c, " = ?"));
+                if v.is_empty() {
+                    vals.push(None);
+                } else {
+                    vals.push(Some(v.clone()));
+                }
+            }
         };
     }
 
@@ -557,7 +565,7 @@ pub async fn update_reagent(
 
     if let Some(mw) = body.molecular_weight {
         sets.push("molecular_weight = ?");
-        vals.push(mw.to_string());
+        vals.push(Some(mw.to_string()));
     }
 
     if sets.is_empty() {
@@ -565,7 +573,7 @@ pub async fn update_reagent(
     }
 
     sets.push("updated_by = ?");
-    vals.push(user_id);
+    vals.push(Some(user_id));
     sets.push("updated_at = datetime('now')");
 
     let sql = format!("UPDATE reagents SET {} WHERE id = ?", sets.join(", "));
