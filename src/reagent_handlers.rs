@@ -374,25 +374,69 @@ pub async fn get_reagent_by_id(
 ) -> ApiResult<HttpResponse> {
     let id = path.into_inner();
     let pool = &app_state.db_pool;
-
-    let reagent: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ? AND deleted_at IS NULL")
+    let reagent: Reagent = sqlx::query_as(
+        "SELECT * FROM reagents WHERE id = ? AND deleted_at IS NULL"
+    )
         .bind(&id)
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| ApiError::not_found("Reagent"))?;
-
-    // Получаем агрегированные данные по батчам
-    let stock: StockAggregation = sqlx::query_as(r#"
+        let stock: StockAggregation = sqlx::query_as(r#"
         SELECT
-            COALESCE(SUM(CASE WHEN status = 'available' THEN quantity ELSE 0 END), 0) as total_quantity,
-            COALESCE(SUM(CASE WHEN status = 'reserved' THEN quantity ELSE 0 END), 0) as reserved_quantity,
-            COALESCE(SUM(original_quantity), 0) as original_quantity,
+            COALESCE(SUM(
+                CASE WHEN status = 'available' THEN quantity * CASE LOWER(unit)
+                    WHEN 'kg'  THEN 1000.0
+                    WHEN 'g'   THEN 1.0
+                    WHEN 'mg'  THEN 0.001
+                    WHEN 'μg'  THEN 0.000001
+                    WHEN 'ug'  THEN 0.000001
+                    WHEN 'l'   THEN 1000.0
+                    WHEN 'ml'  THEN 1.0
+                    WHEN 'μl'  THEN 0.001
+                    WHEN 'ul'  THEN 0.001
+                    ELSE 1.0
+                END ELSE 0 END
+            ), 0) as total_quantity,
+            COALESCE(SUM(
+                CASE WHEN status = 'reserved' THEN quantity * CASE LOWER(unit)
+                    WHEN 'kg'  THEN 1000.0
+                    WHEN 'g'   THEN 1.0
+                    WHEN 'mg'  THEN 0.001
+                    WHEN 'μg'  THEN 0.000001
+                    WHEN 'ug'  THEN 0.000001
+                    WHEN 'l'   THEN 1000.0
+                    WHEN 'ml'  THEN 1.0
+                    WHEN 'μl'  THEN 0.001
+                    WHEN 'ul'  THEN 0.001
+                    ELSE 1.0
+                END ELSE 0 END
+            ), 0) as reserved_quantity,
+            COALESCE(SUM(
+                original_quantity * CASE LOWER(unit)
+                    WHEN 'kg'  THEN 1000.0
+                    WHEN 'g'   THEN 1.0
+                    WHEN 'mg'  THEN 0.001
+                    WHEN 'μg'  THEN 0.000001
+                    WHEN 'ug'  THEN 0.000001
+                    WHEN 'l'   THEN 1000.0
+                    WHEN 'ml'  THEN 1.0
+                    WHEN 'μl'  THEN 0.001
+                    WHEN 'ul'  THEN 0.001
+                    ELSE 1.0
+                END
+            ), 0) as original_quantity,
             COUNT(*) as batches_count,
             COUNT(CASE WHEN status = 'available' THEN 1 END) as available_batches,
             COUNT(CASE WHEN expiry_date IS NOT NULL AND expiry_date <= date('now', '+30 days') AND expiry_date > date('now') THEN 1 END) as expiring_soon_count,
             COUNT(CASE WHEN expiry_date IS NOT NULL AND expiry_date <= date('now') THEN 1 END) as expired_count,
-            (SELECT unit FROM batches WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL LIMIT 1) as primary_unit
-            FROM batches WHERE reagent_id = ? AND deleted_at IS NULL
+            (SELECT CASE
+                WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
+                WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
+                ELSE unit
+             END
+             FROM batches WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL LIMIT 1
+            ) as primary_unit
+        FROM batches WHERE reagent_id = ? AND deleted_at IS NULL
     "#)
         .bind(&id)
         .bind(&id)
@@ -639,7 +683,20 @@ pub async fn refresh_reagent_cache(pool: &sqlx::SqlitePool, reagent_id: &str) ->
     sqlx::query(r#"
         UPDATE reagents SET
             total_quantity = (
-                SELECT COALESCE(SUM(quantity), 0)
+                SELECT COALESCE(SUM(
+                    quantity * CASE LOWER(unit)
+                        WHEN 'kg'  THEN 1000.0
+                        WHEN 'g'   THEN 1.0
+                        WHEN 'mg'  THEN 0.001
+                        WHEN 'μg'  THEN 0.000001
+                        WHEN 'ug'  THEN 0.000001
+                        WHEN 'l'   THEN 1000.0
+                        WHEN 'ml'  THEN 1.0
+                        WHEN 'μl'  THEN 0.001
+                        WHEN 'ul'  THEN 0.001
+                        ELSE 1.0
+                    END
+                ), 0)
                 FROM batches
                 WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
             ),
@@ -649,7 +706,11 @@ pub async fn refresh_reagent_cache(pool: &sqlx::SqlitePool, reagent_id: &str) ->
                 WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
             ),
             primary_unit = (
-                SELECT unit
+                SELECT CASE
+                    WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
+                    WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
+                    ELSE unit
+                END
                 FROM batches
                 WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
                 LIMIT 1
@@ -663,7 +724,7 @@ pub async fn refresh_reagent_cache(pool: &sqlx::SqlitePool, reagent_id: &str) ->
         .bind(reagent_id)
         .execute(pool)
         .await?;
-
+ 
     Ok(())
 }
 
@@ -672,21 +733,38 @@ pub async fn rebuild_cache(
     app_state: web::Data<Arc<AppState>>,
 ) -> ApiResult<HttpResponse> {
     let start = std::time::Instant::now();
-
+ 
     let result = sqlx::query(r#"
         UPDATE reagents SET
             total_quantity = (
-                SELECT COALESCE(SUM(quantity), 0)
+                SELECT COALESCE(SUM(
+                    quantity * CASE LOWER(unit)
+                        WHEN 'kg'  THEN 1000.0
+                        WHEN 'g'   THEN 1.0
+                        WHEN 'mg'  THEN 0.001
+                        WHEN 'μg'  THEN 0.000001
+                        WHEN 'ug'  THEN 0.000001
+                        WHEN 'l'   THEN 1000.0
+                        WHEN 'ml'  THEN 1.0
+                        WHEN 'μl'  THEN 0.001
+                        WHEN 'ul'  THEN 0.001
+                        ELSE 1.0
+                    END
+                ), 0)
                 FROM batches
                 WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
             ),
             batches_count = (
                 SELECT COUNT(*)
                 FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL      
+                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
             ),
             primary_unit = (
-                SELECT unit
+                SELECT CASE
+                    WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
+                    WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
+                    ELSE unit
+                END
                 FROM batches
                 WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
                 LIMIT 1
@@ -695,9 +773,9 @@ pub async fn rebuild_cache(
     "#)
         .execute(&app_state.db_pool)
         .await?;
-
+ 
     let elapsed = start.elapsed();
-
+ 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         serde_json::json!({
             "rows_updated": result.rows_affected(),
@@ -706,7 +784,6 @@ pub async fn rebuild_cache(
         format!("Cache rebuilt: {} reagents in {:?}", result.rows_affected(), elapsed),
     )))
 }
-
 // ==================== GET REAGENT WITH BATCHES (legacy compatibility) ====================
 
 pub async fn get_reagent_with_batches(
