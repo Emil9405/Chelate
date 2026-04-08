@@ -83,7 +83,8 @@ const GroupBadge = ({ status, isOpened }) => {
     disposed: { bg: '#e2e8f0', text: '#718096' },
   };
   const c = colors[status] || colors.full;
-  const label = isOpened ? 'Opened' : 'Sealed';
+  const label = status === 'empty' ? 'Empty' : status === 'disposed' ? 'Disposed' : isOpened ? 'Opened' : 'Sealed';
+  const icon = status === 'empty' ? '∅' : status === 'disposed' ? '🗑' : isOpened ? '⊙' : '🔒';
 
   return (
     <span style={{
@@ -91,7 +92,7 @@ const GroupBadge = ({ status, isOpened }) => {
       background: c.bg, color: c.text, fontWeight: '600',
       display: 'inline-flex', alignItems: 'center', gap: '4px',
     }}>
-      {isOpened ? '⊙' : '🔒'} {label}
+      {icon} {label}
     </span>
   );
 };
@@ -123,8 +124,12 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
     );
   }
 
-  const groups = groupContainers(containers);
-  const allUnplaced = containers.filter(c => !c.position_id && !c.placement_id && getStatus(c) !== 'disposed');
+  const activeContainers = containers.filter(c => getStatus(c) !== 'empty' && getStatus(c) !== 'disposed');
+  const emptyCount = containers.filter(c => getStatus(c) === 'empty').length;
+  const disposedCount = containers.filter(c => getStatus(c) === 'disposed').length;
+
+  const groups = groupContainers(activeContainers);
+  const allUnplaced = activeContainers.filter(c => !c.position_id && !c.placement_id);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -232,6 +237,17 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
           </div>
         );
       })}
+
+      {/* Empty / disposed summary */}
+      {(emptyCount > 0 || disposedCount > 0) && (
+        <div style={{
+          fontSize: '11px', color: '#a0aec0', padding: '4px 10px',
+          display: 'flex', gap: '12px',
+        }}>
+          {emptyCount > 0 && <span>∅ {emptyCount} empty</span>}
+          {disposedCount > 0 && <span>🗑 {disposedCount} disposed</span>}
+        </div>
+      )}
     </div>
   );
 };

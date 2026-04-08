@@ -127,6 +127,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
     let mut prepared_batches: Vec<PreparedBatch> = Vec::new();
     let mut prepared_containers: Vec<PreparedContainer> = Vec::new();
     let mut prepared_placements: Vec<PreparedPlacement> = Vec::new();
+    let mut seen_reagent_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     
     for r in &reagents {
         let name = r.name.trim();
@@ -148,20 +149,23 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
             .or_insert_with(|| Uuid::new_v4().to_string())
             .clone();
         
-        prepared_reagents.push(PreparedReagent {
-            id: reagent_id.clone(),
-            name: name.to_string(),
-            formula: r.formula.clone(),
-            cas_number: r.cas_number.clone(),
-            manufacturer: r.manufacturer.clone(),
-            description: r.description.clone(),
-            storage: r.storage.clone(),
-            appearance: r.appearance.clone(),
-            hazard_pictograms: r.hazard_pictograms.clone(),
-            molecular_weight: r.molecular_weight,
-            owner_id: owner_id.clone(),
-            created_at,
-        });
+        // Only prepare each reagent once (same name → same id)
+        if seen_reagent_ids.insert(reagent_id.clone()) {
+            prepared_reagents.push(PreparedReagent {
+                id: reagent_id.clone(),
+                name: name.to_string(),
+                formula: r.formula.clone(),
+                cas_number: r.cas_number.clone(),
+                manufacturer: r.manufacturer.clone(),
+                description: r.description.clone(),
+                storage: r.storage.clone(),
+                appearance: r.appearance.clone(),
+                hazard_pictograms: r.hazard_pictograms.clone(),
+                molecular_weight: r.molecular_weight,
+                owner_id: owner_id.clone(),
+                created_at,
+            });
+        }
         
         // Prepare batch if batch data present
         if let (Some(batch_num), Some(qty), Some(unit)) = (&r.batch_number, r.quantity, &r.units) {
@@ -189,6 +193,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
                 reagent_id: reagent_id.clone(),
                 batch_number: batch_number_trimmed,
                 cat_number: r.catalog_number.clone(),
+                manufacturer: r.manufacturer.clone(),
                 quantity: qty,
                 unit: unit.clone(),
                 pack_size: r.pack_size,
@@ -286,7 +291,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
                 .bind(&r.name)
                 .bind(&r.formula)
                 .bind(&r.cas_number)
-                .bind(&r.manufacturer)
+                .bind(None::<String>) // manufacturer now lives on batch, not reagent
                 .bind(&r.description)
                 .bind(&r.storage)
                 .bind(&r.appearance)
@@ -316,13 +321,13 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
     
     for chunk in prepared_batches.chunks(BATCH_CHUNK_SIZE) {
         let values_clause: String = chunk.iter()
-            .map(|_| "(?,?,?,?,?,?,0.0,?,?,?,?,'available',?,?,?,?,?)")
+            .map(|_| "(?,?,?,?,?,?,?,0.0,?,?,?,?,'available',?,?,?,?,?)")
             .collect::<Vec<_>>()
             .join(",");
         
         let sql = format!(
             r#"INSERT INTO batches (
-                id, reagent_id, batch_number, cat_number, quantity, original_quantity,
+                id, reagent_id, batch_number, cat_number, manufacturer, quantity, original_quantity,
                 reserved_quantity, unit, pack_size, expiry_date, location, status,
                 received_date, created_at, updated_at, created_by, updated_by
             ) VALUES {}
@@ -331,6 +336,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
                 original_quantity = original_quantity + excluded.original_quantity,
                 pack_size = COALESCE(excluded.pack_size, pack_size),
                 cat_number = COALESCE(excluded.cat_number, cat_number),
+                manufacturer = COALESCE(excluded.manufacturer, manufacturer),
                 deleted_at = NULL"#,
             values_clause
         );
@@ -342,6 +348,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
                 .bind(&b.reagent_id)
                 .bind(&b.batch_number)
                 .bind(&b.cat_number)
+                .bind(&b.manufacturer)
                 .bind(b.quantity)
                 .bind(b.quantity)
                 .bind(&b.unit)

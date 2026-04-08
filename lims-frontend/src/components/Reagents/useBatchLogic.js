@@ -174,6 +174,12 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
     setUsageError(prev => ({ ...prev, [batchId]: '' }));
   };
 
+  // Helper: parse container quantity safely (handles object wrappers)
+  const getContainerQty = (container) => {
+    const raw = container.quantity ?? container.container_quantity;
+    return typeof raw === 'object' && raw !== null ? raw.parsedValue : raw;
+  };
+
   const handleQuantityUse = useCallback(async (batch) => {
     const input = usageInputs[batch.id] || { quantity: '' };
     const qty = parseFloat(input.quantity);
@@ -186,26 +192,15 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
     const containers = containersMap[batch.id] || [];
     const selectedContainerId = usageContainer[batch.id];
 
-    if (containers.length > 1 && !selectedContainerId) {
-      setUsageError(prev => ({ ...prev, [batch.id]: 'Select a container' }));
-      return;
-    }
+    // --- If a specific container is selected, use only from it ---
+    if (selectedContainerId) {
+      const container = containers.find(c => c.id === selectedContainerId);
+      const cQty = getContainerQty(container);
 
-    const containerId = selectedContainerId || (containers.length === 1 ? containers[0].id : null);
-
-    if (containerId) {
-      const container = containers.find(c => c.id === containerId);
-      
-      // Защита от объекта quantity
-      const rawContainerQty = container.quantity ?? container.container_quantity;
-      const parsedContainerQty = typeof rawContainerQty === 'object' && rawContainerQty !== null 
-          ? rawContainerQty.parsedValue 
-          : rawContainerQty;
-
-      if (container && qty > parsedContainerQty + 0.001) {
+      if (container && qty > cQty + 0.001) {
         setUsageError(prev => ({
           ...prev,
-          [batch.id]: `Max in this container: ${parsedContainerQty}`,
+          [batch.id]: `Max in this container: ${cQty}`,
         }));
         return;
       }
@@ -214,10 +209,8 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
       setUsageError(prev => ({ ...prev, [batch.id]: '' }));
 
       try {
-        await api.useFromContainer(containerId, {
-          quantity: qty,
-          purpose: null,
-          notes: null,
+        await api.useFromContainer(selectedContainerId, {
+          quantity: qty, purpose: null, notes: null,
         });
         setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}` }));
         setUsageInputs(prev => ({ ...prev, [batch.id]: { quantity: '' } }));
@@ -230,31 +223,84 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
       } finally {
         setUsageLoading(prev => ({ ...prev, [batch.id]: false }));
       }
-    } else {
-      // Legacy path (без контейнеров)
-      const rawAvailable = batch.quantity - (batch.reserved_quantity || 0);
-      const available = typeof rawAvailable === 'object' && rawAvailable !== null ? rawAvailable.parsedValue : rawAvailable;
-      
-      if (qty > available) {
-        setUsageError(prev => ({ ...prev, [batch.id]: `Max: ${available}` }));
+      return;
+    }
+
+    // --- No container selected: auto-distribute across containers ---
+    if (containers.length > 0) {
+      // Sort: opened first, then by sequence_number
+      const sorted = [...containers]
+        .filter(c => getContainerQty(c) > 0)
+        .sort((a, b) => (b.is_opened ? 1 : 0) - (a.is_opened ? 1 : 0) || a.sequence_number - b.sequence_number);
+
+      const totalAvailable = sorted.reduce((sum, c) => sum + getContainerQty(c), 0);
+      if (qty > totalAvailable + 0.001) {
+        setUsageError(prev => ({ ...prev, [batch.id]: `Max available: ${totalAvailable.toFixed(2)}` }));
         return;
+      }
+
+      // Build distribution plan
+      let remaining = qty;
+      const plan = []; // [{ containerId, quantity }]
+      for (const c of sorted) {
+        if (remaining <= 0.001) break;
+        const cQty = getContainerQty(c);
+        const take = Math.min(remaining, cQty);
+        plan.push({ containerId: c.id, quantity: parseFloat(take.toFixed(6)) });
+        remaining -= take;
       }
 
       setUsageLoading(prev => ({ ...prev, [batch.id]: true }));
       setUsageError(prev => ({ ...prev, [batch.id]: '' }));
 
       try {
-        await api.useReagent(reagentId, batch.id, { quantity_used: qty });
-        setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}` }));
+        for (const step of plan) {
+          await api.useFromContainer(step.containerId, {
+            quantity: step.quantity, purpose: null, notes: null,
+          });
+        }
+        const usedFrom = plan.length === 1 ? '' : ` (from ${plan.length} containers)`;
+        setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}${usedFrom}` }));
         setUsageInputs(prev => ({ ...prev, [batch.id]: { quantity: '' } }));
         loadBatches();
+        loadContainers(batch.id);
         onReagentsRefresh?.();
         setTimeout(() => setUsageSuccess(prev => ({ ...prev, [batch.id]: '' })), 2500);
       } catch (err) {
-        setUsageError(prev => ({ ...prev, [batch.id]: err.message || 'Error' }));
+        // Partial usage may have occurred — refresh data
+        loadBatches();
+        loadContainers(batch.id);
+        onReagentsRefresh?.();
+        setUsageError(prev => ({ ...prev, [batch.id]: err.message || 'Error during auto-distribution' }));
       } finally {
         setUsageLoading(prev => ({ ...prev, [batch.id]: false }));
       }
+      return;
+    }
+
+    // --- Legacy path (no containers) ---
+    const rawAvailable = batch.quantity - (batch.reserved_quantity || 0);
+    const available = typeof rawAvailable === 'object' && rawAvailable !== null ? rawAvailable.parsedValue : rawAvailable;
+    
+    if (qty > available) {
+      setUsageError(prev => ({ ...prev, [batch.id]: `Max: ${available}` }));
+      return;
+    }
+
+    setUsageLoading(prev => ({ ...prev, [batch.id]: true }));
+    setUsageError(prev => ({ ...prev, [batch.id]: '' }));
+
+    try {
+      await api.useReagent(reagentId, batch.id, { quantity_used: qty });
+      setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}` }));
+      setUsageInputs(prev => ({ ...prev, [batch.id]: { quantity: '' } }));
+      loadBatches();
+      onReagentsRefresh?.();
+      setTimeout(() => setUsageSuccess(prev => ({ ...prev, [batch.id]: '' })), 2500);
+    } catch (err) {
+      setUsageError(prev => ({ ...prev, [batch.id]: err.message || 'Error' }));
+    } finally {
+      setUsageLoading(prev => ({ ...prev, [batch.id]: false }));
     }
   }, [reagentId, usageInputs, usageContainer, containersMap, loadBatches, loadContainers, onReagentsRefresh]);
 

@@ -83,6 +83,8 @@ pub struct BatchImportDto {
     pub batch_number: String,
     #[serde(alias = "Catalog Number", alias = "cat_number", alias = "Catalogue No", alias = "Catalog #")]
     pub cat_number: Option<String>,
+    #[serde(alias = "Manufacturer", alias = "manufacturer", alias = "Производитель")]
+    pub manufacturer: Option<String>,
     pub supplier: Option<String>,
     #[serde(alias = "quantity", alias = "Quantity", alias = "Amount")]
     pub quantity: f64, 
@@ -139,6 +141,7 @@ pub(crate) struct PreparedBatch {
     pub reagent_id: String,
     pub batch_number: String,
     pub cat_number: Option<String>,
+    pub manufacturer: Option<String>,
     pub quantity: f64,
     pub unit: String,
     pub pack_size: Option<f64>,

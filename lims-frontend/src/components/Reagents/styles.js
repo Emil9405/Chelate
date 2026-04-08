@@ -7,7 +7,7 @@ export const COLUMN_WIDTHS = {
 };
 
 // Compact batch row: Batch# | Qty | Status | Location | Expiry | ▼
-export const BATCH_ROW_COLUMNS = '120px 100px 80px 1fr 100px 28px';
+export const BATCH_ROW_COLUMNS = '120px 100px 80px 120px 1fr 100px 28px';
 
 export const accordionStyles = {
   // ==================== Reagent Accordion ====================

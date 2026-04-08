@@ -136,6 +136,7 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
         reagent_id: String,
         batch_number: String,
         cat_number: Option<String>,
+        manufacturer: Option<String>,
         supplier: Option<String>,
         quantity: f64,
         units: String,
@@ -159,6 +160,7 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
             reagent_id: r_id,
             batch_number: b.batch_number.trim().to_string(),
             cat_number: b.cat_number.clone(),
+            manufacturer: b.manufacturer.clone(),
             supplier: b.supplier.clone(),
             quantity: b.quantity,
             units: b.units.clone(),
@@ -185,13 +187,13 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
     
     for chunk in prepared.chunks(BATCH_CHUNK) {
         let values_clause: String = chunk.iter()
-            .map(|_| "(?,?,?,?,?,?,?,0.0,?,?,?,?,?,?,datetime('now'),'available')")
+            .map(|_| "(?,?,?,?,?,?,?,?,0.0,?,?,?,?,?,?,datetime('now'),'available')")
             .collect::<Vec<_>>()
             .join(",");
         
         let sql = format!(
             r#"INSERT INTO batches (
-                id, reagent_id, batch_number, cat_number, supplier, 
+                id, reagent_id, batch_number, cat_number, manufacturer, supplier, 
                 quantity, original_quantity, reserved_quantity,
                 unit, pack_size, expiry_date, received_date,
                 location, notes, updated_at, status
@@ -201,6 +203,7 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
                 original_quantity = original_quantity + excluded.original_quantity,
                 pack_size = COALESCE(excluded.pack_size, pack_size),
                 cat_number = COALESCE(excluded.cat_number, cat_number),
+                manufacturer = COALESCE(excluded.manufacturer, manufacturer),
                 deleted_at = NULL"#,
             values_clause
         );
@@ -212,6 +215,7 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
                 .bind(&b.reagent_id)
                 .bind(&b.batch_number)
                 .bind(&b.cat_number)
+                .bind(&b.manufacturer)
                 .bind(&b.supplier)
                 .bind(b.quantity)
                 .bind(b.quantity)

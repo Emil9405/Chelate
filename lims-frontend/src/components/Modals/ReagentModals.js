@@ -34,7 +34,7 @@ export const CreateReagentModal = ({ isOpen, onClose, onSave }) => {
   const [error, setError] = useState('');
   const [reagentData, setReagentData] = useState({
     name: '', formula: '', molecular_weight: '', cas_number: '',
-    manufacturer: '', physical_state: '',
+    physical_state: '',
     status: 'active', description: '',
     storage_conditions: '', appearance: '', hazard_pictograms: ''
   });
@@ -151,14 +151,6 @@ export const CreateReagentModal = ({ isOpen, onClose, onSave }) => {
                 </Select>
               </FormGroup>
             </div>
-            <FormGroup label="Manufacturer">
-              <Input 
-                name="manufacturer" 
-                value={reagentData.manufacturer} 
-                onChange={handleReagentChange} 
-                placeholder="e.g. Sigma-Aldrich" 
-              />
-            </FormGroup>
             <div style={styles.twoColGrid}>
               <FormGroup label="Storage Conditions">
                 <Input 
@@ -270,7 +262,7 @@ export const CreateReagentModal = ({ isOpen, onClose, onSave }) => {
 export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
   const [formData, setFormData] = useState({
     name: '', formula: '', molecular_weight: '', cas_number: '',
-    manufacturer: '', physical_state: '',
+    physical_state: '',
     status: 'active', description: '',
     storage_conditions: '', appearance: '', hazard_pictograms: ''
   });
@@ -284,7 +276,6 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
         formula: reagent.formula || '',
         molecular_weight: reagent.molecular_weight || '',
         cas_number: reagent.cas_number || '',        
-        manufacturer: reagent.manufacturer || '',
         physical_state: reagent.physical_state || '',
         status: reagent.status || 'active',
         description: reagent.description || '',
@@ -352,9 +343,6 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
             </FormGroup>
           </div>
           <div style={styles.twoColGrid}>
-            <FormGroup label="Manufacturer">
-              <Input name="manufacturer" value={formData.manufacturer} onChange={handleChange} placeholder="e.g. Sigma-Aldrich" />
-            </FormGroup>
             <FormGroup label="Physical State">
               <Select name="physical_state" value={formData.physical_state} onChange={handleChange}>
                 <option value="">—</option>
@@ -502,8 +490,8 @@ const ViewBatchCard = ({ batch, reagent, rooms, isExpanded, onToggle, onAction, 
             gap: '4px 16px', fontSize: '0.8rem', marginBottom: '12px',
           }}>
             {batch.supplier && <DetailItem label="Supplier" value={batch.supplier} />}
-            {(batch.manufacturer || reagent.manufacturer) && (
-              <DetailItem label="Manufacturer" value={batch.manufacturer || reagent.manufacturer} />
+            {batch.manufacturer && (
+              <DetailItem label="Manufacturer" value={batch.manufacturer} />
             )}
             {batch.cat_number && <DetailItem label="Cat #" value={batch.cat_number} />}
             {batch.pack_size > 0 && <DetailItem label="Pack" value={`${batch.pack_size} ${batch.unit}`} />}
@@ -663,7 +651,6 @@ export const ViewReagentModal = ({ isOpen, onClose, reagent, onEdit }) => {
               <InfoRow label="Mol. Mass" value={reagent.molecular_weight ? `${reagent.molecular_weight} g/mol` : null} />
               <InfoRow label="Physical State" value={reagent.physical_state} />
               <InfoRow label="Appearance" value={reagent.appearance} />
-              <InfoRow label="Manufacturer" value={reagent.manufacturer} />
               <InfoRow label="Storage" value={reagent.storage_conditions} />
               {reagent.description && <InfoRow label="Description" value={reagent.description} />}
               <InfoRow label="Status" value={reagent.status} badge />

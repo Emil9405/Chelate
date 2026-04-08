@@ -129,6 +129,11 @@ const CompactBatchRow = ({ batch, isActive, onClick }) => {
       {/* Status */}
       <div>{getStatusBadge(batch.status)}</div>
 
+      {/* Manufacturer */}
+      <div style={{ ...accordionStyles.batchValue, color: '#718096', fontSize: '0.8rem' }}>
+        {batch.manufacturer || '—'}
+      </div>
+
       {/* Containers (replaced Location) */}
       <div><CompactContainers batch={batch} /></div>
 
@@ -248,6 +253,7 @@ const ReagentAccordionItem = ({
                 <div>Batch #</div>
                 <div>Qty</div>
                 <div>Status</div>
+                <div>Manufacturer</div>
                 <div>Containers</div>
                 <div>Expiry</div>
                 <div></div>

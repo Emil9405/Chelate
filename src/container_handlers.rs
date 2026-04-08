@@ -233,16 +233,24 @@ pub async fn create_container(
     let seq = next_sequence(&app_state.db_pool, &batch_id).await?;
     let id = Uuid::new_v4().to_string();
 
+    // If batch has pack_size and container qty < pack_size, it's already opened
+    let orig_qty = batch.pack_size.unwrap_or(request.quantity).max(request.quantity);
+    let is_partial = request.quantity < orig_qty - 0.001;
+    let status = compute_container_status(request.quantity, orig_qty);
+    let is_opened: i32 = if is_partial { 1 } else { 0 };
+
     sqlx::query(
         r#"INSERT INTO batch_containers
             (id, batch_id, sequence_number, quantity, original_quantity, is_opened, status, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 0, 'full', ?, ?, ?)"#
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
     )
     .bind(&id)
     .bind(&batch_id)
     .bind(seq)
     .bind(request.quantity)
-    .bind(request.quantity)
+    .bind(orig_qty)
+    .bind(is_opened)
+    .bind(status)
     .bind(&request.notes)
     .bind(&now)
     .bind(&now)
@@ -310,17 +318,25 @@ pub async fn split_batch_into_containers(
         };
         remaining -= qty;
 
+        // If container has less than pack_size, it's already been opened/used
+        let is_partial = qty < pack_size - 0.001;
+        let orig_qty = if is_partial { pack_size } else { qty };
+        let status = compute_container_status(qty, orig_qty);
+        let is_opened: i32 = if is_partial { 1 } else { 0 };
+
         let id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"INSERT INTO batch_containers
                 (id, batch_id, sequence_number, quantity, original_quantity, is_opened, status, notes, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 0, 'full', NULL, ?, ?)"#
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)"#
         )
         .bind(&id)
         .bind(&batch_id)
         .bind(seq)
         .bind(qty)
-        .bind(qty)
+        .bind(orig_qty)
+        .bind(is_opened)
+        .bind(status)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -631,10 +647,11 @@ pub async fn use_from_container(
 
     // 2. Sync batch total quantity
     let new_batch_qty = (batch.quantity - request.quantity).max(0.0);
+    let low_stock_threshold = batch.original_quantity * 0.2;
     let batch_status = if new_batch_qty <= 0.0 {
         "depleted"
-    } else if let Some(ps) = batch.pack_size {
-        if new_batch_qty <= ps { "low_stock" } else { "available" }
+    } else if new_batch_qty <= low_stock_threshold {
+        "low_stock"
     } else {
         "available"
     };
