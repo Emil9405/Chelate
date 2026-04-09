@@ -63,6 +63,8 @@ pub struct BatchResponse {
     pub placed_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unplaced_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location_summary: Option<String>,
 }
 
 /// Партия с именем реагента
@@ -283,7 +285,7 @@ pub async fn get_all_batches(
                 SUM(CASE WHEN bp.id IS NOT NULL THEN 1 ELSE 0 END) as placed_count 
             FROM batch_containers bc 
             LEFT JOIN batch_placements bp ON bp.container_id = bc.id 
-            WHERE bc.batch_id IN ({}) AND bc.status != 'disposed' 
+            WHERE bc.batch_id IN ({}) AND bc.status NOT IN ('disposed', 'empty') 
             GROUP BY bc.batch_id"#,
             placeholders
         );
@@ -293,6 +295,31 @@ pub async fn get_all_batches(
         let mut map: std::collections::HashMap<String, (i64, i64, i64)> = std::collections::HashMap::new();
         for r in rows { map.insert(r.batch_id, (r.container_count, r.opened_count, r.placed_count)); }
         map
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // Location summary per batch
+    let location_map: std::collections::HashMap<String, String> = if !batch_ids.is_empty() {
+        let placeholders = batch_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        #[derive(sqlx::FromRow)]
+        struct LocRow { batch_id: String, loc_summary: String }
+        let sql = format!(
+            r#"SELECT bc.batch_id,
+            GROUP_CONCAT(DISTINCT r.name || ' → ' || sz.name || ' → ' || sp.name) as loc_summary
+            FROM batch_containers bc
+            JOIN batch_placements bp ON bp.container_id = bc.id
+            JOIN storage_positions sp ON sp.id = bp.position_id
+            JOIN storage_zones sz ON sz.id = sp.zone_id
+            JOIN rooms r ON r.id = sz.room_id
+            WHERE bc.batch_id IN ({}) AND bc.status != 'disposed'
+            GROUP BY bc.batch_id"#,
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, LocRow>(&sql);
+        for id in &batch_ids { q = q.bind(id); }
+        q.fetch_all(&app_state.db_pool).await.unwrap_or_default()
+            .into_iter().map(|r| (r.batch_id, r.loc_summary)).collect()
     } else {
         std::collections::HashMap::new()
     };
@@ -308,7 +335,7 @@ pub async fn get_all_batches(
             } else {
                 calculate_pack_count(b.quantity, b.pack_size)
             };
-
+    let loc_sum = location_map.get(&b.id).cloned();        
             BatchResponse {
                 id: b.id,
                 reagent_id: b.reagent_id,
@@ -340,6 +367,7 @@ pub async fn get_all_batches(
                 placements: None,
                 unplaced_quantity: None,
                 container_count: if cnt_count > 0 { Some(cnt_count) } else { None },
+                location_summary: loc_sum,
                 opened_count: if cnt_count > 0 { Some(cnt_opened) } else { None },
                 placed_count: if cnt_count > 0 { Some(cnt_placed) } else { None },
                 unplaced_count: if cnt_count > 0 { Some(cnt_count - cnt_placed) } else { None },
@@ -424,6 +452,7 @@ pub async fn get_batch(
         opened_count: None,
         placed_count: None,
         unplaced_count: None,
+        location_summary: None,
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
@@ -547,6 +576,7 @@ pub async fn create_batch(
         opened_count: None,
         placed_count: None,
         unplaced_count: None,
+        location_summary: None,
     };
 
     Ok(HttpResponse::Created().json(ApiResponse::success(response)))
@@ -674,6 +704,64 @@ pub async fn update_batch(
     query = query.bind(&reagent_id);
 
     query.execute(&app_state.db_pool).await?;
+    // === Sync containers when quantity changes ===
+    if let Some(new_qty) = batch_data.quantity {
+        let old_qty = existing.quantity;
+        if (new_qty - old_qty).abs() > 0.001 {
+            // Check if containers exist for this batch
+            let container_total: Option<(f64,)> = sqlx::query_as(
+                "SELECT COALESCE(SUM(original_quantity), 0) FROM batch_containers WHERE batch_id = ? AND status != 'disposed'"
+            )
+                .bind(&batch_id)
+                .fetch_optional(&app_state.db_pool)
+                .await?;
+
+            if let Some((current_container_total,)) = container_total {
+                if current_container_total > 0.0 {
+                    let delta = new_qty - current_container_total;
+                    if delta > 0.001 {
+                        // Quantity increased → create new container(s) for the difference
+                        let pack_size = batch_data.pack_size
+                            .or(existing.pack_size)
+                            .unwrap_or(delta);
+                        let mut remaining = delta;
+                        let max_seq: (i64,) = sqlx::query_as(
+                            "SELECT COALESCE(MAX(sequence_number), 0) FROM batch_containers WHERE batch_id = ?"
+                        )
+                            .bind(&batch_id)
+                            .fetch_one(&app_state.db_pool)
+                            .await?;
+                        let mut seq = max_seq.0;
+
+                        while remaining > 0.001 {
+                            seq += 1;
+                            let qty = if remaining >= pack_size { pack_size } else { remaining };
+                            let container_id = Uuid::new_v4().to_string();
+                            sqlx::query(
+                                "INSERT INTO batch_containers (id, batch_id, sequence_number, quantity, original_quantity, is_opened, status, created_at, updated_at) \
+                                VALUES (?, ?, ?, ?, ?, 0, 'full', datetime('now'), datetime('now'))"
+                            )
+                                .bind(&container_id)
+                                .bind(&batch_id)
+                                .bind(seq)
+                                .bind(qty)
+                                .bind(qty)
+                                .execute(&app_state.db_pool)
+                                .await?;
+                            remaining -= qty;
+                        }
+                        log::info!("Created new containers for batch {} (delta: +{})", batch_id, delta);
+                    } else if delta < -0.001 {
+                        // Quantity decreased → log warning, don't auto-delete containers
+                        log::warn!(
+                            "Batch {} quantity decreased by {}, but containers total {}. Manual container adjustment may be needed.",
+                            batch_id, delta.abs(), current_container_total
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ?")
         .bind(&batch_id)
@@ -717,6 +805,7 @@ pub async fn update_batch(
         opened_count: None,
         placed_count: None,
         unplaced_count: None,
+        location_summary: None,
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
@@ -1001,7 +1090,7 @@ pub async fn get_batches_for_reagent(
                 SUM(CASE WHEN bp.id IS NOT NULL THEN 1 ELSE 0 END) as placed_count 
             FROM batch_containers bc 
             LEFT JOIN batch_placements bp ON bp.container_id = bc.id 
-            WHERE bc.batch_id IN ({}) AND bc.status != 'disposed' 
+            WHERE bc.batch_id IN ({}) AND bc.status NOT IN ('disposed', 'empty') 
             GROUP BY bc.batch_id"#,
             placeholders
         );
@@ -1011,6 +1100,40 @@ pub async fn get_batches_for_reagent(
         let mut map: std::collections::HashMap<String, (i64, i64, i64)> = std::collections::HashMap::new();
         for r in rows { map.insert(r.batch_id, (r.container_count, r.opened_count, r.placed_count)); }
         map
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // === Load location summary per batch ===
+    let location_map: std::collections::HashMap<String, String> = if !batch_ids.is_empty() {
+        let placeholders = batch_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        #[derive(sqlx::FromRow)]
+        struct LocRow { batch_id: String, loc_summary: String }
+        let sql = format!(
+            r#"SELECT bc.batch_id,
+            GROUP_CONCAT(DISTINCT r.name || ' → ' || sz.name || ' → ' || sp.name) as loc_summary
+            FROM batch_containers bc
+            JOIN batch_placements bp ON bp.container_id = bc.id
+            JOIN storage_positions sp ON sp.id = bp.position_id
+            JOIN storage_zones sz ON sz.id = sp.zone_id
+            JOIN rooms r ON r.id = sz.room_id
+            WHERE bc.batch_id IN ({}) AND bc.status != 'disposed'
+            GROUP BY bc.batch_id"#,
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, LocRow>(&sql);
+        for id in &batch_ids { q = q.bind(id); }
+        match q.fetch_all(&app_state.db_pool).await {
+    Ok(rows) => {
+        log::info!("Location map loaded: {} entries", rows.len());
+        rows
+    }
+    Err(e) => {
+        log::error!("Location map query failed: {}", e);
+        vec![]
+    }
+}
+            .into_iter().map(|r| (r.batch_id, r.loc_summary)).collect()
     } else {
         std::collections::HashMap::new()
     };
@@ -1028,6 +1151,7 @@ pub async fn get_batches_for_reagent(
                 calculate_pack_count(b.quantity, b.pack_size)
             };
 
+    let loc_sum = location_map.get(&b.id).cloned();
             BatchResponse {
                 id: b.id,
                 reagent_id: b.reagent_id,
@@ -1062,9 +1186,11 @@ pub async fn get_batches_for_reagent(
                 opened_count: if cnt_count > 0 { Some(cnt_opened) } else { None },
                 placed_count: if cnt_count > 0 { Some(cnt_placed) } else { None },
                 unplaced_count: if cnt_count > 0 { Some(cnt_count - cnt_placed) } else { None },
+                location_summary: loc_sum,
             }
         })
         .collect();
+
 
     let total_pages = (total + per_page - 1) / per_page;
 

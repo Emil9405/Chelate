@@ -72,6 +72,10 @@ export default function useReagents(externalFilters = {}, options = {}) {
         stock_status: currentFilters.stock_status || undefined,
         cas_number: currentFilters.cas_number || undefined,
         has_stock: currentFilters.has_stock,
+        // Location filters
+        room_id: currentFilters.room_id || undefined,
+        zone_id: currentFilters.zone_id || undefined,
+        position_id: currentFilters.position_id || undefined,
 
         // Sorting
         sort_by: sorting.sortBy,
@@ -214,6 +218,15 @@ export default function useReagents(externalFilters = {}, options = {}) {
 
   // Stringify filters for stable dependency comparison
   const filtersKey = JSON.stringify(filters);
+
+  // Reset page to 1 when filters change
+  const prevFiltersKey = useRef(filtersKey);
+  useEffect(() => {
+    if (prevFiltersKey.current !== filtersKey) {
+      prevFiltersKey.current = filtersKey;
+      setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    }
+  }, [filtersKey]);
 
   useEffect(() => {
     if (!useCursor || (useCursor && data.length === 0)) {

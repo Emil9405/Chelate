@@ -75,6 +75,9 @@ pub struct HybridPaginationQuery {
     pub status: Option<String>,
     pub manufacturer: Option<String>,
     pub has_stock: Option<bool>,
+    pub room_id: Option<String>,
+    pub zone_id: Option<String>,
+    pub position_id: Option<String>,
 
     // Sorting
     pub sort_by: Option<String>,

@@ -399,10 +399,8 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
 
 // --- Batch Mini Card for View Modal ---
 const ViewBatchCard = ({ batch, reagent, rooms, isExpanded, onToggle, onAction, onRefresh }) => {
-  const available = batch.quantity - (batch.reserved_quantity || 0);
-  const containerCount = batch.container_count || batch.pack_count || 0;
-  const openedCount = batch.opened_count || 0;
-  const placedCount = batch.placed_count || 0;
+  const rawQty = (typeof batch.quantity === 'object' && batch.quantity !== null) ? (batch.quantity.parsedValue || 0) : (batch.quantity || 0);
+  const available = rawQty - (batch.reserved_quantity || 0);
 
   const getExpiryInfo = () => {
     if (!batch.expiry_date) return { text: '—', color: '#a0aec0' };
@@ -443,6 +441,29 @@ const ViewBatchCard = ({ batch, reagent, rooms, isExpanded, onToggle, onAction, 
           <span style={{ fontWeight: '700', fontSize: '0.9rem', color: '#1a365d', whiteSpace: 'nowrap' }}>
             {batch.batch_number}
           </span>
+          {/* Containers & placement */}
+          {(batch.container_count || 0) > 0 && (
+            <span style={{ fontSize: '0.75rem', color: '#4a5568', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              📦 {batch.container_count}
+              <span style={{ color: '#a0aec0' }}>
+                ({(batch.opened_count || 0) > 0 ? `${batch.opened_count}⊙` : 'sealed'})
+              </span>
+              {(batch.placed_count || 0) < (batch.container_count || 0) && (
+                <span style={{ color: '#e53e3e', fontSize: '0.7rem' }}>
+                  {(batch.container_count || 0) - (batch.placed_count || 0)} unplaced
+                </span>
+              )}
+            </span>
+          )}
+          {batch.location_summary && (
+            <span style={{
+              fontSize: '0.75rem', color: '#6366f1', backgroundColor: '#eef2ff',
+              padding: '2px 8px', borderRadius: '4px',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '220px',
+            }} title={batch.location_summary}>
+              📍 {batch.location_summary}
+            </span>
+          )}
           <span style={{
             fontSize: '0.8rem', fontWeight: '600',
             color: available > 0 ? '#2d3748' : '#e53e3e',
@@ -458,16 +479,6 @@ const ViewBatchCard = ({ batch, reagent, rooms, isExpanded, onToggle, onAction, 
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-          {containerCount > 0 && (
-            <span style={{ fontSize: '0.75rem', color: '#718096' }}>
-              📦{containerCount} {openedCount > 0 && `(${openedCount}⊙)`}
-              {placedCount < containerCount && (
-                <span style={{ color: '#e53e3e', marginLeft: '4px' }}>
-                  {containerCount - placedCount} unplaced
-                </span>
-              )}
-            </span>
-          )}
           <span style={{ fontSize: '0.75rem', color: expiry.color, fontWeight: '500' }}>
             {expiry.text}
           </span>
@@ -582,9 +593,16 @@ export const ViewReagentModal = ({ isOpen, onClose, reagent, onEdit }) => {
 
   if (!isOpen || !reagent) return null;
 
-  // Summary stats
-  const totalQty = batches.reduce((s, b) => s + (b.quantity || 0), 0);
-  const primaryUnit = batches[0]?.unit || '';
+  // Summary stats — group totals by unit
+  const getSafe = (val) => (typeof val === 'object' && val !== null) ? (val.parsedValue || 0) : (val || 0);
+  const totalsByUnit = batches.reduce((acc, b) => {
+    const unit = b.unit || '?';
+    acc[unit] = (acc[unit] || 0) + getSafe(b.quantity);
+    return acc;
+  }, {});
+const totalDisplay = Object.entries(totalsByUnit)
+  .map(([unit, qty]) => `${qty.toFixed(1)} ${unit}`)
+  .join(' + ');
   const availableCount = batches.filter(b => b.status === 'available').length;
   const expiringCount = batches.filter(b => {
     if (!b.expiry_date) return false;
@@ -648,10 +666,13 @@ export const ViewReagentModal = ({ isOpen, onClose, reagent, onEdit }) => {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.85rem' }}>
               <InfoRow label="CAS №" value={reagent.cas_number} mono />
-              <InfoRow label="Mol. Mass" value={reagent.molecular_weight ? `${reagent.molecular_weight} g/mol` : null} />
+              <InfoRow label="Mol. Mass" value={
+                reagent.molecular_weight 
+                  ? `${typeof reagent.molecular_weight === 'object' ? reagent.molecular_weight.parsedValue : reagent.molecular_weight} g/mol` 
+                  : null
+              } />
               <InfoRow label="Physical State" value={reagent.physical_state} />
               <InfoRow label="Appearance" value={reagent.appearance} />
-              <InfoRow label="Storage" value={reagent.storage_conditions} />
               {reagent.description && <InfoRow label="Description" value={reagent.description} />}
               <InfoRow label="Status" value={reagent.status} badge />
               <div style={{ marginTop: '4px' }}>
@@ -669,7 +690,7 @@ export const ViewReagentModal = ({ isOpen, onClose, reagent, onEdit }) => {
                 📊 Stock Summary
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <MiniStat label="Total" value={`${totalQty.toFixed(1)} ${primaryUnit}`} color="#1a365d" />
+                <MiniStat label="Total" value={totalDisplay} color="#1a365d" />
                 <MiniStat label="Batches" value={batches.length} color="#3182ce" />
                 <MiniStat label="Available" value={availableCount} color="#38a169" />
                 {expiringCount > 0 && <MiniStat label="Expiring" value={expiringCount} color="#dd6b20" />}

@@ -216,6 +216,35 @@ pub async fn get_reagents(
             builder.add_raw_condition("total_quantity = 0");
         }
     }
+    // Location filter (room → zone → position)
+    if let Some(ref position_id) = query.position_id {
+        builder.add_condition(
+            "id IN (SELECT DISTINCT b.reagent_id FROM batches b \
+            JOIN batch_containers c ON c.batch_id = b.id \
+            JOIN batch_placements bp ON bp.container_id = c.id \
+            WHERE bp.position_id = ?)",
+            position_id.clone()
+        );
+    } else if let Some(ref zone_id) = query.zone_id {
+        builder.add_condition(
+            "id IN (SELECT DISTINCT b.reagent_id FROM batches b \
+            JOIN batch_containers c ON c.batch_id = b.id \
+            JOIN batch_placements bp ON bp.container_id = c.id \
+            JOIN storage_positions sp ON sp.id = bp.position_id \
+            WHERE sp.zone_id = ?)",
+            zone_id.clone()
+        );
+    } else if let Some(ref room_id) = query.room_id {
+        builder.add_condition(
+            "id IN (SELECT DISTINCT b.reagent_id FROM batches b \
+            JOIN batch_containers c ON c.batch_id = b.id \
+            JOIN batch_placements bp ON bp.container_id = c.id \
+            JOIN storage_positions sp ON sp.id = bp.position_id \
+            JOIN storage_zones sz ON sz.id = sp.zone_id \
+            WHERE sz.room_id = ?)",
+            room_id.clone()
+        );
+    }
 
     // ===== COUNT =====
     let (count_sql, count_params) = builder.build_count();

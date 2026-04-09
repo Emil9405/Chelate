@@ -35,7 +35,7 @@ const Reagents = ({ user }) => {
   const [manufacturerFilter, setManufacturerFilter] = useState('');
   const [stockFilter, setStockFilter] = useState('');
   const [casNumberFilter, setCasNumberFilter] = useState('');
-  const [positionFilter, setPositionFilter] = useState(null); // <-- СОСТОЯНИЕ ЛОКАЦИИ
+  const [locationFilter, setLocationFilter] = useState(null); // <-- СОСТОЯНИЕ ЛОКАЦИИ
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('desc');
   const [showFilters, setShowFilters] = useState(false);
@@ -47,9 +47,13 @@ const Reagents = ({ user }) => {
     if (manufacturerFilter) filters.manufacturer = manufacturerFilter;
     if (stockFilter) filters.stock_status = stockFilter;
     if (casNumberFilter) filters.cas_number = casNumberFilter;
-    if (positionFilter) filters.position_id = positionFilter; // <-- ФИЛЬТР ПО ЛОКАЦИИ
+    if (locationFilter) {
+    if (locationFilter.type === 'room') filters.room_id = locationFilter.id;
+    else if (locationFilter.type === 'zone') filters.zone_id = locationFilter.id;
+    else filters.position_id = locationFilter.id || locationFilter;
+  }
     return filters;
-  }, [searchTerm, statusFilter, manufacturerFilter, stockFilter, casNumberFilter, positionFilter]);
+  }, [searchTerm, statusFilter, manufacturerFilter, stockFilter, casNumberFilter, locationFilter]);
 
   const {
     data: reagents,
@@ -185,12 +189,12 @@ const Reagents = ({ user }) => {
     setManufacturerFilter('');
     setStockFilter('');
     setCasNumberFilter('');
-    setPositionFilter(null); // <-- Очистка локации
+    setLocationFilter(null);
     setSortBy('created_at');
     setSortOrder('desc');
   };
 
-  const activeFiltersCount = [searchTerm, statusFilter, manufacturerFilter, stockFilter, casNumberFilter, positionFilter].filter(Boolean).length;
+  const activeFiltersCount = [searchTerm, statusFilter, manufacturerFilter, stockFilter, casNumberFilter, locationFilter].filter(Boolean).length;
 
   if (error) return <ErrorMessage message={error} onRetry={refresh} />;
 
@@ -252,10 +256,11 @@ const Reagents = ({ user }) => {
               <div>
                 <label style={{ display: 'block', marginBottom: '6px', fontWeight: '600', fontSize: '0.8rem', color: '#1a365d' }}>Location</label>
                 <LocationPicker
-                  value={positionFilter}
-                  onChange={setPositionFilter}
+                  value={locationFilter}
+                  onChange={setLocationFilter}
                   showLabel={false}
                   placeholder="All locations"
+                  allowPartialSelection={true}
                 />
               </div>
 
@@ -338,11 +343,12 @@ const Reagents = ({ user }) => {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid #e2e8f0', paddingLeft: '16px' }}>
                 <span style={{ fontSize: '0.8rem', color: '#718096' }}>Rows:</span>
                 <div style={{ width: '80px' }}>
-                  <Select
-                    value={pagination.perPage}
-                    onChange={(e) => pagination.setPerPage(e.target.value)}
-                    options={[ { value: 10, label: '10' }, { value: 20, label: '20' }, { value: 50, label: '50' }, { value: 100, label: '100' } ]}
-                  />
+                 <Select value={pagination.perPage} onChange={(e) => pagination.setPerPage(e.target.value)}>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                </Select>
                 </div>
               </div>
             </div>

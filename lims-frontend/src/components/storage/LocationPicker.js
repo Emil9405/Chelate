@@ -91,6 +91,7 @@ const LocationPicker = ({
   required = false,
   disabled = false,
   placeholder = 'Select storage location...',
+  allowPartialSelection = false,
 }) => {
   const [open, setOpen] = useState(false);
   const [hierarchy, setHierarchy] = useState([]);
@@ -120,11 +121,15 @@ const LocationPicker = ({
   }, [hierarchy.length]);
 
   // Загрузить path для текущего value
+  // Стало:
   useEffect(() => {
     if (!value) {
       setSelectedPath(null);
       return;
     }
+    // Если value — объект (partial selection), path уже задан через onChange
+    if (typeof value === 'object') return;
+    
     const loadPath = async () => {
       try {
         const path = await api.getLocationPath(value);
@@ -216,6 +221,7 @@ const LocationPicker = ({
         hasChildren: (z.positions?.length || 0) > 0,
         type: 'zone',
         roomName: room.name,
+        zoneType: z.zone_type,
       }));
     }
 
@@ -383,10 +389,26 @@ const LocationPicker = ({
                 onClick={() => {
                   if (item.type === 'position') {
                     handleSelect(item.id);
-                  } else if (item.type === 'room') {
-                    setLevel({ type: 'room', id: item.id, name: item.name });
-                  } else if (item.type === 'zone') {
-                    setLevel({ type: 'zone', id: item.id, name: item.name, roomName: item.roomName });
+                  } else if (allowPartialSelection) {
+                    // При фильтрации — выбираем room/zone напрямую
+                    onChange({ type: item.type, id: item.id });
+                    setSelectedPath({ 
+                      room_name: item.type === 'room' ? item.name : item.roomName,
+                      zone_name: item.type === 'zone' ? item.name : null,
+                      zone_type: item.type === 'zone' ? item.zoneType : null,
+                      position_name: null 
+                    });
+                    setOpen(false);
+                    setSearch('');
+                    setSearchResults(null);
+                    setLevel('rooms');
+                  } else {
+                    // Обычный drill-down
+                    if (item.type === 'room') {
+                      setLevel({ type: 'room', id: item.id, name: item.name });
+                    } else if (item.type === 'zone') {
+                      setLevel({ type: 'zone', id: item.id, name: item.name, roomName: item.roomName });
+                    }
                   }
                 }}
                 onMouseEnter={e => e.currentTarget.style.backgroundColor = '#f3f4f6'}
@@ -402,8 +424,20 @@ const LocationPicker = ({
                   </div>
                   <div style={styles.itemMeta}>{item.meta}</div>
                 </div>
-                {item.hasChildren && (
+                {item.hasChildren && !allowPartialSelection && (
                   <i className="fas fa-chevron-right" style={styles.itemArrow} />
+                )}
+                {item.hasChildren && allowPartialSelection && (
+                  <button
+                    style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: '4px', padding: '2px 8px', fontSize: '11px', color: '#6366f1', cursor: 'pointer' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (item.type === 'room') setLevel({ type: 'room', id: item.id, name: item.name });
+                      else if (item.type === 'zone') setLevel({ type: 'zone', id: item.id, name: item.name, roomName: item.roomName });
+                    }}
+                  >
+                    ▶
+                  </button>
                 )}
               </div>
             ))
