@@ -881,6 +881,22 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await;
 
+    // ==================== FIX TEXT-TYPED NUMERIC FIELDS ====================
+    // Import can insert numbers as TEXT; CAST them back to REAL
+    let cast_fixes = [
+        "UPDATE batches SET quantity = CAST(quantity AS REAL) WHERE typeof(quantity) = 'text'",
+        "UPDATE batches SET original_quantity = CAST(original_quantity AS REAL) WHERE typeof(original_quantity) = 'text'",
+        "UPDATE batches SET reserved_quantity = CAST(reserved_quantity AS REAL) WHERE typeof(reserved_quantity) = 'text'",
+        "UPDATE batches SET pack_size = CAST(pack_size AS REAL) WHERE typeof(pack_size) = 'text'",
+        "UPDATE reagents SET molecular_weight = CAST(molecular_weight AS REAL) WHERE typeof(molecular_weight) = 'text'",
+        "UPDATE reagents SET total_quantity = CAST(total_quantity AS REAL) WHERE typeof(total_quantity) = 'text'",
+        "UPDATE batch_containers SET quantity = CAST(quantity AS REAL) WHERE typeof(quantity) = 'text'",
+        "UPDATE batch_containers SET original_quantity = CAST(original_quantity AS REAL) WHERE typeof(original_quantity) = 'text'",
+    ];
+    for q in cast_fixes {
+        let _ = sqlx::query(q).execute(pool).await;
+    }
+
     // ==================== CLEANUP OLD CACHE TABLES ====================
     let _ = sqlx::query("DROP TABLE IF EXISTS reagent_stock_cache").execute(pool).await;
     let _ = sqlx::query("DROP TABLE IF EXISTS reagent_count_cache").execute(pool).await;

@@ -149,6 +149,32 @@ async fn get_container_stats(pool: &sqlx::SqlitePool, batch_id: &str) -> ApiResu
     })
 }
 
+// ==================== SYNC LEGACY LOCATION FIELD ====================
+
+/// Update batches.location from actual placements (room → zone → position)
+async fn sync_batch_location(pool: &sqlx::SqlitePool, batch_id: &str) -> ApiResult<()> {
+    let result: Option<(String,)> = sqlx::query_as(
+        r#"SELECT GROUP_CONCAT(DISTINCT r.name || ' / ' || sz.name || ' / ' || sp.name)
+        FROM batch_containers bc
+        JOIN batch_placements bp ON bp.container_id = bc.id
+        JOIN storage_positions sp ON sp.id = bp.position_id
+        JOIN storage_zones sz ON sz.id = sp.zone_id
+        JOIN rooms r ON r.id = sz.room_id
+        WHERE bc.batch_id = ? AND bc.status NOT IN ('disposed', 'empty')"#
+    )
+    .bind(batch_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let location = result.and_then(|r| if r.0.is_empty() { None } else { Some(r.0) });
+    sqlx::query("UPDATE batches SET location = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&location)
+        .bind(batch_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ==================== RESPONSE ====================
 
 #[derive(Debug, Serialize)]
@@ -437,6 +463,7 @@ pub async fn place_container(
         .await?;
 
     info!("📍 Container #{} placed at {}", container.sequence_number, position.name);
+    let _ = sync_batch_location(&app_state.db_pool, &container.batch_id).await;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(result)))
 }
@@ -474,6 +501,13 @@ pub async fn place_containers_bulk(
     tx.commit().await?;
     info!("📍 Bulk placed {} containers at position {}", placed, request.position_id);
 
+    // Sync location for affected batches
+    if let Some(cid) = request.container_ids.first() {
+        if let Ok(c) = get_container_or_404(&app_state.db_pool, cid).await {
+            let _ = sync_batch_location(&app_state.db_pool, &c.batch_id).await;
+        }
+    }
+
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         serde_json::json!({ "placed": placed }),
         format!("Placed {} containers", placed),
@@ -501,6 +535,13 @@ pub async fn move_containers_bulk(
 
     tx.commit().await?;
     info!("📍 Bulk moved {} containers to position {}", moved, request.new_position_id);
+
+    // Sync location for affected batches
+    if let Some(cid) = request.container_ids.first() {
+        if let Ok(c) = get_container_or_404(&app_state.db_pool, cid).await {
+            let _ = sync_batch_location(&app_state.db_pool, &c.batch_id).await;
+        }
+    }
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         serde_json::json!({ "moved": moved }),
@@ -553,6 +594,7 @@ pub async fn move_container(
         "📍 Container #{} moved to {}",
         container.sequence_number, new_position.name
     );
+    let _ = sync_batch_location(&app_state.db_pool, &container.batch_id).await;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         result,
@@ -570,6 +612,9 @@ pub async fn unplace_container(
     let container_id = path.into_inner();
     let _claims = get_current_user(&http_request)?;
 
+    // Get batch_id before removing placement
+    let container = get_container_or_404(&app_state.db_pool, &container_id).await?;
+
     let result = sqlx::query("DELETE FROM batch_placements WHERE container_id = ?")
         .bind(&container_id)
         .execute(&app_state.db_pool)
@@ -580,6 +625,7 @@ pub async fn unplace_container(
     }
 
     info!("📍 Container {} unplaced", container_id);
+    let _ = sync_batch_location(&app_state.db_pool, &container.batch_id).await;
 
     Ok(HttpResponse::Ok().json(ApiResponse::<()>::success_with_message(
         (),
