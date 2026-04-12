@@ -416,7 +416,7 @@ pub async fn get_dashboard_stats(
 
     // Equipment: total count
     let total_equipment: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM equipment WHERE status != 'retired'"
+        "SELECT COUNT(*) FROM equipment WHERE deleted_at IS NULL"
     )
         .fetch_one(&app_state.db_pool)
         .await
@@ -424,7 +424,7 @@ pub async fn get_dashboard_stats(
 
     // Equipment alerts: maintenance + damaged + calibration
     let equipment_alerts: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM equipment WHERE status IN ('maintenance', 'damaged', 'calibration')"
+        "SELECT COUNT(*) FROM equipment WHERE status IN ('maintenance', 'damaged', 'calibration') AND deleted_at IS NULL"
     )
         .fetch_one(&app_state.db_pool)
         .await

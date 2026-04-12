@@ -105,9 +105,10 @@ pub async fn get_equipment(
     let (page, per_page, offset) = query.normalize();
     let whitelist = FieldWhitelist::for_equipment();
 
-    // Подсчет общего количества
+// Подсчет общего количества
     let mut count_builder = CountQueryBuilder::new("equipment")
         .map_err(|e| ApiError::InternalServerError(e))?;
+    count_builder.add_condition("deleted_at IS NULL", vec![]);
     apply_equipment_filters(&mut count_builder, &query, &whitelist)?;
 
     let (count_sql, count_params) = count_builder.build();
@@ -122,9 +123,9 @@ pub async fn get_equipment(
     let mut select_builder = SafeQueryBuilder::new(base_sql)
         .map_err(|e| ApiError::InternalServerError(e))?
         .with_whitelist(&whitelist);
-
+    select_builder.add_condition("deleted_at IS NULL", vec![]);
     apply_equipment_filters_safe(&mut select_builder, &query)?;
-
+    
     // ИСПРАВЛЕНО: Теперь используем параметры из запроса, а не хардкод
     let sort_field = query.sort_by.as_deref().unwrap_or("created_at");
     let sort_order = query.sort_order.as_deref().unwrap_or("desc");
@@ -160,7 +161,7 @@ pub async fn get_equipment_by_id(
     let equipment_id = path.into_inner();
 
     let equipment: Option<Equipment> = sqlx::query_as(
-        "SELECT * FROM equipment WHERE id = ?"
+        "SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL"
     )
         .bind(&equipment_id)
         .fetch_optional(&app_state.db_pool)
@@ -227,7 +228,7 @@ pub async fn create_equipment(
     // Обновляем FTS индекс
     update_equipment_fts(&app_state.db_pool, &id).await?;
 
-    let created: Equipment = sqlx::query_as("SELECT * FROM equipment WHERE id = ?")
+    let created: Equipment = sqlx::query_as("SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL")
         .bind(&id)
         .fetch_one(&app_state.db_pool)
         .await?;
@@ -247,7 +248,7 @@ pub async fn update_equipment(
 
     // Проверяем существование
     let existing: Option<Equipment> = sqlx::query_as(
-        "SELECT * FROM equipment WHERE id = ?"
+        "SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL"
     )
         .bind(&equipment_id)
         .fetch_optional(&app_state.db_pool)
@@ -306,7 +307,7 @@ pub async fn update_equipment(
     // Обновляем FTS индекс
     update_equipment_fts(&app_state.db_pool, &equipment_id).await?;
 
-    let updated: Equipment = sqlx::query_as("SELECT * FROM equipment WHERE id = ?")
+    let updated: Equipment = sqlx::query_as("SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL")
         .bind(&equipment_id)
         .fetch_one(&app_state.db_pool)
         .await?;
@@ -318,53 +319,12 @@ pub async fn update_equipment(
 pub async fn delete_equipment(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
+    user_id: String,  // ← ДОБАВИТЬ: пробросить из JWT
 ) -> ApiResult<HttpResponse> {
     let equipment_id = path.into_inner();
 
-    // Удаляем связанные данные
-    sqlx::query("DELETE FROM equipment_parts WHERE equipment_id = ?")
-        .bind(&equipment_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    sqlx::query("DELETE FROM equipment_maintenance WHERE equipment_id = ?")
-        .bind(&equipment_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    // Удаляем файлы с диска
-    let files: Vec<EquipmentFile> = sqlx::query_as(
-        "SELECT * FROM equipment_files WHERE equipment_id = ?"
-    )
-        .bind(&equipment_id)
-        .fetch_all(&app_state.db_pool)
-        .await?;
-
-    for file in files {
-        let _ = std::fs::remove_file(&file.file_path);
-    }
-
-    sqlx::query("DELETE FROM equipment_files WHERE equipment_id = ?")
-        .bind(&equipment_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    // Удаляем из FTS
-    sqlx::query("DELETE FROM equipment_fts WHERE equipment_id = ?")
-        .bind(&equipment_id)
-        .execute(&app_state.db_pool)
-        .await
-        .ok(); // Игнорируем ошибку если FTS таблица не существует
-
-    // Удаляем само оборудование
-    let result = sqlx::query("DELETE FROM equipment WHERE id = ?")
-        .bind(&equipment_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(ApiError::not_found("Equipment"));
-    }
+    // Soft delete: FTS hard + equipment soft (parts/maintenance/files сохраняются)
+    crate::soft_delete::delete_equipment(&app_state.db_pool, &equipment_id, &user_id).await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         (),
@@ -851,7 +811,7 @@ pub async fn upload_equipment_file(
 
     // Получаем информацию об оборудовании
     let equipment: Equipment = sqlx::query_as(
-        "SELECT * FROM equipment WHERE id = ?"
+        "SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL"
     )
         .bind(&equipment_id)
         .fetch_optional(&app_state.db_pool)

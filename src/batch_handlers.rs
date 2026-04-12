@@ -819,7 +819,6 @@ pub async fn delete_batch(
 ) -> ApiResult<HttpResponse> {
     let (reagent_id, batch_id) = path.into_inner();
 
-    // Проверка существования (только не удалённые)
     let _: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL")
         .bind(&batch_id)
         .bind(&reagent_id)
@@ -827,19 +826,8 @@ pub async fn delete_batch(
         .await
         .map_err(|_| ApiError::not_found("Batch"))?;
 
-    // Soft delete - устанавливаем deleted_at
-    let result = sqlx::query("UPDATE batches SET deleted_at = datetime('now'), updated_by = ? WHERE id = ? AND reagent_id = ?")
-        .bind(&user_id)
-        .bind(&batch_id)
-        .bind(&reagent_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(ApiError::not_found("Batch"));
-    }
-
-    log::info!("🗑️ Batch {} soft-deleted by user {}", batch_id, user_id);
+    // Каскад в транзакции: placements → containers → batch
+    crate::soft_delete::delete_batch(&app_state.db_pool, &batch_id, &user_id).await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::<()>::success_with_message((), "Batch deleted successfully".to_string())))
 }

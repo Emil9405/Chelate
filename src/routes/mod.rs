@@ -12,6 +12,7 @@ pub mod storage;
 pub mod reports;
 pub mod auth_routes;
 pub mod dashboard;
+pub mod archive;
 
 use actix_web::web;
 use actix_web_httpauth::middleware::HttpAuthentication;
@@ -42,6 +43,7 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
                     .route("/convert", web::post().to(crate::batch_handlers::convert_units))
             )
             // Admin
+            .configure(archive::configure)   // /admin/archive/*
             .service(
                 web::scope("/admin")
                     .route("/cache/rebuild", web::post().to(super::rebuild_cache_protected))

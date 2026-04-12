@@ -212,6 +212,15 @@ pub async fn delete_room(
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found("Room"));
     }
+    let placement_count = crate::soft_delete::count_active_placements_for_room(
+        &app_state.db_pool, &room_id
+    ).await?;
+
+    if placement_count > 0 {
+    return Err(ApiError::bad_request(
+        &format!("Cannot delete room: {} items are stored in it. Move them first.", placement_count)
+    ));
+    }
 
     info!("🚪 Deleted room: {}", room_id);
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(

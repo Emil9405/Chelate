@@ -201,16 +201,16 @@ pub async fn delete_storage_zone(
 ) -> ApiResult<HttpResponse> {
     let zone_id = path.into_inner();
 
-    let items_count: (i64,) = sqlx::query_as(
-        r#"SELECT COUNT(*) FROM batch_placements 
-           WHERE position_id IN (SELECT id FROM storage_positions WHERE zone_id = ?)"#
-    ).bind(&zone_id).fetch_one(&app_state.db_pool).await?;
+    let items_count = crate::soft_delete::count_active_placements_for_zone(
+        &app_state.db_pool, &zone_id
+    ).await?;
 
-    if items_count.0 > 0 {
+    if items_count > 0 {
         return Err(ApiError::bad_request(&format!(
-            "Cannot delete: {} items are stored in this zone. Move them first.", items_count.0
+            "Cannot delete: {} items are stored in this zone. Move them first.", items_count
         )));
     }
+
 
     sqlx::query("DELETE FROM storage_positions WHERE zone_id = ?").bind(&zone_id).execute(&app_state.db_pool).await?;
     let result = sqlx::query("DELETE FROM storage_zones WHERE id = ?").bind(&zone_id).execute(&app_state.db_pool).await?;
@@ -347,12 +347,14 @@ pub async fn delete_storage_position(
 ) -> ApiResult<HttpResponse> {
     let pos_id = path.into_inner();
 
-    let items_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM batch_placements WHERE position_id = ?"
-    ).bind(&pos_id).fetch_one(&app_state.db_pool).await?;
+    let items_count = crate::soft_delete::count_active_placements_for_position(
+        &app_state.db_pool, &pos_id
+    ).await?;
 
-    if items_count.0 > 0 {
-        return Err(ApiError::bad_request(&format!("Cannot delete: {} items are at this position. Move them first.", items_count.0)));
+    if items_count > 0 {
+        return Err(ApiError::bad_request(&format!(
+            "Cannot delete: {} items are at this position. Move them first.", items_count
+        )));
     }
 
     let result = sqlx::query("DELETE FROM storage_positions WHERE id = ?").bind(&pos_id).execute(&app_state.db_pool).await?;
@@ -375,14 +377,9 @@ pub async fn get_storage_hierarchy(
     let positions: Vec<StoragePosition> = sqlx::query_as("SELECT * FROM storage_positions ORDER BY sort_order ASC, name ASC").fetch_all(&app_state.db_pool).await?;
 
     // ИСПРАВЛЕНИЕ: COUNT(DISTINCT bc.batch_id) через JOIN
-    let position_counts: Vec<(String, i64)> = sqlx::query_as(
-        r#"SELECT bp.position_id, COUNT(DISTINCT bc.batch_id) 
-           FROM batch_placements bp
-           JOIN batch_containers bc ON bp.container_id = bc.id
-           GROUP BY bp.position_id"#
-    ).fetch_all(&app_state.db_pool).await?;
-
-    let count_map: std::collections::HashMap<String, i64> = position_counts.into_iter().collect();
+    let count_map = crate::soft_delete::count_active_placements_by_position(
+        &app_state.db_pool
+    ).await?;
     let mut result: Vec<RoomWithStorage> = Vec::new();
 
     for room in rooms {
@@ -536,14 +533,17 @@ pub async fn get_zone_items(
 pub async fn update_position_count(pool: &SqlitePool, position_id: &str) -> ApiResult<()> {
     // ИСПРАВЛЕНИЕ: Подсчет уникальных батчей через batch_containers
     sqlx::query(
-        r#"UPDATE storage_positions 
-           SET current_count = (
-               SELECT COUNT(DISTINCT bc.batch_id) 
-               FROM batch_placements bp 
-               JOIN batch_containers bc ON bp.container_id = bc.id 
-               WHERE bp.position_id = ?
-           )
-           WHERE id = ?"#
+        r#"UPDATE storage_positions
+        SET current_count = (
+            SELECT COUNT(DISTINCT bc.batch_id)
+            FROM batch_placements bp
+            JOIN batch_containers bc ON bp.container_id = bc.id
+            JOIN batches b ON bc.batch_id = b.id
+            WHERE bp.position_id = ?
+                AND b.deleted_at IS NULL
+                AND bc.status != 'disposed'
+        )
+        WHERE id = ?"#
     ).bind(position_id).bind(position_id).execute(pool).await?;
     Ok(())
 }

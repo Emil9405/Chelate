@@ -81,6 +81,7 @@ async fn delete_equipment_protected(
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Delete, &app_state.db_pool).await?;
     let claims = auth::get_current_user(&http_request)?;
+    let user_id = claims.sub.clone();
     let equipment_id = path.into_inner();
 
     let mut cs = ChangeSet::new();
@@ -92,8 +93,12 @@ async fn delete_equipment_protected(
         cs.deleted("status", &old.2);
     }
 
-    let response = equipment_handlers::delete_equipment(app_state.clone(), web::Path::from(equipment_id.clone())).await?;
-    audit::audit_with_changes(&app_state.db_pool, &claims.sub, "delete", "equipment", &equipment_id, &format!("Deleted equipment: {}", cs.to_description()), &cs, &http_request).await;
+    let response = equipment_handlers::delete_equipment(
+        app_state.clone(),
+        web::Path::from(equipment_id.clone()),
+        user_id.clone(),
+    ).await?;
+    audit::audit_with_changes(&app_state.db_pool, &user_id, "delete", "equipment", &equipment_id, &format!("Deleted equipment: {}", cs.to_description()), &cs, &http_request).await;
     Ok(response)
 }
 

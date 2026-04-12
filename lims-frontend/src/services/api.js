@@ -1067,6 +1067,37 @@ export const api = {
         });
     },
 
+    // ==================== ARCHIVE (admin) ====================
+
+    getArchiveStats: async () => {
+        const response = await apiCall(`${API_V1_BASE}/admin/archive/stats`);
+        return response.data || response;
+    },
+
+    getArchivedReagents: async () => {
+        const response = await apiCall(`${API_V1_BASE}/admin/archive/reagents`);
+        return response.data || response;
+    },
+
+    getArchivedEquipment: async () => {
+        const response = await apiCall(`${API_V1_BASE}/admin/archive/equipment`);
+        return response.data || response;
+    },
+
+    archiveRestore: async (id, entityType) => {
+        return apiCall(`${API_V1_BASE}/admin/archive/restore`, {
+            method: 'POST',
+            body: JSON.stringify({ id, entity_type: entityType }),
+        });
+    },
+
+    archiveHardDelete: async (id, entityType) => {
+        return apiCall(`${API_V1_BASE}/admin/archive/hard-delete`, {
+            method: 'DELETE',
+            body: JSON.stringify({ id, entity_type: entityType }),
+        });
+    },
+
     // ==================== UTILS ====================
 
     triggerDownload: (blob, filename) => {

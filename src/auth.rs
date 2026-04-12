@@ -204,7 +204,10 @@ impl UserRole {
     pub fn can_manage_system(&self) -> bool {
         matches!(self, UserRole::Admin)
     }
-
+    // ======== ARCHIVE PERMISSIONS ========
+    pub fn can_manage_archive(&self) -> bool {
+        matches!(self, UserRole::Admin)
+    }
     /// Get all available roles
     pub fn all_roles() -> Vec<Self> {
         vec![UserRole::Admin, UserRole::Researcher, UserRole::Viewer]

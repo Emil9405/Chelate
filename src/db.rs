@@ -41,8 +41,12 @@ pub async fn ensure_performance_indexes(pool: &SqlitePool) -> Result<(), sqlx::E
     for query in queries {
         sqlx::query(query).execute(pool).await?;
     }
-
+   
     sqlx::query("ANALYZE;").execute(pool).await?;
+    
+    for sql in crate::soft_delete::SOFT_DELETE_INDEXES {
+    sqlx::query(sql).execute(pool).await.ok();
+    }
 
     info!("Performance indexes applied successfully.");
     Ok(())
@@ -528,6 +532,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
     // ==================== INITIALIZE CACHED FIELDS ====================
     initialize_reagent_cache(pool).await?;
+    // Очистка осиротевших placements от предыдущих удалений без каскада
+    if let Err(e) = crate::soft_delete::cleanup_orphaned(pool).await {
+    log::error!("🧹 Orphan cleanup failed: {}", e);
+    }
 
     // ==================== PERFORMANCE INDEXES ====================
     ensure_performance_indexes(pool).await?;
@@ -816,6 +824,8 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE equipment ADD COLUMN last_maintenance TEXT",
         "ALTER TABLE equipment ADD COLUMN next_maintenance TEXT",
         "ALTER TABLE equipment ADD COLUMN maintenance_interval_days INTEGER DEFAULT 90",
+        // ==================== EQUIPMENT SOFT DELETE ====================
+        "ALTER TABLE equipment ADD COLUMN deleted_at DATETIME",
 
         // ==================== USERS ====================
         "ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0",

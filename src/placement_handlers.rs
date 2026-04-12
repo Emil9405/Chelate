@@ -135,11 +135,12 @@ pub async fn get_room_placements(
             rm.color as room_color
         FROM batch_containers bc
         JOIN batch_placements bp ON bp.container_id = bc.id
+        JOIN batches b ON bc.batch_id = b.id
         JOIN storage_positions sp ON bp.position_id = sp.id
         JOIN storage_zones sz ON sp.zone_id = sz.id
         JOIN rooms rm ON sz.room_id = rm.id
-        WHERE rm.id = ? AND bc.status != 'disposed'
-        ORDER BY sz.sort_order, sp.sort_order, bc.sequence_number"#
+        WHERE rm.id = ? AND bc.status != 'disposed' AND b.deleted_at IS NULL
+                ORDER BY sz.sort_order, sp.sort_order, bc.sequence_number"#
     )
     .bind(&room_id)
     .fetch_all(&app_state.db_pool)

@@ -11,7 +11,8 @@ import {
   KeyIcon,
   LogoutIcon,
   ChevronDownIcon,
-  ArchiveIcon // <-- Добавили иконку для Storage
+  ArchiveIcon, // <-- Добавили иконку для Storage
+  TrashIcon    // <-- Иконка для архива (корзины)
 } from './Icons';
 import ChelateLogo from './ChelateLogo';
 
@@ -186,6 +187,33 @@ const Header = ({ user, onLogout, currentPage, setCurrentPage }) => {
             <ChevronDownIcon size={16} color="#718096" />
           </div>
           
+          {/* Archive (admin only) */}
+          {user?.role?.toLowerCase() === 'admin' && (
+            <button 
+              onClick={() => setCurrentPage('archive')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '38px',
+                height: '38px',
+                background: currentPage === 'archive'
+                  ? 'linear-gradient(135deg, rgba(229, 62, 62, 0.15) 0%, rgba(197, 48, 48, 0.15) 100%)'
+                  : 'white',
+                border: currentPage === 'archive' ? '2px solid #e53e3e' : '2px solid #e2e8f0',
+                borderRadius: '10px',
+                color: currentPage === 'archive' ? '#e53e3e' : '#718096',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                position: 'relative'
+              }}
+              title="Archive (Trash)"
+            >
+              <TrashIcon size={18} />
+              {/* Red dot indicator could be added here if archive has items */}
+            </button>
+          )}
+
           {/* Change Password Button */}
           <button 
             onClick={() => setShowChangePassword(true)}

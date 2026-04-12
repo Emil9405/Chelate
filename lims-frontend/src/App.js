@@ -11,6 +11,7 @@ import Reports from './components/Reports';
 import Experiments from './components/Experiments';
 import ErrorBoundary from './components/ErrorBoundary';
 import LocationManager from './components/storage/LocationManager'; // <-- Изменили импорт на LocationManager
+import ArchivePage from './components/ArchivePage';
 import './index.css';
 
 const App = () => {
@@ -195,6 +196,8 @@ const App = () => {
         return <Users user={user} />;
       case 'storage': // Оставляем маршрут 'storage' как просил, но рендерим LocationManager
         return <LocationManager user={user} />;
+      case 'archive':
+        return <ArchivePage user={user} onNavigateBack={() => setCurrentPage('dashboard')} />;
       default:
         return <Dashboard user={user} onNavigate={setCurrentPage} />;
     }

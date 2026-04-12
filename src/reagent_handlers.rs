@@ -683,21 +683,8 @@ pub async fn delete_reagent(
         .await?
         .ok_or_else(|| ApiError::not_found("Reagent"))?;
 
-    // Soft delete — устанавливаем deleted_at
-    sqlx::query("UPDATE reagents SET deleted_at = datetime('now'), updated_by = ?, status = 'inactive' WHERE id = ?")
-        .bind(&user_id)
-        .bind(&id)
-        .execute(pool)
-        .await?;
-
-    // Soft delete всех батчей этого реагента (если ещё не удалены)
-    sqlx::query("UPDATE batches SET deleted_at = datetime('now'), updated_by = ? WHERE reagent_id = ? AND deleted_at IS NULL")
-        .bind(&user_id)
-        .bind(&id)
-        .execute(pool)
-        .await?;
-
-    log::info!("🗑️ Reagent {} soft-deleted by user {}", id, user_id);
+    // Полный каскад в транзакции: placements → containers → batches → reagent
+    crate::soft_delete::delete_reagent(pool, &id, &user_id).await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         serde_json::json!({"id": id}),

@@ -49,6 +49,8 @@ mod equipment_handlers;
 mod import_export;
 mod pagination;
 mod routes;
+pub mod soft_delete;
+pub mod archive_handlers;
 
 use config::Config;
 use auth::{AuthService, jwt_middleware};
