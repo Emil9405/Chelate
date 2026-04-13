@@ -16,7 +16,8 @@ use crate::auth::get_current_user;
 use super::dto::{ReagentImportDto, PreparedReagent, PreparedBatch, PreparedContainer, PreparedPlacement};
 use super::{
     save_multipart_to_temp, preload_users, preload_reagents, preload_batches,
-    preload_position_lookup, parse_location_path, optimize_sqlite_for_bulk,
+    preload_position_lookup, preload_container_max_sequences, parse_location_path,
+    ensure_storage_locations, optimize_sqlite_for_bulk,
 };
 
 // ==========================================
@@ -113,7 +114,21 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
     let users_map = preload_users(pool).await?;
     let mut reagents_map = preload_reagents(pool).await?;
     let mut batches_map = preload_batches(pool).await?;
-    let position_lookup = preload_position_lookup(pool).await?;
+    let mut position_lookup = preload_position_lookup(pool).await?;
+    let container_seqs = preload_container_max_sequences(pool).await?;
+    
+    // Auto-create missing rooms/zones/positions from import data
+    let all_locations: Vec<String> = reagents.iter()
+        .filter_map(|r| r.location.clone())
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    ensure_storage_locations(pool, &all_locations, &mut position_lookup).await?;
+    
+    // Running sequence counter per batch_id (initialized from DB)
+    let mut next_seq: std::collections::HashMap<String, i64> = container_seqs
+        .into_iter()
+        .map(|(bid, max)| (bid, max + 1))
+        .collect();
     
     log::info!(
         "📦 Preloaded {} users, {} reagents, {} batches, {} positions",
@@ -174,7 +189,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
             let batch_number_trimmed = batch_num.trim().to_string();
             let batch_key = (reagent_id.clone(), batch_number_trimmed.to_lowercase());
             
-            // Check if batch already exists
+            // Check if batch already exists (in DB or earlier in this import)
             let is_new = !batches_map.contains_key(&batch_key);
             let batch_id = batches_map
                 .entry(batch_key)
@@ -205,30 +220,34 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
                 position_id: position_id.clone(),
             });
             
-            // Only create containers + placements for NEW batches
-            if is_new {
-                let qty_per_container = qty / container_count as f64;
+            // ============================================================
+            // FIX: ALWAYS create containers for EVERY row, not just new batches.
+            // Each row represents a physical presence at a specific location.
+            // ============================================================
+            let qty_per_container = qty / container_count as f64;
+            let seq_start = next_seq.entry(batch_id.clone()).or_insert(1);
+            
+            for _i in 0..container_count {
+                let container_id = Uuid::new_v4().to_string();
+                let seq = *seq_start;
+                *seq_start += 1;
                 
-                for seq in 1..=container_count {
-                    let container_id = Uuid::new_v4().to_string();
-                    
-                    prepared_containers.push(PreparedContainer {
-                        id: container_id.clone(),
-                        batch_id: batch_id.clone(),
-                        sequence_number: seq as i64,
-                        quantity: qty_per_container,
-                        original_quantity: qty_per_container,
+                prepared_containers.push(PreparedContainer {
+                    id: container_id.clone(),
+                    batch_id: batch_id.clone(),
+                    sequence_number: seq,
+                    quantity: qty_per_container,
+                    original_quantity: qty_per_container,
+                });
+                
+                // Place container if position resolved
+                if let Some(ref pos_id) = position_id {
+                    prepared_placements.push(PreparedPlacement {
+                        id: Uuid::new_v4().to_string(),
+                        container_id,
+                        position_id: pos_id.clone(),
+                        placed_by: owner_id.clone(),
                     });
-                    
-                    // Place container if position resolved
-                    if let Some(ref pos_id) = position_id {
-                        prepared_placements.push(PreparedPlacement {
-                            id: Uuid::new_v4().to_string(),
-                            container_id,
-                            position_id: pos_id.clone(),
-                            placed_by: owner_id.clone(),
-                        });
-                    }
                 }
             }
         }
@@ -373,7 +392,7 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
     log::info!("📥 Batches complete: {}", processed_batches);
     
     // =============================================
-    // PHASE 4: Bulk insert containers (new batches only)
+    // PHASE 4: Bulk insert containers
     // =============================================
     const CONTAINER_CHUNK_SIZE: usize = 80;
     let mut processed_containers = 0;

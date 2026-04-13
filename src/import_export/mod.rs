@@ -7,6 +7,7 @@
 //! - PRAGMA optimizations for SQLite (WAL, cache, mmap)
 //! - Two-phase: prepare all data first, then bulk write
 //! - FIX: Correct date parsing from Excel (avoids 1970 issue)
+//! - Auto-create storage locations (Room → Zone → Position) during import
 //! Expected: 5,000-15,000 items/sec (vs 350 items/sec)
 
 mod dto;
@@ -188,6 +189,27 @@ pub(crate) async fn preload_batches(pool: &SqlitePool) -> ApiResult<HashMap<(Str
     Ok(map)
 }
 
+/// Preload max sequence_number per batch: batch_id → max_seq
+pub(crate) async fn preload_container_max_sequences(pool: &SqlitePool) -> ApiResult<HashMap<String, i64>> {
+    let rows = sqlx::query(
+        "SELECT batch_id, MAX(sequence_number) as max_seq FROM batch_containers GROUP BY batch_id"
+    )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::InternalServerError(format!("Failed to preload container sequences: {}", e)))?;
+    
+    let map: HashMap<String, i64> = rows
+        .into_iter()
+        .map(|row| {
+            let batch_id: String = row.get("batch_id");
+            let max_seq: i64 = row.get("max_seq");
+            (batch_id, max_seq)
+        })
+        .collect();
+    
+    Ok(map)
+}
+
 /// Preload storage position lookup: "room_lower|zone_lower|position_lower" → position_id
 pub(crate) async fn preload_position_lookup(pool: &SqlitePool) -> ApiResult<HashMap<String, String>> {
     let rows = sqlx::query(
@@ -245,6 +267,210 @@ pub(crate) fn parse_location_path(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Parse location path and return ORIGINAL-CASE parts: (room, zone, position)
+pub(crate) fn parse_location_parts(path: &str) -> Option<(String, String, String)> {
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    
+    let parts: Vec<&str> = if path.contains('→') {
+        path.split('→').collect()
+    } else if path.contains("->") {
+        path.split("->").collect()
+    } else if path.contains('/') {
+        path.split('/').collect()
+    } else {
+        return None;
+    };
+    
+    if parts.len() >= 3 {
+        let room = parts[0].trim().to_string();
+        let zone = parts[1].trim().to_string();
+        let position = parts[2].trim().to_string();
+        if room.is_empty() || zone.is_empty() || position.is_empty() {
+            return None;
+        }
+        Some((room, zone, position))
+    } else {
+        None
+    }
+}
+
+// ==========================================
+// AUTO-CREATE STORAGE LOCATIONS
+// ==========================================
+
+/// Ensure all storage locations from import data exist.
+/// Creates missing rooms → zones → positions automatically.
+/// Updates position_lookup with newly created entries.
+pub(crate) async fn ensure_storage_locations(
+    pool: &SqlitePool,
+    locations: &[String],
+    position_lookup: &mut HashMap<String, String>,
+) -> ApiResult<()> {
+    // Collect unique location paths that don't exist yet
+    let mut needed: Vec<(String, String, String)> = Vec::new(); // (room, zone, position) original case
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    
+    for loc in locations {
+        if let Some(key) = parse_location_path(loc) {
+            if !position_lookup.contains_key(&key) && seen_keys.insert(key) {
+                if let Some(parts) = parse_location_parts(loc) {
+                    needed.push(parts);
+                }
+            }
+        }
+    }
+    
+    if needed.is_empty() {
+        return Ok(());
+    }
+    
+    log::info!("🏗️ Auto-creating {} missing storage locations...", needed.len());
+    
+    // Preload existing rooms: name_lower → id
+    let room_rows = sqlx::query("SELECT id, name FROM rooms")
+        .fetch_all(pool).await
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+    let mut rooms_map: HashMap<String, String> = room_rows.into_iter()
+        .map(|r| (r.get::<String, _>("name").trim().to_lowercase(), r.get::<String, _>("id")))
+        .collect();
+    
+    // Preload existing zones: "room_id|zone_name_lower" → zone_id
+    let zone_rows = sqlx::query("SELECT id, room_id, name FROM storage_zones")
+        .fetch_all(pool).await
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+    let mut zones_map: HashMap<String, String> = zone_rows.into_iter()
+        .map(|r| {
+            let room_id: String = r.get("room_id");
+            let name: String = r.get("name");
+            (format!("{}|{}", room_id, name.trim().to_lowercase()), r.get::<String, _>("id"))
+        })
+        .collect();
+    
+    // Preload existing positions: "zone_id|pos_name_lower" → position_id
+    let pos_rows = sqlx::query("SELECT id, zone_id, name FROM storage_positions")
+        .fetch_all(pool).await
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+    let mut positions_map: HashMap<String, String> = pos_rows.into_iter()
+        .map(|r| {
+            let zone_id: String = r.get("zone_id");
+            let name: String = r.get("name");
+            (format!("{}|{}", zone_id, name.trim().to_lowercase()), r.get::<String, _>("id"))
+        })
+        .collect();
+    
+    let now = chrono::Utc::now();
+    
+    // Collect new rooms/zones/positions to create
+    struct NewRoom { id: String, name: String }
+    struct NewZone { id: String, room_id: String, name: String }
+    struct NewPosition { id: String, zone_id: String, name: String, lookup_key: String }
+    
+    let mut new_rooms: Vec<NewRoom> = Vec::new();
+    let mut new_zones: Vec<NewZone> = Vec::new();
+    let mut new_positions: Vec<NewPosition> = Vec::new();
+    
+    for (room_name, zone_name, pos_name) in &needed {
+        let room_key = room_name.to_lowercase();
+        
+        // Ensure room exists
+        let room_id = if let Some(id) = rooms_map.get(&room_key) {
+            id.clone()
+        } else {
+            let id = Uuid::new_v4().to_string();
+            rooms_map.insert(room_key.clone(), id.clone());
+            new_rooms.push(NewRoom { id: id.clone(), name: room_name.clone() });
+            id
+        };
+        
+        // Ensure zone exists
+        let zone_key = format!("{}|{}", room_id, zone_name.to_lowercase());
+        let zone_id = if let Some(id) = zones_map.get(&zone_key) {
+            id.clone()
+        } else {
+            let id = Uuid::new_v4().to_string();
+            zones_map.insert(zone_key, id.clone());
+            new_zones.push(NewZone { id: id.clone(), room_id: room_id.clone(), name: zone_name.clone() });
+            id
+        };
+        
+        // Ensure position exists
+        let pos_key = format!("{}|{}", zone_id, pos_name.to_lowercase());
+        let lookup_key = format!("{}|{}|{}", room_name.to_lowercase(), zone_name.to_lowercase(), pos_name.to_lowercase());
+        
+        if let Some(id) = positions_map.get(&pos_key) {
+            // Position exists but wasn't in position_lookup (maybe status != 'available')
+            position_lookup.insert(lookup_key, id.clone());
+        } else {
+            let id = Uuid::new_v4().to_string();
+            positions_map.insert(pos_key, id.clone());
+            position_lookup.insert(lookup_key.clone(), id.clone());
+            new_positions.push(NewPosition { id, zone_id, name: pos_name.clone(), lookup_key });
+        }
+    }
+    
+    // Bulk insert in a transaction
+    if new_rooms.is_empty() && new_zones.is_empty() && new_positions.is_empty() {
+        return Ok(());
+    }
+    
+    let mut tx = pool.begin().await
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+    
+    // Insert rooms
+    for room in &new_rooms {
+        sqlx::query(
+            "INSERT OR IGNORE INTO rooms (id, name, status, created_at, updated_at) VALUES (?,?,'available',?,?)"
+        )
+            .bind(&room.id)
+            .bind(&room.name)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx).await
+            .map_err(|e| ApiError::InternalServerError(format!("Failed to create room '{}': {}", room.name, e)))?;
+    }
+    
+    // Insert zones
+    for zone in &new_zones {
+        sqlx::query(
+            "INSERT OR IGNORE INTO storage_zones (id, room_id, name, zone_type, status, sort_order, is_locked, created_at, updated_at) VALUES (?,?,?,'other','available',0,0,?,?)"
+        )
+            .bind(&zone.id)
+            .bind(&zone.room_id)
+            .bind(&zone.name)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx).await
+            .map_err(|e| ApiError::InternalServerError(format!("Failed to create zone '{}': {}", zone.name, e)))?;
+    }
+    
+    // Insert positions
+    for pos in &new_positions {
+        sqlx::query(
+            "INSERT OR IGNORE INTO storage_positions (id, zone_id, name, current_count, sort_order, status, created_at, updated_at) VALUES (?,?,?,0,0,'available',?,?)"
+        )
+            .bind(&pos.id)
+            .bind(&pos.zone_id)
+            .bind(&pos.name)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx).await
+            .map_err(|e| ApiError::InternalServerError(format!("Failed to create position '{}': {}", pos.name, e)))?;
+    }
+    
+    tx.commit().await
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+    
+    log::info!(
+        "🏗️ Created {} rooms, {} zones, {} positions",
+        new_rooms.len(), new_zones.len(), new_positions.len()
+    );
+    
+    Ok(())
 }
 
 // ==========================================
