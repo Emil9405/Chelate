@@ -728,7 +728,8 @@ pub async fn count_active_placements_for_position(
            JOIN batches b ON bc.batch_id = b.id
            WHERE bp.position_id = ?
              AND b.deleted_at IS NULL
-             AND bc.status != 'disposed'"#
+             AND bc.status != 'disposed'
+             AND b.status != 'depleted'"#
     ).bind(position_id).fetch_one(pool).await?;
     Ok(count)
 }
@@ -746,7 +747,8 @@ pub async fn count_active_placements_for_zone(
                SELECT id FROM storage_positions WHERE zone_id = ?
            )
            AND b.deleted_at IS NULL
-           AND bc.status != 'disposed'"#
+           AND bc.status != 'disposed'
+           AND b.status != 'depleted'"#
     ).bind(zone_id).fetch_one(pool).await?;
     Ok(count)
 }
@@ -764,7 +766,8 @@ pub async fn count_active_placements_for_room(
            JOIN storage_zones sz ON sp.zone_id = sz.id
            WHERE sz.room_id = ?
              AND b.deleted_at IS NULL
-             AND bc.status != 'disposed'"#
+             AND bc.status != 'disposed'
+             AND b.status != 'depleted'"#
     ).bind(room_id).fetch_one(pool).await?;
     Ok(count)
 }
@@ -780,6 +783,7 @@ pub async fn count_active_placements_by_position(
            JOIN batches b ON bc.batch_id = b.id
            WHERE b.deleted_at IS NULL
              AND bc.status != 'disposed'
+             AND b.status != 'depleted'
            GROUP BY bp.position_id"#
     ).fetch_all(pool).await?;
     Ok(rows.into_iter().collect())

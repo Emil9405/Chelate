@@ -5,6 +5,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../services/api';
 import Button from '../Button';
 import { FlaskIcon } from '../Icons';
+import { convertQuantity, getCompatibleUnits, formatQuantity } from '../../utils/units';
 
 // Stepper component for unit-based dispensing
 const Stepper = ({ value, onChange, min = 1, max = 999, disabled = false }) => {
@@ -105,6 +106,16 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
   const [success, setSuccess] = useState('');
   const [selectedPlacementId, setSelectedPlacementId] = useState(null);
 
+  // Selected unit for dispensing — default to batch unit, user can pick a compatible one
+  const [selectedUnit, setSelectedUnit] = useState(batch?.unit);
+  const compatibleUnits = getCompatibleUnits(batch?.unit);
+  const hasUnitChoice = compatibleUnits.length > 1;
+
+  // Reset selected unit if batch changes
+  useEffect(() => {
+    setSelectedUnit(batch?.unit);
+  }, [batch?.id, batch?.unit]);
+
   const placements = batch?.placements || [];
   const hasMultiplePlacements = placements.length > 1;
   const hasSinglePlacement = placements.length === 1;
@@ -139,13 +150,30 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
   };
 
   const handleQuantityUse = async () => {
-    const qty = parseFloat(quantity);
-    if (!qty || qty <= 0) {
+    const qtyInput = parseFloat(quantity);
+    if (!qtyInput || qtyInput <= 0) {
       setError('Enter quantity');
       return;
     }
-    if (qty > availableQuantity) {
-      setError(`Max: ${availableQuantity}`);
+
+    // Convert user input from selectedUnit to batch.unit
+    // (API always expects quantity in the batch's native unit)
+    let qtyInBatchUnit = qtyInput;
+    if (selectedUnit && selectedUnit !== batch.unit) {
+      const converted = convertQuantity(qtyInput, selectedUnit, batch.unit);
+      if (converted == null) {
+        setError(`Cannot convert ${selectedUnit} → ${batch.unit}`);
+        return;
+      }
+      qtyInBatchUnit = converted;
+    }
+
+    if (qtyInBatchUnit > availableQuantity + 1e-9) {
+      // Show the max in the unit the user is currently typing in — friendlier
+      const maxInSelected = selectedUnit && selectedUnit !== batch.unit
+        ? convertQuantity(availableQuantity, batch.unit, selectedUnit)
+        : availableQuantity;
+      setError(`Max: ${formatQuantity(maxInSelected, selectedUnit)}`);
       return;
     }
 
@@ -154,16 +182,15 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
     setSuccess('');
 
     try {
-      await api.useReagent(reagentId, batch.id, { 
-        quantity_used: qty,
+      await api.useReagent(reagentId, batch.id, {
+        quantity_used: qtyInBatchUnit,
         ...(selectedPlacementId ? { placement_id: selectedPlacementId } : {})
       });
-      setSuccess(`−${qty} ${batch.unit}`);
+      // Show success in user's chosen unit
+      setSuccess(`−${qtyInput} ${selectedUnit}`);
       setQuantity('');
       if (onUsageComplete) onUsageComplete();
-      // Обновляем info
       loadUnitsInfo();
-      // Скрываем успех через 2сек
       setTimeout(() => setSuccess(''), 2000);
     } catch (err) {
       setError(err.message || 'Error');
@@ -311,7 +338,6 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
         type="number"
         step="0.01"
         min="0.01"
-        max={availableQuantity}
         value={quantity}
         onChange={(e) => {
           setQuantity(e.target.value);
@@ -323,10 +349,16 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
             handleQuantityUse();
           }
         }}
-        placeholder={availableQuantity.toString()}
+        placeholder={(() => {
+          // Show available in currently-selected unit
+          const avail = selectedUnit && selectedUnit !== batch.unit
+            ? convertQuantity(availableQuantity, batch.unit, selectedUnit)
+            : availableQuantity;
+          return avail != null ? String(Number(avail.toFixed(4))) : '';
+        })()}
         disabled={loading || availableQuantity === 0}
         style={{
-          width: '70px',
+          width: '80px',
           height: '32px',
           padding: '0 8px',
           border: error ? '1px solid #e53e3e' : '1px solid #e2e8f0',
@@ -336,14 +368,37 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
         }}
       />
       
-      {/* Unit label */}
-      <span style={{ 
-        fontSize: '12px', 
-        color: '#718096',
-        minWidth: '20px'
-      }}>
-        {batch.unit}
-      </span>
+      {/* Unit selector (if batch unit has convertible alternatives) OR static label */}
+      {hasUnitChoice ? (
+        <select
+          value={selectedUnit}
+          onChange={(e) => setSelectedUnit(e.target.value)}
+          disabled={loading}
+          title="Dispense unit"
+          style={{
+            height: '32px',
+            padding: '0 4px',
+            fontSize: '12px',
+            border: '1px solid #e2e8f0',
+            borderRadius: '6px',
+            background: 'white',
+            color: '#4a5568',
+            cursor: loading ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {compatibleUnits.map(u => (
+            <option key={u} value={u}>{u}</option>
+          ))}
+        </select>
+      ) : (
+        <span style={{
+          fontSize: '12px',
+          color: '#718096',
+          minWidth: '20px'
+        }}>
+          {batch.unit}
+        </span>
+      )}
 
       {/* Use button */}
       <Button 

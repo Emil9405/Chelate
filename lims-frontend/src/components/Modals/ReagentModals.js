@@ -35,7 +35,7 @@ export const CreateReagentModal = ({ isOpen, onClose, onSave }) => {
   const [reagentData, setReagentData] = useState({
     name: '', formula: '', molecular_weight: '', cas_number: '',
     physical_state: '',
-    status: 'active', description: '',
+    status: 'active', visibility: 'public', description: '',
     storage_conditions: '', appearance: '', hazard_pictograms: ''
   });
   const [batchData, setBatchData] = useState({
@@ -263,7 +263,7 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
   const [formData, setFormData] = useState({
     name: '', formula: '', molecular_weight: '', cas_number: '',
     physical_state: '',
-    status: 'active', description: '',
+    status: 'active', visibility: 'public', description: '',
     storage_conditions: '', appearance: '', hazard_pictograms: ''
   });
   const [loading, setLoading] = useState(false);
@@ -275,9 +275,10 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
         name: reagent.name || '',
         formula: reagent.formula || '',
         molecular_weight: reagent.molecular_weight || '',
-        cas_number: reagent.cas_number || '',        
+        cas_number: reagent.cas_number || '',
         physical_state: reagent.physical_state || '',
         status: reagent.status || 'active',
+        visibility: reagent.visibility || 'public',
         description: reagent.description || '',
         storage_conditions: reagent.storage_conditions || '',
         appearance: reagent.appearance || '',
@@ -377,10 +378,19 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
                 <option value="discontinued">Discontinued</option>
               </Select>
             </FormGroup>
-            <FormGroup label="Description">
-              <TextArea name="description" value={formData.description} onChange={handleChange} rows={2} />
+            <FormGroup
+              label="Visibility"
+              hint="Hidden reagents are excluded from the main list (toggle 'Show hidden' to see them)"
+            >
+              <Select name="visibility" value={formData.visibility} onChange={handleChange}>
+                <option value="public">Public — shown everywhere</option>
+                <option value="hidden">Hidden — excluded from default list</option>
+              </Select>
             </FormGroup>
           </div>
+          <FormGroup label="Description">
+            <TextArea name="description" value={formData.description} onChange={handleChange} rows={2} />
+          </FormGroup>
         </div>
         <div style={styles.buttonContainer}>
           <Button variant="secondary" onClick={onClose} icon={<CloseIcon size={16} />}>

@@ -412,11 +412,24 @@ impl ReportConfig {
             ReportColumn::new("unit", "Unit"),
             ReportColumn::new("expiry_date", "Expiry Date"),
             ReportColumn::new("status", "Status"),
-            ReportColumn::new("location", "Location"),
+            ReportColumn::new("location_summary", "Location"),
+            ReportColumn::new("room_names", "Rooms"),
+            ReportColumn::new("container_count", "Containers"),
+            ReportColumn::new("opened_count", "Opened"),
+            ReportColumn::new("placed_count", "Placed"),
+
         ]
     }
 
-    pub fn all_batches() -> Self { Self::new("all_batches") }
+    pub fn all_batches() -> Self {
+        let mut config = Self::new("all_batches");
+        config.filters.push(ReportFilter {
+            field: "status".to_string(),
+            operator: ComparisonOperator::Ne,
+            value: ReportFilterValue::Exact("depleted".to_string()),
+        });
+        config
+    }
     
     pub fn low_stock(threshold: f64) -> Self {
         let mut config = Self::new("low_stock");
@@ -452,6 +465,25 @@ impl ReportConfig {
         });
         config
     }
+    pub fn depleted() -> Self {
+        let mut config = Self::new("depleted");
+        config.filters.push(ReportFilter {
+            field: "status".to_string(),
+            operator: ComparisonOperator::Eq,
+            value: ReportFilterValue::Exact("depleted".to_string()),
+        });
+        config
+    }
+
+    pub fn unplaced() -> Self {
+        let mut config = Self::new("unplaced");
+        config.filters.push(ReportFilter {
+            field: "unplaced_count".to_string(),
+            operator: ComparisonOperator::Gt,
+            value: ReportFilterValue::Number(0.0),
+        });
+        config
+    } 
 
     pub fn build_where_clause(&self, whitelist: &FieldWhitelist) -> (String, Vec<String>) {
         if self.filters.is_empty() { return ("1=1".to_string(), Vec::new()); }

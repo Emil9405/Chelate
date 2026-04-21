@@ -78,6 +78,8 @@ pub struct HybridPaginationQuery {
     pub room_id: Option<String>,
     pub zone_id: Option<String>,
     pub position_id: Option<String>,
+    /// Включать ли скрытые реагенты (visibility='hidden'). Дефолт false.
+    pub include_hidden: Option<bool>,
 
     // Sorting
     pub sort_by: Option<String>,

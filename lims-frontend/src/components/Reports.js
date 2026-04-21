@@ -18,8 +18,11 @@ const ALLOWED_SORT_FIELDS = new Set([
   'id', 'reagent_id', 'reagent_name', 'batch_number', 'cat_number',
   'quantity', 'original_quantity', 'reserved_quantity', 'unit',
   'expiry_date', 'supplier', 'manufacturer', 'received_date',
-  'status', 'location', 'created_at', 'updated_at', 'days_until_expiry',
+  'status', 'created_at', 'updated_at', 'days_until_expiry',
   'expiration_status',
+  // Container-aware поля из CTE container_stats
+  'container_count', 'opened_count', 'placed_count', 'unplaced_count',
+  'location_summary', 'room_names',
 ]);
 
 // ✅ Статусы синхронизированы с бэкендом (enums.rs BatchStatus)
@@ -102,7 +105,9 @@ const Reports = ({ user }) => {
     { value: 'low_stock', label: '📉 Low Stock', description: 'Batches with quantity below threshold' },
     { value: 'expiring_soon', label: '⏰ Expiring Soon', description: 'Batches expiring within specified days' },
     { value: 'expired', label: '❌ Expired', description: 'Batches that have expired' },
-    { value: 'all_batches', label: '📋 All Batches', description: 'Complete list of all batches' },
+    { value: 'all_batches', label: '📋 All Batches', description: 'Active batches (excludes depleted)' },
+    { value: 'depleted', label: '📦 Depleted', description: 'Fully consumed batches — archive / history' },
+    { value: 'unplaced', label: '📍 Unplaced', description: 'Batches with containers not assigned to a storage position' },
     { value: 'custom', label: '🔧 Custom', description: 'Build your own report with filters' },
   ];
 
@@ -130,17 +135,23 @@ const Reports = ({ user }) => {
   
   // Дефолтные поля (используются если API недоступен)
   const defaultFields = useMemo(() => [
-    { 
-      field: 'status', 
-      label: 'Status', 
-      data_type: 'enum', 
-      operators: ['eq', 'ne', 'in'], 
+    {
+      field: 'status',
+      label: 'Status',
+      data_type: 'enum',
+      operators: ['eq', 'ne', 'in'],
       // ✅ ИСПРАВЛЕНО: добавлен low_stock
-      values: BATCH_STATUSES 
+      values: BATCH_STATUSES
     },
     { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
     { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'], values: null },
-    { field: 'location', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null'], values: null },
+    // Container-aware поля — вычисляются на бэке из CTE container_stats
+    { field: 'location_summary', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null', 'is_not_null'], values: null },
+    { field: 'room_names', label: 'Rooms', data_type: 'text', operators: ['like', 'is_null', 'is_not_null'], values: null },
+    { field: 'container_count', label: 'Containers (total)', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'opened_count', label: 'Containers (opened)', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'placed_count', label: 'Containers (placed)', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'unplaced_count', label: 'Containers (unplaced)', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
     { field: 'supplier', label: 'Supplier', data_type: 'text', operators: ['eq', 'like'], values: null },
     { field: 'days_until_expiry', label: 'Days Until Expiry', data_type: 'number', operators: ['gt', 'gte', 'lt', 'lte'], values: null },
     { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', operators: ['eq', 'like'], values: null },
@@ -156,7 +167,14 @@ const Reports = ({ user }) => {
     { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', visible: true, sortable: true },
     { field: 'days_until_expiry', label: 'Days Left', data_type: 'number', visible: true, sortable: true },
     { field: 'status', label: 'Status', data_type: 'enum', visible: true, sortable: true },
-    { field: 'location', label: 'Location', data_type: 'text', visible: true, sortable: true },
+    // Container-aware колонки
+    { field: 'room_names', label: 'Rooms', data_type: 'text', visible: true, sortable: true },
+    { field: 'location_summary', label: 'Location', data_type: 'text', visible: false, sortable: true },
+    { field: 'container_count', label: 'Containers', data_type: 'number', visible: true, sortable: true },
+    { field: 'opened_count', label: 'Opened', data_type: 'number', visible: false, sortable: true },
+    { field: 'placed_count', label: 'Placed', data_type: 'number', visible: false, sortable: true },
+    { field: 'unplaced_count', label: 'Unplaced', data_type: 'number', visible: false, sortable: true },
+    // Прочее
     { field: 'supplier', label: 'Supplier', data_type: 'text', visible: false, sortable: true },
     { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', visible: false, sortable: true },
     { field: 'cat_number', label: 'Cat #', data_type: 'text', visible: false, sortable: true },
@@ -432,11 +450,11 @@ const Reports = ({ user }) => {
   // Render cell
   const renderCell = useCallback((item, field) => {
     const value = item[field];
-    
+
     switch (field) {
       case 'quantity':
         return (
-          <span style={{ 
+          <span style={{
             color: value < 10 ? '#e53e3e' : value < 20 ? '#dd6b20' : 'inherit',
             fontWeight: value < 10 ? 'bold' : 'normal'
           }}>
@@ -451,8 +469,8 @@ const Reports = ({ user }) => {
           <div>
             <div>{date.toLocaleDateString()}</div>
             {days !== null && days !== undefined && (
-              <small style={{ 
-                color: days < 0 ? '#e53e3e' : days < 7 ? '#e53e3e' : days < 30 ? '#dd6b20' : '#718096' 
+              <small style={{
+                color: days < 0 ? '#e53e3e' : days < 7 ? '#e53e3e' : days < 30 ? '#dd6b20' : '#718096'
               }}>
                 {days < 0 ? `${Math.abs(days)}d ago` : `${days}d left`}
               </small>
@@ -462,7 +480,7 @@ const Reports = ({ user }) => {
       case 'days_until_expiry':
         if (value === null || value === undefined) return '—';
         return (
-          <span style={{ 
+          <span style={{
             color: value < 0 ? '#e53e3e' : value < 7 ? '#e53e3e' : value < 30 ? '#dd6b20' : 'inherit',
             fontWeight: value < 7 ? 'bold' : 'normal'
           }}>
@@ -480,6 +498,52 @@ const Reports = ({ user }) => {
         );
       case 'received_date':
         return value ? new Date(value).toLocaleDateString() : '—';
+
+      // ==================== Container-aware рендер ====================
+      case 'room_names': {
+        if (!value) return <span style={{ color: '#a0aec0' }}>—</span>;
+        // value — строка "Room1,Room2" (GROUP_CONCAT из SQLite)
+        const rooms = value.split(',').map(r => r.trim()).filter(Boolean);
+        return (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+            {rooms.map(name => (
+              <span key={name} style={{
+                padding: '2px 8px',
+                fontSize: '11px',
+                fontWeight: 600,
+                color: '#2d3748',
+                backgroundColor: '#ebf4ff',
+                border: '1px solid #90cdf4',
+                borderRadius: '10px',
+              }}>
+                {name}
+              </span>
+            ))}
+          </div>
+        );
+      }
+      case 'location_summary':
+        if (!value) return <span style={{ color: '#a0aec0' }}>—</span>;
+        // value — "Room → Zone → Pos, Room → Zone → Pos"
+        return (
+          <span style={{ fontSize: '0.8rem', color: '#4a5568' }} title={value}>
+            {value.length > 60 ? value.slice(0, 60) + '…' : value}
+          </span>
+        );
+      case 'container_count':
+      case 'opened_count':
+      case 'placed_count':
+      case 'unplaced_count': {
+        const n = value ?? 0;
+        if (n === 0 && field !== 'container_count') {
+          return <span style={{ color: '#a0aec0' }}>0</span>;
+        }
+        const color = field === 'unplaced_count' && n > 0 ? '#e53e3e'
+                    : field === 'opened_count' && n > 0 ? '#dd6b20'
+                    : 'inherit';
+        return <span style={{ color, fontWeight: n > 0 ? 600 : 400 }}>{n}</span>;
+      }
+
       default:
         return value || '—';
     }

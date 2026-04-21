@@ -6,8 +6,8 @@ export const COLUMN_WIDTHS = {
   gridColumns: '2fr 1fr 80px 1fr 1fr 100px'
 };
 
-// Compact batch row: Batch# | Qty | Status | Location | Expiry | ▼
-export const BATCH_ROW_COLUMNS = '120px 100px 80px 120px 1fr 100px 28px';
+// Compact batch row: Batch# | Qty | Status | Manufacturer | Containers | Rooms | Expiry | ▼
+export const BATCH_ROW_COLUMNS = '120px 100px 80px 120px 140px 1fr 100px 28px';
 
 export const accordionStyles = {
   // ==================== Reagent Accordion ====================

@@ -21,8 +21,11 @@ const ALLOWED_SORT_FIELDS: &[&str] = &[
     "id", "reagent_id", "reagent_name", "batch_number", "cat_number",
     "quantity", "original_quantity", "reserved_quantity", "unit",
     "expiry_date", "supplier", "manufacturer", "received_date",
-    "status", "location", "created_at", "updated_at", "days_until_expiry",
+    "status", "created_at", "updated_at", "days_until_expiry",
     "expiration_status",
+    // Container-aware fields (via CTE container_stats)
+    "container_count", "opened_count", "placed_count", "unplaced_count",
+    "location_summary", "room_names",
 ];
 
 /// Валидация поля сортировки
@@ -67,12 +70,21 @@ pub struct BatchReportRow {
     pub manufacturer: Option<String>,
     pub received_date: DateTime<Utc>,
     pub status: String,
-    pub location: Option<String>,
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub days_until_expiry: Option<i64>,
     pub expiration_status: String,
+    // ==================== Container-aware fields ====================
+    // Computed from batch_containers + batch_placements via CTE
+    pub container_count: i64,
+    pub opened_count: i64,
+    pub placed_count: i64,
+    pub unplaced_count: i64,
+    /// Полный путь "Room → Zone → Position", уникальные значения через запятую
+    pub location_summary: Option<String>,
+    /// Уникальные комнаты через запятую
+    pub room_names: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -231,6 +243,8 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
             ReportConfig::expiring_soon(days)
         },
         "expired" => ReportConfig::expired(),
+        "depleted" => ReportConfig::depleted(),
+        "unplaced" => ReportConfig::unplaced(),
         _ => ReportConfig::all_batches(),
     };
 
@@ -239,6 +253,8 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
         "low_stock" => "Low Stock Report".to_string(),
         "expiring_soon" => "Expiring Soon Report".to_string(),
         "expired" => "Expired Items Report".to_string(),
+        "depleted" => "Depleted Batches Report".to_string(),
+        "unplaced" => "Unplaced Containers Report".to_string(),
         _ => "All Batches Report".to_string(),
     };
 
@@ -271,14 +287,50 @@ fn build_filter_sql(config: &ReportConfig, whitelist: &FieldWhitelist) -> (Strin
 }
 
 // ==================== BASE QUERY ====================
+//
+// Архитектура: CTE из двух блоков.
+//
+//   container_stats — агрегирует по batch_containers (non-disposed):
+//     сколько контейнеров, сколько opened, сколько placed,
+//     полный путь размещения (Room → Zone → Position) через GROUP_CONCAT,
+//     список уникальных комнат.
+//
+//   batch_data — основа отчёта: JOIN batches + reagents + LEFT JOIN container_stats.
+//     Для батчей без контейнеров статы = 0, локация = NULL.
+//     Legacy-поле b.location НЕ используется — всё считается из placements.
+//
+// `SELECT * FROM batch_data` оборачивается в generate_report/export_report
+// со WHERE/ORDER BY/LIMIT.
 
 const BASE_REPORT_QUERY: &str = r#"
-    WITH batch_data AS (
-        SELECT 
+    WITH container_stats AS (
+        SELECT
+            bc.batch_id,
+            COUNT(DISTINCT bc.id) as container_count,
+            SUM(CASE WHEN bc.is_opened = 1 THEN 1 ELSE 0 END) as opened_count,
+            SUM(CASE WHEN bp.id IS NOT NULL THEN 1 ELSE 0 END) as placed_count,
+            GROUP_CONCAT(DISTINCT rm.name || ' → ' || sz.name || ' → ' || sp.name) as location_summary,
+            GROUP_CONCAT(DISTINCT rm.name) as room_names
+        FROM batch_containers bc
+        LEFT JOIN batch_placements bp ON bp.container_id = bc.id
+        LEFT JOIN storage_positions sp ON bp.position_id = sp.id
+        LEFT JOIN storage_zones sz ON sp.zone_id = sz.id
+        LEFT JOIN rooms rm ON sz.room_id = rm.id
+        WHERE bc.status != 'disposed'
+        GROUP BY bc.batch_id
+    ),
+    batch_data AS (
+        SELECT
             b.id, b.reagent_id, r.name as reagent_name, b.batch_number, b.cat_number,
             b.quantity, b.original_quantity, b.reserved_quantity, b.unit, b.expiry_date,
-            b.supplier, b.manufacturer, b.received_date, b.status, b.location, b.notes,
+            b.supplier, b.manufacturer, b.received_date, b.status, b.notes,
             b.created_at, b.updated_at,
+            COALESCE(cs.container_count, 0) as container_count,
+            COALESCE(cs.opened_count, 0) as opened_count,
+            COALESCE(cs.placed_count, 0) as placed_count,
+            COALESCE(cs.container_count, 0) - COALESCE(cs.placed_count, 0) as unplaced_count,
+            cs.location_summary,
+            cs.room_names,
             CASE WHEN b.expiry_date IS NULL THEN NULL
                  ELSE CAST((julianday(b.expiry_date) - julianday('now')) AS INTEGER)
             END as days_until_expiry,
@@ -290,6 +342,8 @@ const BASE_REPORT_QUERY: &str = r#"
             END as expiration_status
         FROM batches b
         JOIN reagents r ON b.reagent_id = r.id AND r.deleted_at IS NULL
+        LEFT JOIN container_stats cs ON cs.batch_id = b.id
+        WHERE b.deleted_at IS NULL
     )
     SELECT * FROM batch_data
 "#;
@@ -303,7 +357,7 @@ pub async fn get_report_presets(
         AvailablePreset {
             id: "all_batches".to_string(),
             name: "All Batches".to_string(),
-            description: "Complete list of all batches".to_string(),
+            description: "Complete list of active batches (excludes depleted)".to_string(),
             default_params: serde_json::json!({}),
         },
         AvailablePreset {
@@ -322,6 +376,18 @@ pub async fn get_report_presets(
             id: "expired".to_string(),
             name: "Expired Items".to_string(),
             description: "Batches that have expired".to_string(),
+            default_params: serde_json::json!({}),
+        },
+        AvailablePreset {
+            id: "depleted".to_string(),
+            name: "Depleted Batches".to_string(),
+            description: "Fully consumed batches — archive / history".to_string(),
+            default_params: serde_json::json!({}),
+        },
+        AvailablePreset {
+            id: "unplaced".to_string(),
+            name: "Unplaced Containers".to_string(),
+            description: "Batches with containers not yet assigned to a storage position".to_string(),
             default_params: serde_json::json!({}),
         },
     ];
@@ -369,10 +435,45 @@ pub async fn get_report_fields(
             values: None,
         },
         AvailableField {
-            field: "location".to_string(),
+            field: "location_summary".to_string(),
             label: "Location".to_string(),
             data_type: "text".to_string(),
-            operators: vec!["eq".to_string(), "like".to_string(), "is_null".to_string()],
+            operators: vec!["eq".to_string(), "like".to_string(), "is_null".to_string(), "is_not_null".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "room_names".to_string(),
+            label: "Rooms".to_string(),
+            data_type: "text".to_string(),
+            operators: vec!["like".to_string(), "is_null".to_string(), "is_not_null".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "container_count".to_string(),
+            label: "Containers (total)".to_string(),
+            data_type: "number".to_string(),
+            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "opened_count".to_string(),
+            label: "Containers (opened)".to_string(),
+            data_type: "number".to_string(),
+            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "placed_count".to_string(),
+            label: "Containers (placed)".to_string(),
+            data_type: "number".to_string(),
+            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "unplaced_count".to_string(),
+            label: "Containers (unplaced)".to_string(),
+            data_type: "number".to_string(),
+            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
             values: None,
         },
         AvailableField {
@@ -431,7 +532,8 @@ pub async fn generate_report(
         if !search.trim().is_empty() {
             let escaped = escape_like_pattern(search.trim());
             let pattern = format!("%{}%", escaped);
-            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\')".to_string();
+            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\')".to_string();
+            params.push(pattern.clone());
             params.push(pattern.clone());
             params.push(pattern.clone());
             params.push(pattern.clone());
@@ -514,7 +616,8 @@ pub async fn export_report(
         if !search.trim().is_empty() {
             let escaped = escape_like_pattern(search.trim());
             let pattern = format!("%{}%", escaped);
-            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\')".to_string();
+            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\')".to_string();
+            params.push(pattern.clone());
             params.push(pattern.clone());
             params.push(pattern.clone());
             params.push(pattern.clone());
@@ -545,20 +648,30 @@ pub async fn export_report(
     let mut csv_content = String::new();
     // BOM для корректного отображения UTF-8 в Excel
     csv_content.push('\u{FEFF}');
-    csv_content.push_str("ID,Reagent,Batch Number,Quantity,Unit,Expiry Date,Status,Location,Supplier,Notes\n");
-    
+    csv_content.push_str(
+        "ID,Reagent,Batch Number,Quantity,Unit,Expiry Date,Days Left,Status,\
+         Containers,Opened,Placed,Unplaced,Location,Rooms,Supplier,Manufacturer,Notes\n"
+    );
+
     for row in &data {
         csv_content.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             escape_csv_field(&row.id),
             escape_csv_field(&row.reagent_name),
             escape_csv_field(&row.batch_number),
             row.quantity,
             escape_csv_field(&row.unit),
             row.expiry_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
+            row.days_until_expiry.map(|d| d.to_string()).unwrap_or_default(),
             escape_csv_field(&row.status),
-            escape_csv_field(row.location.as_deref().unwrap_or("")),
+            row.container_count,
+            row.opened_count,
+            row.placed_count,
+            row.unplaced_count,
+            escape_csv_field(row.location_summary.as_deref().unwrap_or("")),
+            escape_csv_field(row.room_names.as_deref().unwrap_or("")),
             escape_csv_field(row.supplier.as_deref().unwrap_or("")),
+            escape_csv_field(row.manufacturer.as_deref().unwrap_or("")),
             escape_csv_field(row.notes.as_deref().unwrap_or("")),
         ));
     }
@@ -583,7 +696,18 @@ mod tests {
         assert_eq!(validate_sort_field("created_at"), Some("created_at"));
         assert_eq!(validate_sort_field("quantity"), Some("quantity"));
         assert_eq!(validate_sort_field("reagent_name"), Some("reagent_name"));
-        
+
+        // Новые container-aware поля из CTE
+        assert_eq!(validate_sort_field("container_count"), Some("container_count"));
+        assert_eq!(validate_sort_field("opened_count"), Some("opened_count"));
+        assert_eq!(validate_sort_field("placed_count"), Some("placed_count"));
+        assert_eq!(validate_sort_field("unplaced_count"), Some("unplaced_count"));
+        assert_eq!(validate_sort_field("location_summary"), Some("location_summary"));
+        assert_eq!(validate_sort_field("room_names"), Some("room_names"));
+
+        // Legacy поле location больше не должно работать
+        assert_eq!(validate_sort_field("location"), None);
+
         // SQL-инъекции блокируются
         assert_eq!(validate_sort_field("created_at; DROP TABLE users"), None);
         assert_eq!(validate_sort_field("1=1 OR 1=1"), None);

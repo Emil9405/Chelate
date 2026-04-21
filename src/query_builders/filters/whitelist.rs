@@ -111,7 +111,8 @@ impl FieldWhitelist {
     pub fn for_reagents() -> Self {
         Self::new(&[
             "id", "name", "formula", "cas_number", "manufacturer", "molecular_weight",
-            "physical_state", "description", "status", "created_by", "updated_by", "created_at",
+            "physical_state", "description", "status", "visibility",
+            "created_by", "updated_by", "created_at",
             "updated_at", "total_quantity", "reserved_quantity", "available_quantity",
             "batches_count", "total_display",
         ])
@@ -176,12 +177,15 @@ impl FieldWhitelist {
         Self::with_config(&[
             "id", "reagent_id", "reagent_name", "batch_number", "cat_number", "quantity",
             "original_quantity", "reserved_quantity", "unit", "expiry_date", "supplier",
-            "manufacturer", "received_date", "status", "location", "notes", "days_until_expiry",
+            "manufacturer", "received_date", "status", "notes", "days_until_expiry",
             "expiration_status", "created_at", "updated_at",
+            // Container-aware поля (вычисляются из CTE container_stats)
+            "container_count", "opened_count", "placed_count", "unplaced_count",
+            "location_summary", "room_names",
             // Алиасы с таблицами
             "b.id", "b.reagent_id", "b.batch_number", "b.cat_number", "b.quantity",
             "b.original_quantity", "b.reserved_quantity", "b.unit", "b.expiry_date",
-            "b.supplier", "b.manufacturer", "b.received_date", "b.status", "b.location",
+            "b.supplier", "b.manufacturer", "b.received_date", "b.status",
             "b.notes", "b.created_at", "b.updated_at",
             "r.name", "r.id", "r.formula", "r.cas_number",
         ], FieldConfig::for_reports())

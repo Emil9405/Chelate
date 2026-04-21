@@ -7,6 +7,7 @@ import Loading from '../Loading';
 import Badge from '../Badge';
 import Button from '../Button';
 import { useRooms } from '../hooks/useRooms';
+import { formatQuantity } from '../../utils/units';
 import { accordionStyles } from './styles';
 import { PrinterIcon } from './icons';
 import useBatchLogic from './useBatchLogic';
@@ -96,9 +97,72 @@ const CompactContainers = ({ batch }) => {
   );
 };
 
+// ==================== COMPACT ROOMS INDICATOR ====================
+
+// Парсит location_summary вида "Room1 → Zone1 → Pos1, Room2 → Zone2 → Pos2"
+// и возвращает уникальные имена комнат
+const extractRoomNames = (locationSummary) => {
+  if (!locationSummary || typeof locationSummary !== 'string') return [];
+  const names = locationSummary
+    .split(',')
+    .map(entry => entry.trim().split('→')[0].trim())
+    .filter(Boolean);
+  return Array.from(new Set(names));
+};
+
+const CompactRooms = ({ batch, rooms }) => {
+  const roomNames = extractRoomNames(batch.location_summary);
+
+  if (roomNames.length === 0) {
+    return <span style={{ fontSize: '11px', color: '#cbd5e0' }}>—</span>;
+  }
+
+  const roomMap = new Map((rooms || []).map(r => [r.name, r]));
+
+  return (
+    <div style={{
+      display: 'flex', flexWrap: 'wrap', gap: '4px',
+      alignItems: 'center', minWidth: 0,
+    }}>
+      {roomNames.map(name => {
+        const room = roomMap.get(name);
+        const color = room?.color || '#718096';
+        return (
+          <span
+            key={name}
+            title={name}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '2px 8px',
+              fontSize: '11px',
+              fontWeight: '600',
+              color: '#2d3748',
+              backgroundColor: `${color}1a`,
+              border: `1px solid ${color}66`,
+              borderRadius: '10px',
+              maxWidth: '140px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span style={{
+              width: '6px', height: '6px', borderRadius: '50%',
+              backgroundColor: color, flexShrink: 0,
+            }} />
+            {name}
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
 // ==================== COMPACT BATCH ROW ====================
 
-const CompactBatchRow = ({ batch, isActive, onClick }) => {
+const CompactBatchRow = ({ batch, isActive, onClick, rooms }) => {
   const [isHovered, setIsHovered] = useState(false);
   const expiryStatus = getExpiryStatus(batch.expiry_date);
   
@@ -136,6 +200,11 @@ const CompactBatchRow = ({ batch, isActive, onClick }) => {
 
       {/* Containers (replaced Location) */}
       <div><CompactContainers batch={batch} /></div>
+
+      {/* Rooms — где находится этот батч */}
+      <div style={{ minWidth: 0, overflow: 'hidden' }}>
+        <CompactRooms batch={batch} rooms={rooms} />
+      </div>
 
       {/* Expiry */}
       <div style={{ ...expiryStatus.style, fontSize: '0.8rem' }}>{expiryStatus.text}</div>
@@ -202,17 +271,31 @@ const ReagentAccordionItem = ({
           <div style={accordionStyles.reagentField} title={reagent.formula}>{reagent.formula || '—'}</div>
           <div style={accordionStyles.reagentField}>{reagent.molecular_weight || '—'}</div>
           <div style={accordionStyles.reagentField} title={reagent.cas_number}>{reagent.cas_number || '—'}</div>
-          <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
             <Badge variant={reagent.status === 'active' ? 'success' : 'warning'}>
               {reagent.status || 'Unknown'}
             </Badge>
+            {reagent.visibility === 'hidden' && (
+              <span
+                title="This reagent is hidden from the default list"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '3px',
+                  padding: '2px 6px', fontSize: '10px', fontWeight: 700,
+                  color: '#4a5568', backgroundColor: '#edf2f7',
+                  border: '1px solid #cbd5e0', borderRadius: '6px',
+                  textTransform: 'uppercase', letterSpacing: '0.03em',
+                }}
+              >
+                👁︎ Hidden
+              </span>
+            )}
           </div>
           <div style={{
             ...accordionStyles.reagentField,
             color: reagent.total_display === 'No stock' ? '#e53e3e' : '#38a169',
             fontWeight: '600'
           }}>
-            {reagent.total_display || `${reagent.total_quantity} ${reagent.primary_unit || ''}`}
+            {reagent.total_display || formatQuantity(reagent.total_quantity, reagent.primary_unit) || '—'}
           </div>
         </div>
 
@@ -255,6 +338,7 @@ const ReagentAccordionItem = ({
                 <div>Status</div>
                 <div>Manufacturer</div>
                 <div>Containers</div>
+                <div>Rooms</div>
                 <div>Expiry</div>
                 <div></div>
               </div>
@@ -266,6 +350,7 @@ const ReagentAccordionItem = ({
                     batch={batch}
                     isActive={expandedBatchId === batch.id}
                     onClick={() => toggleBatch(batch.id)}
+                    rooms={rooms}
                   />
 
                   {/* Expanded card */}
@@ -295,6 +380,8 @@ const ReagentAccordionItem = ({
                       usageError={logic.usageError}
                       usageContainer={logic.usageContainer}
                       setUsageContainer={logic.setUsageContainer}
+                      getUsageUnit={logic.getUsageUnit}
+                      setUsageUnit={logic.setUsageUnit}
                       
                       // Actions
                       onEdit={(b) => { logic.setSelectedBatch(b); logic.setShowEditBatch(true); }}

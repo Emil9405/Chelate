@@ -94,6 +94,8 @@ pub struct ReagentListItem {
     pub appearance: Option<String>,
     pub hazard_pictograms: Option<String>,
     pub status: String,
+    #[sqlx(default)]
+    pub visibility: String,
     pub created_by: Option<String>,
     pub updated_by: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -102,7 +104,7 @@ pub struct ReagentListItem {
     pub total_quantity: f64,
     pub batches_count: i64,
     pub primary_unit: Option<String>,
-    
+
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +121,7 @@ pub struct ReagentDetailResponse {
     pub appearance: Option<String>,
     pub hazard_pictograms: Option<String>,
     pub status: String,
+    pub visibility: String,
     pub created_by: Option<String>,
     pub updated_by: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -179,13 +182,18 @@ pub async fn get_reagents(
     let mut builder = CtePaginationBuilder::new("reagents")
         .select("id, name, formula, cas_number, manufacturer, molecular_weight, \
                  physical_state, description, storage_conditions, appearance, \
-                 hazard_pictograms, status, created_by, updated_by, created_at, \
+                 hazard_pictograms, status, visibility, created_by, updated_by, created_at, \
                  updated_at, total_quantity, batches_count, primary_unit")
         .sort(sort_by, sort_order)
         .limit(per_page);
         
     // Exclude soft-deleted reagents
     builder.add_raw_condition("deleted_at IS NULL");
+
+    // Hide reagents with visibility='hidden' unless explicitly requested
+    if !query.include_hidden.unwrap_or(false) {
+        builder.add_raw_condition("visibility = 'public'");
+    }
 
     // ===== SEARCH FILTER (FTS с fallback на LIKE) =====
     // Поддержка обоих параметров: search и q (для совместимости с фронтендом)
@@ -359,11 +367,12 @@ pub async fn search_reagents(
         sqlx::query_as::<_, ReagentListItem>(
             r#"SELECT id, name, formula, cas_number, manufacturer, molecular_weight,
                       physical_state, description, storage_conditions, appearance,
-                      hazard_pictograms, status, created_by, updated_by, created_at,
+                      hazard_pictograms, status, visibility, created_by, updated_by, created_at,
                       updated_at, total_quantity, batches_count, primary_unit
                FROM reagents
                WHERE rowid IN (SELECT rowid FROM reagents_fts WHERE reagents_fts MATCH ?)
                AND deleted_at IS NULL
+               AND visibility = 'public'
                ORDER BY total_quantity DESC
                LIMIT ?"#
         )
@@ -376,11 +385,12 @@ pub async fn search_reagents(
         sqlx::query_as::<_, ReagentListItem>(
             r#"SELECT id, name, formula, cas_number, manufacturer, molecular_weight,
                       physical_state, description, storage_conditions, appearance,
-                      hazard_pictograms, status, created_by, updated_by, created_at,
+                      hazard_pictograms, status, visibility, created_by, updated_by, created_at,
                       updated_at, total_quantity, batches_count, primary_unit
                FROM reagents
                WHERE (name LIKE ? OR cas_number LIKE ? OR formula LIKE ?)
                AND deleted_at IS NULL
+               AND visibility = 'public'
                ORDER BY total_quantity DESC
                LIMIT ?"#
         )
@@ -493,6 +503,7 @@ pub async fn get_reagent_by_id(
         appearance: reagent.appearance,
         hazard_pictograms: reagent.hazard_pictograms,
         status: reagent.status,
+        visibility: reagent.visibility,
         created_by: reagent.created_by,
         updated_by: reagent.updated_by,
         created_at: reagent.created_at,
@@ -547,13 +558,19 @@ pub async fn create_reagent(
         .await?;
     }
 
+    // Validate visibility (defaults to 'public')
+    let visibility = body.visibility.as_deref().unwrap_or("public");
+    if !matches!(visibility, "public" | "hidden") {
+        return Err(ApiError::bad_request("visibility must be 'public' or 'hidden'"));
+    }
+
     sqlx::query(r#"
         INSERT INTO reagents (
             id, name, formula, cas_number, manufacturer, molecular_weight,
             physical_state, description, storage_conditions, appearance,
-            hazard_pictograms, status, total_quantity, batches_count,
+            hazard_pictograms, status, visibility, total_quantity, batches_count,
             created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 0, 0, ?, ?, ?)
     "#)
         .bind(&id)
         .bind(&body.name)
@@ -566,6 +583,7 @@ pub async fn create_reagent(
         .bind(&body.storage_conditions)
         .bind(&body.appearance)
         .bind(&body.hazard_pictograms)
+        .bind(visibility)
         .bind(&user_id)
         .bind(&now)
         .bind(&now)
@@ -635,6 +653,15 @@ pub async fn update_reagent(
     upd!(appearance, "appearance");
     upd!(hazard_pictograms, "hazard_pictograms");
     upd!(status, "status");
+
+    // Visibility — validated against enum since it's constrained by CHECK in DB
+    if let Some(ref vis) = body.visibility {
+        if !matches!(vis.as_str(), "public" | "hidden") {
+            return Err(ApiError::bad_request("visibility must be 'public' or 'hidden'"));
+        }
+        sets.push("visibility = ?");
+        vals.push(Some(vis.clone()));
+    }
 
     if let Some(mw) = body.molecular_weight {
         sets.push("molecular_weight = ?");

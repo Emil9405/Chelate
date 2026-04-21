@@ -220,6 +220,12 @@ pub async fn get_all_batches(
     // Исключаем удалённые батчи
     builder.add_condition("b.deleted_at IS NULL", vec![]);
 
+    // Скрываем depleted по умолчанию — их видно только в Reports
+    // Если пользователь явно запросил ?status=depleted — пропускаем фильтр
+    if query.status.as_deref() != Some("depleted") {
+        builder.add_condition("b.status != 'depleted'", vec![]);
+    }
+
     // Добавляем условия поиска
     if let Some(ref search) = query.search {
         let trimmed = search.trim();
@@ -1031,6 +1037,11 @@ pub async fn get_batches_for_reagent(
 
     // Исключаем удалённые батчи
     builder.add_condition("deleted_at IS NULL", vec![]);
+
+    // Скрываем depleted по умолчанию — их видно только в Reports
+    if query.status.as_deref() != Some("depleted") {
+        builder.add_condition("status != 'depleted'", vec![]);
+    }
 
     builder.add_exact_match("reagent_id", &reagent_id);
 

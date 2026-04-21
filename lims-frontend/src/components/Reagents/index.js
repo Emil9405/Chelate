@@ -36,6 +36,7 @@ const Reagents = ({ user }) => {
   const [stockFilter, setStockFilter] = useState('');
   const [casNumberFilter, setCasNumberFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState(null); // <-- СОСТОЯНИЕ ЛОКАЦИИ
+  const [showHidden, setShowHidden] = useState(false); // toggle "Show hidden"
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('desc');
   const [showFilters, setShowFilters] = useState(false);
@@ -47,13 +48,14 @@ const Reagents = ({ user }) => {
     if (manufacturerFilter) filters.manufacturer = manufacturerFilter;
     if (stockFilter) filters.stock_status = stockFilter;
     if (casNumberFilter) filters.cas_number = casNumberFilter;
+    if (showHidden) filters.include_hidden = true;
     if (locationFilter) {
     if (locationFilter.type === 'room') filters.room_id = locationFilter.id;
     else if (locationFilter.type === 'zone') filters.zone_id = locationFilter.id;
     else filters.position_id = locationFilter.id || locationFilter;
   }
     return filters;
-  }, [searchTerm, statusFilter, manufacturerFilter, stockFilter, casNumberFilter, locationFilter]);
+  }, [searchTerm, statusFilter, manufacturerFilter, stockFilter, casNumberFilter, locationFilter, showHidden]);
 
   const {
     data: reagents,
@@ -190,6 +192,7 @@ const Reagents = ({ user }) => {
     setStockFilter('');
     setCasNumberFilter('');
     setLocationFilter(null);
+    setShowHidden(false);
     setSortBy('created_at');
     setSortOrder('desc');
   };
@@ -228,6 +231,26 @@ const Reagents = ({ user }) => {
               style={{ paddingLeft: '44px' }}
             />
           </div>
+          <label
+            title="Show reagents marked as hidden"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
+              padding: '8px 12px', borderRadius: '8px', cursor: 'pointer',
+              backgroundColor: showHidden ? '#ebf4ff' : '#fff',
+              border: `1px solid ${showHidden ? '#3182ce' : '#e2e8f0'}`,
+              color: showHidden ? '#1a365d' : '#4a5568',
+              fontSize: '0.875rem', fontWeight: 500,
+              userSelect: 'none', whiteSpace: 'nowrap',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={showHidden}
+              onChange={(e) => setShowHidden(e.target.checked)}
+              style={{ cursor: 'pointer', margin: 0 }}
+            />
+            Show hidden
+          </label>
           <Button variant="secondary" onClick={() => setShowFilters(!showFilters)} icon={<FilterIcon size={16} />}>
             {showFilters ? 'Hide' : 'Filters'}
             {activeFiltersCount > 0 && (

@@ -189,6 +189,11 @@ pub async fn get_batches_filtered(
     let mut conditions: Vec<String> = vec!["1=1".to_string()];
     let mut params: Vec<String> = Vec::new();
 
+    // Скрываем depleted по умолчанию — их видно только в Reports
+    // (если пресет/фильтр явно указал status='depleted', он всё равно не вернёт
+    //  записи, потому что условия AND-комбинируются; это осознанное ограничение)
+    conditions.push("b.status != 'depleted'".to_string());
+
     // Применяем фильтры через FilterBuilder
     if let Some(ref filters) = body.filters {
         let filter_builder = crate::query_builders::FilterBuilder::new()

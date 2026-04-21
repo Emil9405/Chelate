@@ -853,7 +853,7 @@ pub async fn get_room_inventory(
         JOIN storage_zones sz ON sp.zone_id = sz.id
         JOIN batches b ON bc.batch_id = b.id
         JOIN reagents rg ON b.reagent_id = rg.id
-        WHERE sz.room_id = ? AND b.deleted_at IS NULL AND bc.status != 'disposed'
+        WHERE sz.room_id = ? AND b.deleted_at IS NULL AND bc.status != 'disposed' AND b.status != 'depleted'
         ORDER BY sz.sort_order, sp.sort_order, rg.name, b.batch_number, bc.sequence_number"#
     )
     .bind(&room_id)

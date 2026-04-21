@@ -399,7 +399,7 @@ pub async fn get_dashboard_stats(
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let total_batches: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM batches WHERE deleted_at IS NULL")
+    let total_batches: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM batches WHERE deleted_at IS NULL AND status != 'depleted'")
         .fetch_one(&app_state.db_pool)
         .await?;
 

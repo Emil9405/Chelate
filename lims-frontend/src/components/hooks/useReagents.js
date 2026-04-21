@@ -72,6 +72,8 @@ export default function useReagents(externalFilters = {}, options = {}) {
         stock_status: currentFilters.stock_status || undefined,
         cas_number: currentFilters.cas_number || undefined,
         has_stock: currentFilters.has_stock,
+        // Visibility — hidden reagents excluded by default
+        include_hidden: currentFilters.include_hidden || undefined,
         // Location filters
         room_id: currentFilters.room_id || undefined,
         zone_id: currentFilters.zone_id || undefined,

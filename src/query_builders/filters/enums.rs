@@ -98,6 +98,26 @@ define_status_enum! {
     }
 }
 
+// ==================== ВИДИМОСТЬ РЕАГЕНТА ====================
+
+define_status_enum! {
+    /// Видимость реагента в списках.
+    ///
+    /// - Public (default): виден в главном списке реагентов и в поиске
+    /// - Hidden: скрыт из дефолтного списка, виден только при toggle "Show hidden".
+    ///   Батчи скрытого реагента остаются видимыми в комнатах и инвентаре.
+    pub enum ReagentVisibility {
+        Public => "public",
+        Hidden => "hidden",
+    }
+}
+
+impl Default for ReagentVisibility {
+    fn default() -> Self {
+        ReagentVisibility::Public
+    }
+}
+
 // ==================== СТАТУСЫ ЭКСПЕРИМЕНТОВ ====================
 
 define_status_enum! {

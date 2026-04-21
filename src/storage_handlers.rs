@@ -468,7 +468,7 @@ pub async fn get_position_items(
         JOIN storage_positions sp ON bp.position_id = sp.id
         JOIN batches b ON bc.batch_id = b.id
         JOIN reagents rg ON b.reagent_id = rg.id
-        WHERE bp.position_id = ? AND b.deleted_at IS NULL AND bc.status != 'disposed'
+        WHERE bp.position_id = ? AND b.deleted_at IS NULL AND bc.status != 'disposed' AND b.status != 'depleted'
         ORDER BY rg.name ASC, b.batch_number ASC, bc.sequence_number ASC"#
     )
     .bind(&pos_id)
@@ -518,7 +518,7 @@ pub async fn get_zone_items(
         JOIN storage_positions sp ON bp.position_id = sp.id
         JOIN batches b ON bc.batch_id = b.id
         JOIN reagents rg ON b.reagent_id = rg.id
-        WHERE sp.zone_id = ? AND b.deleted_at IS NULL AND bc.status != 'disposed'
+        WHERE sp.zone_id = ? AND b.deleted_at IS NULL AND bc.status != 'disposed' AND b.status != 'depleted'
         ORDER BY sp.sort_order ASC, sp.name ASC, rg.name ASC, b.batch_number ASC, bc.sequence_number ASC"#
     )
     .bind(&zone_id)
@@ -542,6 +542,7 @@ pub async fn update_position_count(pool: &SqlitePool, position_id: &str) -> ApiR
             WHERE bp.position_id = ?
                 AND b.deleted_at IS NULL
                 AND bc.status != 'disposed'
+                AND b.status != 'depleted'
         )
         WHERE id = ?"#
     ).bind(position_id).bind(position_id).execute(pool).await?;

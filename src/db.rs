@@ -848,6 +848,12 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         
         // ==================== REAGENTS SOFT DELETE ====================
         "ALTER TABLE reagents ADD COLUMN deleted_at DATETIME",
+
+        // ==================== REAGENTS VISIBILITY ====================
+        // 'public' (default) — shown in lists and search
+        // 'hidden' — excluded from default lists (toggle "Show hidden" to see)
+        "ALTER TABLE reagents ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public' CHECK(visibility IN ('public', 'hidden'))",
+        "CREATE INDEX IF NOT EXISTS idx_reagents_visibility ON reagents(visibility) WHERE deleted_at IS NULL",
         
         // ==================== EXPERIMENTS ====================
         "ALTER TABLE experiment_reagents ADD COLUMN is_consumed INTEGER NOT NULL DEFAULT 0 CHECK(is_consumed IN (0, 1))",

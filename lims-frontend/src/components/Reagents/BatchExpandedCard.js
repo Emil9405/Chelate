@@ -4,6 +4,7 @@
 import React, { useEffect } from 'react';
 import Button from '../Button';
 import { UseIcon } from './icons';
+import { getCompatibleUnits, convertQuantity } from '../../utils/units';
 import {
   EditIcon,
   TrashIcon,
@@ -265,6 +266,9 @@ const UsageBar = ({
   usageError,
   usageContainer,
   setUsageContainer,
+  // Selected dispense unit (defaults to batch.unit, can be a compatible alternative)
+  getUsageUnit,
+  setUsageUnit,
 }) => {
   const available = batch.quantity - (batch.reserved_quantity || 0);
   const hasPackSize = batch.pack_size && batch.pack_size > 0;
@@ -272,6 +276,17 @@ const UsageBar = ({
   const isLoading = usageLoading[batch.id];
   const success = usageSuccess[batch.id];
   const error = usageError[batch.id];
+
+  // Dispense unit: defaults to batch.unit. If it's a mass/volume unit,
+  // user can pick a compatible alternative (e.g. 500 mL for a 1 L batch).
+  const selectedUnit = getUsageUnit ? getUsageUnit(batch) : batch.unit;
+  const compatibleUnits = getCompatibleUnits(batch.unit);
+  const hasUnitChoice = compatibleUnits.length > 1 && setUsageUnit;
+
+  // Max quantity displayed in the currently-selected unit
+  const maxInSelectedUnit = selectedUnit !== batch.unit
+    ? (convertQuantity(available, batch.unit, selectedUnit) ?? available)
+    : available;
 
   const usableContainers = (containers || []).filter(
     c => getStatus(c) !== 'empty' && getStatus(c) !== 'disposed'
@@ -436,27 +451,49 @@ const UsageBar = ({
                 type="number"
                 step={hasPackSize ? batch.pack_size : '0.01'}
                 min="0.01"
-                max={maxQty}
                 value={input.quantity}
                 onChange={(e) => setUsageQuantity(batch.id, e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') { e.preventDefault(); handleQuantityUse(batch); }
                 }}
-                placeholder={`${Number(maxQty).toFixed(1)}`}
+                placeholder={`${Number(maxInSelectedUnit).toFixed(Number.isInteger(maxInSelectedUnit) ? 0 : 2)}`}
                 disabled={isLoading}
                 style={{
-                  width: '95px', height: '30px', padding: '0 24px 0 8px',
+                  width: '95px', height: '30px',
+                  padding: hasUnitChoice ? '0 8px' : '0 24px 0 8px',
                   border: error ? '1px solid #e53e3e' : '1px solid #e2e8f0',
                   borderRadius: '6px', fontSize: '13px', textAlign: 'right', fontWeight: '500',
                 }}
               />
-              <span style={{
-                fontSize: '11px', color: '#718096', position: 'absolute', right: '6px',
-                fontWeight: '600', pointerEvents: 'none'
-              }}>
-                {batch.unit}
-              </span>
+              {!hasUnitChoice && (
+                <span style={{
+                  fontSize: '11px', color: '#718096', position: 'absolute', right: '6px',
+                  fontWeight: '600', pointerEvents: 'none'
+                }}>
+                  {batch.unit}
+                </span>
+              )}
             </div>
+
+            {/* Unit selector — shown only for convertible (mass/volume) batches */}
+            {hasUnitChoice && (
+              <select
+                value={selectedUnit}
+                onChange={(e) => setUsageUnit(batch.id, e.target.value)}
+                disabled={isLoading}
+                title="Dispense unit"
+                style={{
+                  height: '30px', padding: '0 4px', fontSize: '12px',
+                  border: '1px solid #e2e8f0', borderRadius: '6px',
+                  background: 'white', color: '#4a5568',
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {compatibleUnits.map(u => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+            )}
 
             <Button
               size="small"
@@ -491,6 +528,7 @@ const BatchExpandedCard = ({
   onPlaceContainer, onMoveContainer,
   getUsageInput, setUsageQuantity, handleQuantityUse, adjustQuantityByPack,
   usageLoading, usageSuccess, usageError, usageContainer, setUsageContainer,
+  getUsageUnit, setUsageUnit,
   onEdit, onDelete, onHistory, onRefresh,
 }) => {
   const available = batch.quantity - (batch.reserved_quantity || 0);
@@ -549,6 +587,7 @@ const BatchExpandedCard = ({
           handleQuantityUse={handleQuantityUse} adjustQuantityByPack={adjustQuantityByPack}
           usageLoading={usageLoading} usageSuccess={usageSuccess} usageError={usageError}
           usageContainer={usageContainer} setUsageContainer={setUsageContainer}
+          getUsageUnit={getUsageUnit} setUsageUnit={setUsageUnit}
         />
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
           <Button size="small" variant="ghost" onClick={() => onHistory(batch)} icon={<ClockIcon size={14} />}>History</Button>
