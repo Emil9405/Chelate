@@ -1,5 +1,7 @@
-// components/Reports.js - Full-featured Reports with Filters & Columns
-// ✅ ИСПРАВЛЕНО: пути API, валидация sortBy, debounce, race conditions, CSV экспорт
+// components/Reports.js
+// Экспорт CSV + XLSX через бэкенд (POST /api/v1/reports/export, body.format = "csv" | "xlsx").
+// Фронт валидирует Content-Type — если пришёл text/html, выбрасывает ошибку,
+// чтобы юзер не сохранил HTML под видом отчёта.
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../services/api';
@@ -13,94 +15,96 @@ import Input from './Input';
 
 // ==================== CONSTANTS ====================
 
-// ✅ Whitelist для валидации сортировки (должен совпадать с бэкендом)
 const ALLOWED_SORT_FIELDS = new Set([
   'id', 'reagent_id', 'reagent_name', 'batch_number', 'cat_number',
   'quantity', 'original_quantity', 'reserved_quantity', 'unit',
   'expiry_date', 'supplier', 'manufacturer', 'received_date',
   'status', 'created_at', 'updated_at', 'days_until_expiry',
   'expiration_status',
-  // Container-aware поля из CTE container_stats
   'container_count', 'opened_count', 'placed_count', 'unplaced_count',
   'location_summary', 'room_names',
 ]);
 
-// ✅ Статусы синхронизированы с бэкендом (enums.rs BatchStatus)
 const BATCH_STATUSES = ['available', 'low_stock', 'reserved', 'expired', 'depleted'];
+
+// API base — у тебя в проекте обычно через relative paths и proxy/CRA.
+// Если в api.js есть getBaseURL — лучше использовать его.
+const API_BASE = '/api/v1';
 
 // ==================== UTILITIES ====================
 
-/**
- * Экранирование CSV-полей (обработка запятых, кавычек и переносов строк)
- */
-const escapeCSV = (value) => {
-  if (value == null) return '';
-  const str = String(value);
-  if (/[,"\n\r]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
-};
-
-/**
- * Debounce hook
- */
 const useDebounce = (value, delay) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
-
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedValue(value), delay);
     return () => clearTimeout(timer);
   }, [value, delay]);
-
   return debouncedValue;
+};
+
+/** Достаёт JWT так же, как это делает api.js (LIMS использует localStorage). */
+const getAuthToken = () => {
+  try {
+    return localStorage.getItem('lims_token') || localStorage.getItem('token') || '';
+  } catch {
+    return '';
+  }
+};
+
+/** Извлекает имя файла из Content-Disposition или генерирует фолбэк. */
+const filenameFromHeaders = (response, fallback) => {
+  const cd = response.headers.get('Content-Disposition') || '';
+  const match = cd.match(/filename\*?=(?:UTF-8'')?"?([^"';]+)"?/i);
+  return match ? decodeURIComponent(match[1]) : fallback;
+};
+
+/** Скачивает blob как файл. */
+const downloadBlob = (blob, filename) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 };
 
 // ==================== COMPONENT ====================
 
 const Reports = ({ user }) => {
-  // State
   const [activeReport, setActiveReport] = useState('low_stock');
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState('');
   const [reportData, setReportData] = useState([]);
   const [reportMetadata, setReportMetadata] = useState(null);
-  
-  // Preset parameters
+
   const [threshold, setThreshold] = useState(10);
   const [expiringDays, setExpiringDays] = useState(30);
-  
-  // Pagination
+
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(50);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
-  
-  // Search and sort
+
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('DESC');
 
-  // ✅ Debounced search для предотвращения лишних запросов
   const debouncedSearch = useDebounce(searchTerm, 300);
-
-  // ✅ AbortController для отмены предыдущих запросов
   const abortControllerRef = useRef(null);
 
-  // Columns & Filters
   const [availableColumns, setAvailableColumns] = useState([]);
   const [availableFields, setAvailableFields] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [activeFilters, setActiveFilters] = useState([]);
-  
-  // UI toggles
+
   const [showFiltersPanel, setShowFiltersPanel] = useState(false);
   const [showColumnsPanel, setShowColumnsPanel] = useState(false);
-  
-  // New filter form
+
   const [newFilter, setNewFilter] = useState({ field: '', operator: '', value: '' });
 
-  // Report presets
   const reportPresets = [
     { value: 'low_stock', label: '📉 Low Stock', description: 'Batches with quantity below threshold' },
     { value: 'expiring_soon', label: '⏰ Expiring Soon', description: 'Batches expiring within specified days' },
@@ -111,19 +115,11 @@ const Reports = ({ user }) => {
     { value: 'custom', label: '🔧 Custom', description: 'Build your own report with filters' },
   ];
 
-  // Operator display names
   const operatorLabels = {
-    eq: '= equals',
-    ne: '≠ not equals',
-    gt: '> greater than',
-    gte: '≥ greater or equal',
-    lt: '< less than',
-    lte: '≤ less or equal',
-    like: '~ contains',
-    in: '∈ in list',
-    not_in: '∉ not in list',
-    is_null: '∅ is empty',
-    is_not_null: '✓ is not empty',
+    eq: '= equals', ne: '≠ not equals', gt: '> greater than',
+    gte: '≥ greater or equal', lt: '< less than', lte: '≤ less or equal',
+    like: '~ contains', in: '∈ in list', not_in: '∉ not in list',
+    is_null: '∅ is empty', is_not_null: '✓ is not empty',
   };
 
   const operatorShortLabels = {
@@ -132,20 +128,11 @@ const Reports = ({ user }) => {
   };
 
   // ==================== DEFAULT DATA ====================
-  
-  // Дефолтные поля (используются если API недоступен)
+
   const defaultFields = useMemo(() => [
-    {
-      field: 'status',
-      label: 'Status',
-      data_type: 'enum',
-      operators: ['eq', 'ne', 'in'],
-      // ✅ ИСПРАВЛЕНО: добавлен low_stock
-      values: BATCH_STATUSES
-    },
+    { field: 'status', label: 'Status', data_type: 'enum', operators: ['eq', 'ne', 'in'], values: BATCH_STATUSES },
     { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
     { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'], values: null },
-    // Container-aware поля — вычисляются на бэке из CTE container_stats
     { field: 'location_summary', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null', 'is_not_null'], values: null },
     { field: 'room_names', label: 'Rooms', data_type: 'text', operators: ['like', 'is_null', 'is_not_null'], values: null },
     { field: 'container_count', label: 'Containers (total)', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
@@ -158,7 +145,6 @@ const Reports = ({ user }) => {
     { field: 'reagent_name', label: 'Reagent Name', data_type: 'text', operators: ['eq', 'like'], values: null },
   ], []);
 
-  // Дефолтные колонки
   const defaultColumns = useMemo(() => [
     { field: 'reagent_name', label: 'Reagent', data_type: 'text', visible: true, sortable: true },
     { field: 'batch_number', label: 'Batch #', data_type: 'text', visible: true, sortable: true },
@@ -167,14 +153,12 @@ const Reports = ({ user }) => {
     { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', visible: true, sortable: true },
     { field: 'days_until_expiry', label: 'Days Left', data_type: 'number', visible: true, sortable: true },
     { field: 'status', label: 'Status', data_type: 'enum', visible: true, sortable: true },
-    // Container-aware колонки
     { field: 'room_names', label: 'Rooms', data_type: 'text', visible: true, sortable: true },
     { field: 'location_summary', label: 'Location', data_type: 'text', visible: false, sortable: true },
     { field: 'container_count', label: 'Containers', data_type: 'number', visible: true, sortable: true },
     { field: 'opened_count', label: 'Opened', data_type: 'number', visible: false, sortable: true },
     { field: 'placed_count', label: 'Placed', data_type: 'number', visible: false, sortable: true },
     { field: 'unplaced_count', label: 'Unplaced', data_type: 'number', visible: false, sortable: true },
-    // Прочее
     { field: 'supplier', label: 'Supplier', data_type: 'text', visible: false, sortable: true },
     { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', visible: false, sortable: true },
     { field: 'cat_number', label: 'Cat #', data_type: 'text', visible: false, sortable: true },
@@ -187,12 +171,9 @@ const Reports = ({ user }) => {
   useEffect(() => {
     const loadMetadata = async () => {
       try {
-        // Загружаем поля для фильтрации
         const fieldsResponse = await api.getReportFields();
         const fields = fieldsResponse?.data || fieldsResponse || [];
-        
         if (Array.isArray(fields) && fields.length > 0) {
-          // ✅ Проверяем наличие low_stock в статусах
           const statusField = fields.find(f => f.field === 'status');
           if (statusField?.values && !statusField.values.includes('low_stock')) {
             statusField.values = BATCH_STATUSES;
@@ -201,17 +182,8 @@ const Reports = ({ user }) => {
         } else {
           setAvailableFields(defaultFields);
         }
-
-        // ✅ ИСПРАВЛЕНО: Колонки берём из дефолтов, т.к. роута /reports/columns нет
-        // Если добавишь роут на бэкенде - раскомментируй:
-        // const columnsResponse = await api.getReportColumns();
-        // const columns = columnsResponse?.data || columnsResponse || [];
-        
         setAvailableColumns(defaultColumns);
-        setVisibleColumns(
-          defaultColumns.filter(c => c.visible !== false).map(c => c.field)
-        );
-
+        setVisibleColumns(defaultColumns.filter(c => c.visible !== false).map(c => c.field));
       } catch (err) {
         console.error('Failed to load report metadata:', err);
         setAvailableFields(defaultFields);
@@ -219,14 +191,12 @@ const Reports = ({ user }) => {
         setVisibleColumns(defaultColumns.filter(c => c.visible).map(c => c.field));
       }
     };
-    
     loadMetadata();
   }, [defaultFields, defaultColumns]);
 
   // ==================== LOAD REPORT ====================
 
   const loadReport = useCallback(async () => {
-    // ✅ Отменяем предыдущий запрос
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -235,14 +205,10 @@ const Reports = ({ user }) => {
     try {
       setLoading(true);
       setError('');
-      
-      // Build request
+
       const presetParams = {};
-      if (activeReport === 'low_stock') {
-        presetParams.threshold = threshold;
-      } else if (activeReport === 'expiring_soon') {
-        presetParams.days = expiringDays;
-      }
+      if (activeReport === 'low_stock') presetParams.threshold = threshold;
+      else if (activeReport === 'expiring_soon') presetParams.days = expiringDays;
 
       const requestBody = {
         preset: activeReport,
@@ -256,29 +222,17 @@ const Reports = ({ user }) => {
         filters: activeFilters.map(f => {
           const fieldDef = availableFields.find(af => af.field === f.field);
           let value = f.value;
-          
-          // Конвертируем строку в число для числовых полей
           if (fieldDef?.data_type === 'number' && typeof value === 'string') {
             const num = parseFloat(value);
-            if (!isNaN(num)) {
-              value = num;
-            }
+            if (!isNaN(num)) value = num;
           }
-          
-          return {
-            field: f.field,
-            operator: f.operator,
-            value,
-          };
+          return { field: f.field, operator: f.operator, value };
         }),
       };
 
       const response = await api.generateReport(requestBody);
-      
-      // ✅ Проверяем что запрос не был отменён
-      if (abortControllerRef.current?.signal.aborted) {
-        return;
-      }
+
+      if (abortControllerRef.current?.signal.aborted) return;
 
       if (response && response.data) {
         setReportData(response.data);
@@ -294,10 +248,7 @@ const Reports = ({ user }) => {
         setReportData([]);
       }
     } catch (err) {
-      // ✅ Игнорируем ошибки отменённых запросов
-      if (err.name === 'AbortError') {
-        return;
-      }
+      if (err.name === 'AbortError') return;
       console.error('Failed to load report:', err);
       setError(err.message || 'Failed to load report');
       setReportData([]);
@@ -306,29 +257,21 @@ const Reports = ({ user }) => {
     }
   }, [activeReport, threshold, expiringDays, page, perPage, sortBy, sortOrder, debouncedSearch, visibleColumns, activeFilters, availableFields]);
 
-  // Load on dependencies change
   useEffect(() => {
     loadReport();
-    
-    // Cleanup: отменяем запрос при размонтировании
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      if (abortControllerRef.current) abortControllerRef.current.abort();
     };
   }, [loadReport]);
 
-  // Reset page when changing filters
   useEffect(() => {
     setPage(1);
   }, [activeReport, debouncedSearch, threshold, expiringDays, activeFilters]);
 
   // ==================== HANDLERS ====================
 
-  // Add filter
   const addFilter = useCallback(() => {
     if (!newFilter.field || !newFilter.operator) return;
-    
     const filterToAdd = {
       ...newFilter,
       id: Date.now(),
@@ -338,28 +281,21 @@ const Reports = ({ user }) => {
     setNewFilter({ field: '', operator: '', value: '' });
   }, [newFilter]);
 
-  // Remove filter
   const removeFilter = useCallback((id) => {
     setActiveFilters(prev => prev.filter(f => f.id !== id));
   }, []);
 
-  // Toggle column
   const toggleColumn = useCallback((field) => {
     setVisibleColumns(prev =>
-      prev.includes(field)
-        ? prev.filter(f => f !== field)
-        : [...prev, field]
+      prev.includes(field) ? prev.filter(f => f !== field) : [...prev, field]
     );
   }, []);
 
-  // ✅ ИСПРАВЛЕНО: Handle sort с валидацией
   const handleSort = useCallback((field) => {
-    // Валидация поля через whitelist
     if (!ALLOWED_SORT_FIELDS.has(field)) {
       console.warn(`Sort field "${field}" not allowed`);
       return;
     }
-    
     if (sortBy === field) {
       setSortOrder(prev => prev === 'ASC' ? 'DESC' : 'ASC');
     } else {
@@ -369,71 +305,86 @@ const Reports = ({ user }) => {
   }, [sortBy]);
 
   // ==================== EXPORT ====================
+  //
+  // Один универсальный обработчик: format = "csv" | "xlsx".
+  // Запрос идёт на /api/v1/reports/export, бэкенд формирует файл и отдаёт
+  // как поток с правильными заголовками. Фронт ВАЛИДИРУЕТ Content-Type —
+  // если пришёл text/html, значит роут не отработал и нас бы ждал
+  // HTML-файл под расширением .csv/.xlsx (старый баг).
+  // ==================================================
 
-  // ✅ ИСПРАВЛЕНО: Export CSV с правильным экранированием
-  const exportToCSV = useCallback(async () => {
+  const exportReport = useCallback(async (format) => {
+    if (exporting) return;
     if (!reportData || reportData.length === 0) {
       alert('No data to export');
       return;
     }
 
+    const expectedMime = format === 'xlsx'
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'text/csv';
+    const fallbackName = `report_${activeReport}_${new Date().toISOString().split('T')[0]}.${format}`;
+
+    setExporting(true);
     try {
-      // ✅ ИСПРАВЛЕНО: Правильный путь API (без /csv)
       const presetParams = {};
       if (activeReport === 'low_stock') presetParams.threshold = threshold;
       if (activeReport === 'expiring_soon') presetParams.days = expiringDays;
 
-      // Пробуем серверный экспорт
-      await api.exportReportCSV({
+      const body = {
         preset: activeReport,
         preset_params: presetParams,
+        format,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        search: debouncedSearch || undefined,
+        columns: visibleColumns,
         filters: activeFilters.map(f => ({
           field: f.field,
           operator: f.operator,
           value: f.value,
         })),
-        search: debouncedSearch || undefined,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      });
-    } catch {
-      // Fallback: клиентский экспорт
-      console.log('Server export failed, using client-side export');
-      
-      const headers = visibleColumns.map(f => {
-        const col = availableColumns.find(c => c.field === f);
-        return col?.label || f;
-      });
-      
-      const rows = reportData.map(item =>
-        visibleColumns.map(f => {
-          let val = item[f];
-          if (f.includes('date') && val) {
-            val = new Date(val).toLocaleDateString();
-          }
-          return escapeCSV(val);
-        })
-      );
+      };
 
-      // ✅ BOM для корректного отображения UTF-8 в Excel
-      const csvContent = '\ufeff' + [
-        headers.map(escapeCSV).join(','),
-        ...rows.map(r => r.join(','))
-      ].join('\n');
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/reports/export`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
 
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `report_${activeReport}_${new Date().toISOString().split('T')[0]}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      if (!response.ok) {
+        // Пробуем достать текст ошибки (часто JSON, иногда text)
+        let detail = '';
+        try { detail = await response.text(); } catch (_) {}
+        throw new Error(`Export failed: ${response.status} ${detail.slice(0, 200)}`);
+      }
+
+      // Защита от подмены ответа на HTML (SPA-fallback и т.п.)
+      const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+      if (ct.includes('text/html')) {
+        throw new Error('Server returned HTML instead of file. Check auth/routing.');
+      }
+      if (!ct.includes(expectedMime) && !ct.includes('octet-stream')) {
+        console.warn(`Unexpected Content-Type: ${ct}, expected ${expectedMime}`);
+      }
+
+      const blob = await response.blob();
+      const filename = filenameFromHeaders(response, fallbackName);
+      downloadBlob(blob, filename);
+    } catch (err) {
+      console.error(`${format.toUpperCase()} export failed:`, err);
+      alert('Export failed: ' + (err.message || 'Unknown error'));
+    } finally {
+      setExporting(false);
     }
-  }, [reportData, activeReport, threshold, expiringDays, activeFilters, debouncedSearch, sortBy, sortOrder, visibleColumns, availableColumns]);
+  }, [exporting, reportData, activeReport, threshold, expiringDays, sortBy, sortOrder, debouncedSearch, visibleColumns, activeFilters]);
 
   // ==================== RENDER HELPERS ====================
 
-  // Get status badge variant
   const getStatusVariant = useCallback((item) => {
     if (item.days_until_expiry !== null && item.days_until_expiry !== undefined) {
       if (item.days_until_expiry < 0) return 'danger';
@@ -447,7 +398,6 @@ const Reports = ({ user }) => {
     return 'success';
   }, []);
 
-  // Render cell
   const renderCell = useCallback((item, field) => {
     const value = item[field];
 
@@ -461,7 +411,7 @@ const Reports = ({ user }) => {
             {value} {item.unit || ''}
           </span>
         );
-      case 'expiry_date':
+      case 'expiry_date': {
         if (!value) return <span style={{ color: '#a0aec0' }}>—</span>;
         const date = new Date(value);
         const days = item.days_until_expiry;
@@ -477,6 +427,7 @@ const Reports = ({ user }) => {
             )}
           </div>
         );
+      }
       case 'days_until_expiry':
         if (value === null || value === undefined) return '—';
         return (
@@ -499,22 +450,16 @@ const Reports = ({ user }) => {
       case 'received_date':
         return value ? new Date(value).toLocaleDateString() : '—';
 
-      // ==================== Container-aware рендер ====================
       case 'room_names': {
         if (!value) return <span style={{ color: '#a0aec0' }}>—</span>;
-        // value — строка "Room1,Room2" (GROUP_CONCAT из SQLite)
         const rooms = value.split(',').map(r => r.trim()).filter(Boolean);
         return (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
             {rooms.map(name => (
               <span key={name} style={{
-                padding: '2px 8px',
-                fontSize: '11px',
-                fontWeight: 600,
-                color: '#2d3748',
-                backgroundColor: '#ebf4ff',
-                border: '1px solid #90cdf4',
-                borderRadius: '10px',
+                padding: '2px 8px', fontSize: '11px', fontWeight: 600,
+                color: '#2d3748', backgroundColor: '#ebf4ff',
+                border: '1px solid #90cdf4', borderRadius: '10px',
               }}>
                 {name}
               </span>
@@ -524,7 +469,6 @@ const Reports = ({ user }) => {
       }
       case 'location_summary':
         if (!value) return <span style={{ color: '#a0aec0' }}>—</span>;
-        // value — "Room → Zone → Pos, Room → Zone → Pos"
         return (
           <span style={{ fontSize: '0.8rem', color: '#4a5568' }} title={value}>
             {value.length > 60 ? value.slice(0, 60) + '…' : value}
@@ -549,8 +493,7 @@ const Reports = ({ user }) => {
     }
   }, [getStatusVariant]);
 
-  // ✅ Мемоизация tableColumns
-  const tableColumns = useMemo(() => 
+  const tableColumns = useMemo(() =>
     visibleColumns.map(field => {
       const col = availableColumns.find(c => c.field === field) || { field, label: field };
       return {
@@ -563,8 +506,7 @@ const Reports = ({ user }) => {
     [visibleColumns, availableColumns, renderCell]
   );
 
-  // Get current field config for filter form
-  const currentFieldConfig = useMemo(() => 
+  const currentFieldConfig = useMemo(() =>
     availableFields.find(f => f.field === newFilter.field),
     [availableFields, newFilter.field]
   );
@@ -572,51 +514,51 @@ const Reports = ({ user }) => {
   // ==================== RENDER ====================
 
   return (
-    <div style={{ 
-      padding: '1.5rem',
-      marginTop: '70px',
-      minHeight: 'calc(100vh - 70px)',
-      backgroundColor: '#f7fafc'
+    <div style={{
+      padding: '1.5rem', marginTop: '70px',
+      minHeight: 'calc(100vh - 70px)', backgroundColor: '#f7fafc'
     }}>
-      {/* Header */}
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center',
-        marginBottom: '1rem',
-        backgroundColor: '#fff',
-        padding: '1rem 1.5rem',
-        borderRadius: '8px',
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        marginBottom: '1rem', backgroundColor: '#fff',
+        padding: '1rem 1.5rem', borderRadius: '8px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
       }}>
         <h2 style={{ margin: 0, fontSize: '1.5rem', color: '#2d3748' }}>📊 Reports</h2>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <Button 
+          <Button
             variant={showFiltersPanel ? 'primary' : 'secondary'}
             onClick={() => setShowFiltersPanel(!showFiltersPanel)}
           >
             🔍 Filters {activeFilters.length > 0 && `(${activeFilters.length})`}
           </Button>
-          <Button 
+          <Button
             variant={showColumnsPanel ? 'primary' : 'secondary'}
             onClick={() => setShowColumnsPanel(!showColumnsPanel)}
           >
             📋 Columns
           </Button>
           <Button onClick={loadReport} disabled={loading}>🔄 Refresh</Button>
-          <Button onClick={exportToCSV} disabled={loading || !reportData.length}>📥 Export</Button>
+          <Button
+            onClick={() => exportReport('csv')}
+            disabled={loading || exporting || !reportData.length}
+            title="Export as CSV"
+          >
+            {exporting ? '⏳' : '📥'} CSV
+          </Button>
+          <Button
+            onClick={() => exportReport('xlsx')}
+            disabled={loading || exporting || !reportData.length}
+            title="Export as Excel workbook"
+          >
+            {exporting ? '⏳' : '📊'} XLSX
+          </Button>
         </div>
       </div>
 
-      {/* Presets */}
-      <div style={{ 
-        display: 'flex', 
-        gap: '0.5rem', 
-        marginBottom: '1rem',
-        flexWrap: 'wrap',
-        backgroundColor: '#fff',
-        padding: '1rem',
-        borderRadius: '8px',
+      <div style={{
+        display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap',
+        backgroundColor: '#fff', padding: '1rem', borderRadius: '8px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
       }}>
         {reportPresets.map(preset => (
@@ -635,18 +577,13 @@ const Reports = ({ user }) => {
         ))}
       </div>
 
-      {/* Filters Panel */}
       {showFiltersPanel && (
-        <div style={{ 
-          backgroundColor: '#fff',
-          padding: '1rem',
-          borderRadius: '8px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-          marginBottom: '1rem'
+        <div style={{
+          backgroundColor: '#fff', padding: '1rem', borderRadius: '8px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '1rem'
         }}>
           <h4 style={{ margin: '0 0 1rem 0', color: '#4a5568' }}>🔍 Filter Builder</h4>
-          
-          {/* Add new filter */}
+
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '1rem' }}>
             <div style={{ minWidth: '180px' }}>
               <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>
@@ -654,18 +591,8 @@ const Reports = ({ user }) => {
               </label>
               <select
                 value={newFilter.field}
-                onChange={(e) => {
-                  const field = e.target.value;
-                  setNewFilter({ field, operator: '', value: '' });
-                }}
-                style={{
-                  width: '100%',
-                  padding: '0.5rem',
-                  borderRadius: '4px',
-                  border: '1px solid #e2e8f0',
-                  fontSize: '0.875rem',
-                  backgroundColor: '#fff'
-                }}
+                onChange={(e) => setNewFilter({ field: e.target.value, operator: '', value: '' })}
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #e2e8f0', fontSize: '0.875rem', backgroundColor: '#fff' }}
               >
                 <option value="">Select field...</option>
                 {availableFields.map(f => (
@@ -680,14 +607,7 @@ const Reports = ({ user }) => {
                 <select
                   value={newFilter.operator}
                   onChange={(e) => setNewFilter(prev => ({ ...prev, operator: e.target.value, value: '' }))}
-                  style={{
-                    width: '100%',
-                    padding: '0.5rem',
-                    borderRadius: '4px',
-                    border: '1px solid #e2e8f0',
-                    fontSize: '0.875rem',
-                    backgroundColor: '#fff'
-                  }}
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #e2e8f0', fontSize: '0.875rem', backgroundColor: '#fff' }}
                 >
                   <option value="">Select...</option>
                   {currentFieldConfig.operators.map(op => (
@@ -704,14 +624,7 @@ const Reports = ({ user }) => {
                   <select
                     value={newFilter.value}
                     onChange={(e) => setNewFilter(prev => ({ ...prev, value: e.target.value }))}
-                    style={{
-                      width: '100%',
-                      padding: '0.5rem',
-                      borderRadius: '4px',
-                      border: '1px solid #e2e8f0',
-                      fontSize: '0.875rem',
-                      backgroundColor: '#fff'
-                    }}
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #e2e8f0', fontSize: '0.875rem', backgroundColor: '#fff' }}
                   >
                     <option value="">Select value...</option>
                     {currentFieldConfig.values.map(v => (
@@ -724,28 +637,20 @@ const Reports = ({ user }) => {
                     value={newFilter.value}
                     onChange={(e) => setNewFilter(prev => ({ ...prev, value: e.target.value }))}
                     placeholder="Enter value..."
-                    style={{
-                      width: '100%',
-                      padding: '0.5rem',
-                      borderRadius: '4px',
-                      border: '1px solid #e2e8f0',
-                      fontSize: '0.875rem'
-                    }}
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #e2e8f0', fontSize: '0.875rem' }}
                   />
                 )}
               </div>
             )}
 
-            <button 
+            <button
               onClick={addFilter}
               disabled={!newFilter.field || !newFilter.operator || (!['is_null', 'is_not_null'].includes(newFilter.operator) && !newFilter.value)}
-              style={{ 
-                height: '38px',
-                padding: '0.5rem 1rem',
+              style={{
+                height: '38px', padding: '0.5rem 1rem',
                 backgroundColor: (!newFilter.field || !newFilter.operator || (!['is_null', 'is_not_null'].includes(newFilter.operator) && !newFilter.value)) ? '#e2e8f0' : '#667eea',
                 color: (!newFilter.field || !newFilter.operator || (!['is_null', 'is_not_null'].includes(newFilter.operator) && !newFilter.value)) ? '#a0aec0' : '#fff',
-                border: 'none',
-                borderRadius: '4px',
+                border: 'none', borderRadius: '4px',
                 cursor: (!newFilter.field || !newFilter.operator || (!['is_null', 'is_not_null'].includes(newFilter.operator) && !newFilter.value)) ? 'not-allowed' : 'pointer',
                 fontWeight: '500'
               }}
@@ -754,25 +659,17 @@ const Reports = ({ user }) => {
             </button>
           </div>
 
-          {/* Active filters */}
           {activeFilters.length > 0 && (
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: '0.875rem', fontWeight: '600', color: '#4a5568' }}>Active:</span>
               {activeFilters.map(filter => {
                 const fieldDef = availableFields.find(f => f.field === filter.field);
                 return (
-                  <span 
-                    key={filter.id}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.25rem',
-                      padding: '0.25rem 0.5rem',
-                      backgroundColor: '#edf2f7',
-                      borderRadius: '4px',
-                      fontSize: '0.875rem'
-                    }}
-                  >
+                  <span key={filter.id} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
+                    padding: '0.25rem 0.5rem', backgroundColor: '#edf2f7',
+                    borderRadius: '4px', fontSize: '0.875rem'
+                  }}>
                     <strong>{fieldDef?.label || filter.field}</strong>
                     <span style={{ color: '#667eea' }}>{operatorShortLabels[filter.operator]}</span>
                     {!['is_null', 'is_not_null'].includes(filter.operator) && (
@@ -782,16 +679,10 @@ const Reports = ({ user }) => {
                       onClick={() => removeFilter(filter.id)}
                       aria-label="Remove filter"
                       style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: '0 0.25rem',
-                        color: '#e53e3e',
-                        fontWeight: 'bold'
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        padding: '0 0.25rem', color: '#e53e3e', fontWeight: 'bold'
                       }}
-                    >
-                      ×
-                    </button>
+                    >×</button>
                   </span>
                 );
               })}
@@ -801,33 +692,22 @@ const Reports = ({ user }) => {
         </div>
       )}
 
-      {/* Columns Panel */}
       {showColumnsPanel && (
-        <div style={{ 
-          backgroundColor: '#fff',
-          padding: '1rem',
-          borderRadius: '8px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-          marginBottom: '1rem'
+        <div style={{
+          backgroundColor: '#fff', padding: '1rem', borderRadius: '8px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '1rem'
         }}>
           <h4 style={{ margin: '0 0 1rem 0', color: '#4a5568' }}>📋 Select Columns</h4>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
             {availableColumns.map(col => (
-              <label
-                key={col.field}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.375rem',
-                  padding: '0.375rem 0.75rem',
-                  backgroundColor: visibleColumns.includes(col.field) ? '#ebf4ff' : '#f7fafc',
-                  border: `1px solid ${visibleColumns.includes(col.field) ? '#667eea' : '#e2e8f0'}`,
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '0.875rem',
-                  transition: 'all 0.15s'
-                }}
-              >
+              <label key={col.field} style={{
+                display: 'flex', alignItems: 'center', gap: '0.375rem',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: visibleColumns.includes(col.field) ? '#ebf4ff' : '#f7fafc',
+                border: `1px solid ${visibleColumns.includes(col.field) ? '#667eea' : '#e2e8f0'}`,
+                borderRadius: '4px', cursor: 'pointer', fontSize: '0.875rem',
+                transition: 'all 0.15s'
+              }}>
                 <input
                   type="checkbox"
                   checked={visibleColumns.includes(col.field)}
@@ -841,17 +721,10 @@ const Reports = ({ user }) => {
         </div>
       )}
 
-      {/* Search & Preset Params */}
-      <div style={{ 
-        display: 'flex', 
-        gap: '1rem', 
-        marginBottom: '1rem',
-        flexWrap: 'wrap',
-        alignItems: 'flex-end',
-        backgroundColor: '#fff',
-        padding: '1rem',
-        borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+      <div style={{
+        display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap',
+        alignItems: 'flex-end', backgroundColor: '#fff', padding: '1rem',
+        borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
       }}>
         <div style={{ flex: 1, minWidth: '200px' }}>
           <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Search</label>
@@ -867,9 +740,7 @@ const Reports = ({ user }) => {
           <div style={{ width: '140px' }}>
             <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Threshold</label>
             <Input
-              type="number"
-              min="1"
-              value={threshold}
+              type="number" min="1" value={threshold}
               onChange={(e) => setThreshold(parseInt(e.target.value) || 10)}
             />
           </div>
@@ -879,9 +750,7 @@ const Reports = ({ user }) => {
           <div style={{ width: '140px' }}>
             <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Days ahead</label>
             <Input
-              type="number"
-              min="1"
-              value={expiringDays}
+              type="number" min="1" value={expiringDays}
               onChange={(e) => setExpiringDays(parseInt(e.target.value) || 30)}
             />
           </div>
@@ -902,20 +771,13 @@ const Reports = ({ user }) => {
         </div>
       </div>
 
-      {/* Error */}
       {error && <ErrorMessage message={error} onDismiss={() => setError('')} />}
 
-      {/* Metadata */}
       {reportMetadata && (
-        <div style={{ 
-          backgroundColor: '#edf2f7', 
-          padding: '0.75rem 1rem',
-          borderRadius: '8px',
-          marginBottom: '1rem',
-          fontSize: '0.875rem',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
+        <div style={{
+          backgroundColor: '#edf2f7', padding: '0.75rem 1rem', borderRadius: '8px',
+          marginBottom: '1rem', fontSize: '0.875rem',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center'
         }}>
           <div>
             <strong>{reportMetadata.name}</strong>
@@ -923,22 +785,16 @@ const Reports = ({ user }) => {
               <span style={{ color: '#718096', marginLeft: '0.5rem' }}>— {reportMetadata.description}</span>
             )}
           </div>
-          <span style={{ fontWeight: '600', color: '#4a5568' }}>
-            {totalItems} items
-          </span>
+          <span style={{ fontWeight: '600', color: '#4a5568' }}>{totalItems} items</span>
         </div>
       )}
 
-      {/* Loading */}
       {loading && <Loading message="Loading report..." />}
 
-      {/* Table */}
       {!loading && (
         <div style={{
-          backgroundColor: '#fff',
-          borderRadius: '8px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-          overflow: 'hidden'
+          backgroundColor: '#fff', borderRadius: '8px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden'
         }}>
           <Table
             data={reportData}
@@ -951,17 +807,11 @@ const Reports = ({ user }) => {
         </div>
       )}
 
-      {/* Pagination */}
       {!loading && totalPages > 1 && (
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'center', 
-          alignItems: 'center',
-          gap: '0.5rem',
-          marginTop: '1rem',
-          padding: '1rem',
-          backgroundColor: '#fff',
-          borderRadius: '8px',
+        <div style={{
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+          gap: '0.5rem', marginTop: '1rem', padding: '1rem',
+          backgroundColor: '#fff', borderRadius: '8px',
           boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
         }}>
           <Button variant="secondary" onClick={() => setPage(1)} disabled={page <= 1}>⏮️</Button>

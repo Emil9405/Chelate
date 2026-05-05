@@ -21,6 +21,7 @@ actix-multipart = "0.6"
 futures-util = "0.3"
 csv = "1.3"
 strum = { version = "0.26", features = ["derive"] }
+rust_xlsxwriter = { version = "0.94", features = ["chrono"] }
 
 
 

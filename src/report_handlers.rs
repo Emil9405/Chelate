@@ -1,13 +1,14 @@
 // src/report_handlers.rs
 //! Обработчики для системы кастомных репортов
+//! Экспорт: CSV и XLSX (параметр request.format = "csv" | "xlsx")
 
 use actix_web::{web, HttpResponse, HttpRequest};
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, Datelike, Timelike};
 
 use crate::AppState;
-use crate::error::ApiResult;
+use crate::error::{ApiResult, ApiError};
 use crate::handlers::ApiResponse;
 use crate::query_builders::{
     FieldWhitelist, ReportConfig, ReportFilter, ReportColumn,
@@ -16,26 +17,22 @@ use crate::query_builders::{
 
 // ==================== SECURITY CONSTANTS ====================
 
-/// Разрешённые поля для сортировки - защита от SQL-инъекций
 const ALLOWED_SORT_FIELDS: &[&str] = &[
     "id", "reagent_id", "reagent_name", "batch_number", "cat_number",
     "quantity", "original_quantity", "reserved_quantity", "unit",
     "expiry_date", "supplier", "manufacturer", "received_date",
     "status", "created_at", "updated_at", "days_until_expiry",
     "expiration_status",
-    // Container-aware fields (via CTE container_stats)
     "container_count", "opened_count", "placed_count", "unplaced_count",
     "location_summary", "room_names",
 ];
 
-/// Валидация поля сортировки
 fn validate_sort_field(field: &str) -> Option<&'static str> {
     ALLOWED_SORT_FIELDS.iter()
         .find(|&&allowed| allowed == field)
         .copied()
 }
 
-/// Экранирование спецсимволов LIKE для предотвращения LIKE-инъекций
 fn escape_like_pattern(pattern: &str) -> String {
     pattern
         .replace('\\', "\\\\")
@@ -43,7 +40,6 @@ fn escape_like_pattern(pattern: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// Экранирование CSV-полей (обработка запятых, кавычек и переносов строк)
 fn escape_csv_field(field: &str) -> String {
     if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
         format!("\"{}\"", field.replace('"', "\"\""))
@@ -75,15 +71,11 @@ pub struct BatchReportRow {
     pub updated_at: DateTime<Utc>,
     pub days_until_expiry: Option<i64>,
     pub expiration_status: String,
-    // ==================== Container-aware fields ====================
-    // Computed from batch_containers + batch_placements via CTE
     pub container_count: i64,
     pub opened_count: i64,
     pub placed_count: i64,
     pub unplaced_count: i64,
-    /// Полный путь "Room → Zone → Position", уникальные значения через запятую
     pub location_summary: Option<String>,
-    /// Уникальные комнаты через запятую
     pub room_names: Option<String>,
 }
 
@@ -142,6 +134,8 @@ pub struct GenerateReportRequest {
     pub page: Option<i64>,
     pub per_page: Option<i64>,
     pub search: Option<String>,
+    /// Формат экспорта: "csv" (default) | "xlsx". Используется только в /reports/export.
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,7 +164,7 @@ impl ReportFilterRequest {
 
         let value = match &self.value {
             serde_json::Value::String(s) => {
-                if matches!(operator, ComparisonOperator::Gt | ComparisonOperator::Gte | 
+                if matches!(operator, ComparisonOperator::Gt | ComparisonOperator::Gte |
                                       ComparisonOperator::Lt | ComparisonOperator::Lte) {
                     if let Ok(n) = s.parse::<f64>() {
                         ReportFilterValue::Number(n)
@@ -226,7 +220,7 @@ impl ReportFilterRequest {
 
 fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
     let preset = request.preset.as_deref().unwrap_or("all_batches");
-    
+
     let mut config = match preset {
         "low_stock" => {
             let threshold = request.preset_params.as_ref()
@@ -258,7 +252,6 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
         _ => "All Batches Report".to_string(),
     };
 
-    // Добавляем кастомные фильтры
     if let Some(ref filters) = request.filters {
         for filter_req in filters {
             if let Some(filter) = filter_req.to_report_filter() {
@@ -267,12 +260,10 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
         }
     }
 
-    // ✅ ИСПРАВЛЕНО: Валидация сортировки через whitelist
     if let Some(ref sort_by) = request.sort_by {
         if validate_sort_field(sort_by).is_some() {
             config.sort_by = Some(sort_by.clone());
         }
-        // Если поле невалидно - используем дефолт (created_at)
     }
     if let Some(ref sort_order) = request.sort_order {
         config.sort_order = sort_order.to_uppercase();
@@ -287,20 +278,6 @@ fn build_filter_sql(config: &ReportConfig, whitelist: &FieldWhitelist) -> (Strin
 }
 
 // ==================== BASE QUERY ====================
-//
-// Архитектура: CTE из двух блоков.
-//
-//   container_stats — агрегирует по batch_containers (non-disposed):
-//     сколько контейнеров, сколько opened, сколько placed,
-//     полный путь размещения (Room → Zone → Position) через GROUP_CONCAT,
-//     список уникальных комнат.
-//
-//   batch_data — основа отчёта: JOIN batches + reagents + LEFT JOIN container_stats.
-//     Для батчей без контейнеров статы = 0, локация = NULL.
-//     Legacy-поле b.location НЕ используется — всё считается из placements.
-//
-// `SELECT * FROM batch_data` оборачивается в generate_report/export_report
-// со WHERE/ORDER BY/LIMIT.
 
 const BASE_REPORT_QUERY: &str = r#"
     WITH container_stats AS (
@@ -404,12 +381,11 @@ pub async fn get_report_fields(
             label: "Status".to_string(),
             data_type: "enum".to_string(),
             operators: vec!["eq".to_string(), "ne".to_string(), "in".to_string()],
-            // ✅ ИСПРАВЛЕНО: добавлен low_stock
             values: Some(vec![
-                "available".to_string(), 
+                "available".to_string(),
                 "low_stock".to_string(),
-                "reserved".to_string(), 
-                "expired".to_string(), 
+                "reserved".to_string(),
+                "expired".to_string(),
                 "depleted".to_string()
             ]),
         },
@@ -483,7 +459,6 @@ pub async fn get_report_fields(
             operators: vec!["eq".to_string(), "like".to_string()],
             values: None,
         },
-        // ✅ ДОБАВЛЕНО: дополнительные полезные поля
         AvailableField {
             field: "manufacturer".to_string(),
             label: "Manufacturer".to_string(),
@@ -518,52 +493,40 @@ pub async fn generate_report(
     let config = build_report_config(&request);
     let whitelist = FieldWhitelist::for_reports();
 
-    // Пагинация
     let page = request.page.unwrap_or(1).max(1);
     let per_page = request.per_page.unwrap_or(50).clamp(1, 500);
     let offset = (page - 1) * per_page;
 
-    // Строим WHERE условия
     let (where_clause, mut params) = build_filter_sql(&config, &whitelist);
-    
-    // ✅ ИСПРАВЛЕНО: Добавляем поиск с экранированием LIKE-спецсимволов
+
     let mut search_condition = String::new();
     if let Some(ref search) = request.search {
         if !search.trim().is_empty() {
             let escaped = escape_like_pattern(search.trim());
             let pattern = format!("%{}%", escaped);
             search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\')".to_string();
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern);
+            for _ in 0..5 {
+                params.push(pattern.clone());
+            }
         }
     }
 
-    // ✅ ИСПРАВЛЕНО: Валидация сортировки через whitelist
     let sort_field = config.sort_by.as_deref()
         .and_then(validate_sort_field)
         .unwrap_or("created_at");
     let sort_order = if config.sort_order == "ASC" { "ASC" } else { "DESC" };
 
-    // COUNT запрос
     let count_sql = format!(
-        "{} WHERE {}{}",
+        "SELECT COUNT(*) FROM ({} WHERE {}{}) as subquery",
         BASE_REPORT_QUERY, where_clause, search_condition
     );
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM ({}) as subquery",
-        count_sql
-    );
-    
+
     let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
     for p in &params {
         count_query = count_query.bind(p);
     }
     let total: i64 = count_query.fetch_one(&app_state.db_pool).await?;
 
-    // DATA запрос
     let data_sql = format!(
         "{} WHERE {}{} ORDER BY {} {} LIMIT ? OFFSET ?",
         BASE_REPORT_QUERY, where_clause, search_condition, sort_field, sort_order
@@ -574,7 +537,7 @@ pub async fn generate_report(
         data_query = data_query.bind(p);
     }
     data_query = data_query.bind(per_page).bind(offset);
-    
+
     let data: Vec<BatchReportRow> = data_query.fetch_all(&app_state.db_pool).await?;
 
     let total_pages = if per_page > 0 { (total + per_page - 1) / per_page } else { 1 };
@@ -600,62 +563,83 @@ pub async fn generate_report(
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
 }
 
-pub async fn export_report(
-    app_state: web::Data<Arc<AppState>>,
-    request: web::Json<GenerateReportRequest>,
-    _http_request: HttpRequest,
-) -> ApiResult<HttpResponse> {
-    let config = build_report_config(&request);
+// ==================== EXPORT ====================
+
+/// Тянет все строки отчёта без пагинации (общая логика для CSV и XLSX).
+async fn fetch_export_data(
+    app_state: &AppState,
+    request: &GenerateReportRequest,
+) -> ApiResult<(ReportConfig, Vec<BatchReportRow>)> {
+    let config = build_report_config(request);
     let whitelist = FieldWhitelist::for_reports();
 
     let (where_clause, mut params) = build_filter_sql(&config, &whitelist);
-    
-    // ✅ ИСПРАВЛЕНО: Добавляем поиск с экранированием
+
     let mut search_condition = String::new();
     if let Some(ref search) = request.search {
         if !search.trim().is_empty() {
             let escaped = escape_like_pattern(search.trim());
             let pattern = format!("%{}%", escaped);
             search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\')".to_string();
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern);
+            for _ in 0..5 {
+                params.push(pattern.clone());
+            }
         }
     }
 
-    // ✅ ИСПРАВЛЕНО: Валидация сортировки
     let sort_field = config.sort_by.as_deref()
         .and_then(validate_sort_field)
         .unwrap_or("created_at");
     let sort_order = if config.sort_order == "ASC" { "ASC" } else { "DESC" };
 
-    // Запрос без пагинации для экспорта
+    // Лимит на экспорт — не более 100k строк за раз (защита от OOM на сервере)
+    const EXPORT_LIMIT: i64 = 100_000;
+
     let data_sql = format!(
-        "{} WHERE {}{} ORDER BY {} {}",
-        BASE_REPORT_QUERY, where_clause, search_condition, sort_field, sort_order
+        "{} WHERE {}{} ORDER BY {} {} LIMIT {}",
+        BASE_REPORT_QUERY, where_clause, search_condition, sort_field, sort_order, EXPORT_LIMIT
     );
 
     let mut data_query = sqlx::query_as::<_, BatchReportRow>(&data_sql);
     for p in &params {
         data_query = data_query.bind(p);
     }
-    
-    let data: Vec<BatchReportRow> = data_query.fetch_all(&app_state.db_pool).await?;
 
-    // ✅ ИСПРАВЛЕНО: Генерируем CSV с правильным экранированием
+    let data: Vec<BatchReportRow> = data_query.fetch_all(&app_state.db_pool).await?;
+    Ok((config, data))
+}
+
+/// Главная точка входа. Ветвит по format: "csv" | "xlsx".
+pub async fn export_report(
+    app_state: web::Data<Arc<AppState>>,
+    request: web::Json<GenerateReportRequest>,
+    _http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    let format = request.format.as_deref()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "csv".to_string());
+
+    let (config, data) = fetch_export_data(&app_state, &request).await?;
+
+    match format.as_str() {
+        "xlsx" | "excel" => build_xlsx_response(&config, &data, &request),
+        _ => Ok(build_csv_response(&config, &data)),
+    }
+}
+
+// ==================== CSV ====================
+
+fn build_csv_response(config: &ReportConfig, data: &[BatchReportRow]) -> HttpResponse {
     let mut csv_content = String::new();
-    // BOM для корректного отображения UTF-8 в Excel
-    csv_content.push('\u{FEFF}');
+    csv_content.push('\u{FEFF}'); // BOM для Excel
     csv_content.push_str(
         "ID,Reagent,Batch Number,Quantity,Unit,Expiry Date,Days Left,Status,\
-         Containers,Opened,Placed,Unplaced,Location,Rooms,Supplier,Manufacturer,Notes\n"
+         Containers,Opened,Placed,Unplaced,Location,Rooms,Supplier,Manufacturer,Notes\r\n"
     );
 
-    for row in &data {
+    for row in data {
         csv_content.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
             escape_csv_field(&row.id),
             escape_csv_field(&row.reagent_name),
             escape_csv_field(&row.batch_number),
@@ -678,10 +662,213 @@ pub async fn export_report(
 
     let filename = format!("report_{}_{}.csv", config.preset, Utc::now().format("%Y%m%d_%H%M%S"));
 
-    Ok(HttpResponse::Ok()
+    HttpResponse::Ok()
         .insert_header(("Content-Type", "text/csv; charset=utf-8"))
         .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-        .body(csv_content))
+        .body(csv_content)
+}
+
+// ==================== XLSX ====================
+
+fn build_xlsx_response(
+    config: &ReportConfig,
+    data: &[BatchReportRow],
+    request: &GenerateReportRequest,
+) -> ApiResult<HttpResponse> {
+    use rust_xlsxwriter::{Workbook, Format, FormatAlign, ExcelDateTime, Color};
+
+    let mut wb = Workbook::new();
+
+    // Форматы
+    let header_fmt = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0xE2E8F0))
+        .set_align(FormatAlign::Center)
+        .set_border(rust_xlsxwriter::FormatBorder::Thin);
+
+    let date_fmt = Format::new().set_num_format("yyyy-mm-dd");
+
+    // === Лист "Data" ===
+    let sheet_name = if config.preset.len() > 31 {
+        &config.preset[..31]
+    } else {
+        &config.preset
+    };
+
+    let ws = wb.add_worksheet();
+    ws.set_name(sheet_name)
+        .map_err(|e| ApiError::InternalServerError(format!("XLSX sheet name: {}", e)))?;
+
+    let headers = [
+        "ID", "Reagent", "Batch Number", "Quantity", "Unit", "Expiry Date",
+        "Days Left", "Status", "Containers", "Opened", "Placed", "Unplaced",
+        "Location", "Rooms", "Supplier", "Manufacturer", "Notes",
+    ];
+
+    for (col, h) in headers.iter().enumerate() {
+        ws.write_with_format(0, col as u16, *h, &header_fmt)
+            .map_err(|e| ApiError::InternalServerError(format!("XLSX header: {}", e)))?;
+    }
+
+    for (row_idx, row) in data.iter().enumerate() {
+        let r = (row_idx + 1) as u32;
+
+        ws.write_string(r, 0, &row.id).ok();
+        ws.write_string(r, 1, &row.reagent_name).ok();
+        ws.write_string(r, 2, &row.batch_number).ok();
+        ws.write_number(r, 3, row.quantity).ok();
+        ws.write_string(r, 4, &row.unit).ok();
+
+        // Expiry date — как настоящая дата-ячейка
+        if let Some(d) = row.expiry_date {
+            let nd = d.naive_utc();
+            if let Ok(edt) = ExcelDateTime::from_ymd(
+                nd.year() as u16,
+                nd.month() as u8,
+                nd.day() as u8,
+            ) {
+                ws.write_datetime_with_format(r, 5, &edt, &date_fmt).ok();
+            }
+        }
+
+        if let Some(d) = row.days_until_expiry {
+            ws.write_number(r, 6, d as f64).ok();
+        }
+
+        ws.write_string(r, 7, &row.status).ok();
+        ws.write_number(r, 8, row.container_count as f64).ok();
+        ws.write_number(r, 9, row.opened_count as f64).ok();
+        ws.write_number(r, 10, row.placed_count as f64).ok();
+        ws.write_number(r, 11, row.unplaced_count as f64).ok();
+        ws.write_string(r, 12, row.location_summary.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 13, row.room_names.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 14, row.supplier.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 15, row.manufacturer.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 16, row.notes.as_deref().unwrap_or("")).ok();
+    }
+
+    // Закрепляем шапку и автоширина колонок
+    ws.set_freeze_panes(1, 0).ok();
+    ws.autofit();
+
+    // === Лист "Info" — параметры отчёта ===
+    let info_ws = wb.add_worksheet();
+    info_ws.set_name("Info")
+        .map_err(|e| ApiError::InternalServerError(format!("XLSX info sheet: {}", e)))?;
+
+    let label_fmt = Format::new().set_bold();
+
+    let mut row: u32 = 0;
+
+    info_ws.write_with_format(row, 0, "Report", &label_fmt).ok();
+    info_ws.write_string(row, 1, &config.name).ok();
+    row += 1;
+
+    info_ws.write_with_format(row, 0, "Preset", &label_fmt).ok();
+    info_ws.write_string(row, 1, &config.preset).ok();
+    row += 1;
+
+info_ws.write_with_format(row, 0, "Generated", &label_fmt).ok();
+    let now = Utc::now();
+    let dt_fmt = Format::new().set_num_format("yyyy-mm-dd hh:mm:ss");
+    let dt_built = ExcelDateTime::from_ymd(
+            now.year() as u16,
+            now.month() as u8,
+            now.day() as u8,
+        )
+        .and_then(|d| d.and_hms(
+            now.hour() as u16,
+            now.minute() as u8,
+            now.second() as f64,
+        ));
+
+    if let Ok(edt) = dt_built {
+        info_ws.write_datetime_with_format(row, 1, &edt, &dt_fmt).ok();
+    } else {
+        info_ws.write_string(row, 1, &now.to_rfc3339()).ok();
+    }
+    row += 1;
+
+    info_ws.write_with_format(row, 0, "Total rows", &label_fmt).ok();
+    info_ws.write_number(row, 1, data.len() as f64).ok();
+    row += 1;
+
+    if let Some(s) = &request.search {
+        if !s.trim().is_empty() {
+            info_ws.write_with_format(row, 0, "Search", &label_fmt).ok();
+            info_ws.write_string(row, 1, s).ok();
+            row += 1;
+        }
+    }
+
+    if let Some(sort_by) = &request.sort_by {
+        info_ws.write_with_format(row, 0, "Sort", &label_fmt).ok();
+        let sort_order = request.sort_order.as_deref().unwrap_or("DESC");
+        info_ws.write_string(row, 1, &format!("{} {}", sort_by, sort_order)).ok();
+        row += 1;
+    }
+
+    if !config.filters.is_empty() {
+        row += 1;
+        info_ws.write_with_format(row, 0, "Filters", &label_fmt).ok();
+        row += 1;
+        for f in &config.filters {
+            info_ws.write_string(row, 0, &f.field).ok();
+            let value_str = format_filter_value(&f.value);
+            info_ws.write_string(
+                row,
+                1,
+                &format!("{} {}", format_operator(&f.operator), value_str),
+            ).ok();
+            row += 1;
+        }
+    }
+
+    info_ws.set_column_width(0, 20.0).ok();
+    info_ws.set_column_width(1, 50.0).ok();
+
+    // Сериализуем в буфер
+    let buf = wb.save_to_buffer()
+        .map_err(|e| ApiError::InternalServerError(format!("XLSX save: {}", e)))?;
+
+    let filename = format!(
+        "report_{}_{}.xlsx",
+        config.preset,
+        Utc::now().format("%Y%m%d_%H%M%S")
+    );
+
+    Ok(HttpResponse::Ok()
+        .insert_header(("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
+        .body(buf))
+}
+
+fn format_operator(op: &ComparisonOperator) -> &'static str {
+    match op {
+        ComparisonOperator::Eq => "=",
+        ComparisonOperator::Ne => "≠",
+        ComparisonOperator::Gt => ">",
+        ComparisonOperator::Gte => "≥",
+        ComparisonOperator::Lt => "<",
+        ComparisonOperator::Lte => "≤",
+        ComparisonOperator::Like => "contains",
+        ComparisonOperator::In => "in",
+        ComparisonOperator::NotIn => "not in",
+        ComparisonOperator::IsNull => "is empty",
+        ComparisonOperator::IsNotNull => "is not empty",
+        ComparisonOperator::Between => "between",
+    }
+}
+
+fn format_filter_value(v: &ReportFilterValue) -> String {
+    match v {
+        ReportFilterValue::Exact(s) => s.clone(),
+        ReportFilterValue::Contains(s) => s.clone(),
+        ReportFilterValue::Number(n) => format!("{}", n),
+        ReportFilterValue::List(list) => list.join(", "),
+        ReportFilterValue::Range { from, to } => format!("{} … {}", from, to),
+        ReportFilterValue::Null => String::new(),
+    }
 }
 
 // ==================== TESTS ====================
@@ -692,23 +879,16 @@ mod tests {
 
     #[test]
     fn test_validate_sort_field() {
-        // Валидные поля
         assert_eq!(validate_sort_field("created_at"), Some("created_at"));
         assert_eq!(validate_sort_field("quantity"), Some("quantity"));
         assert_eq!(validate_sort_field("reagent_name"), Some("reagent_name"));
-
-        // Новые container-aware поля из CTE
         assert_eq!(validate_sort_field("container_count"), Some("container_count"));
         assert_eq!(validate_sort_field("opened_count"), Some("opened_count"));
         assert_eq!(validate_sort_field("placed_count"), Some("placed_count"));
         assert_eq!(validate_sort_field("unplaced_count"), Some("unplaced_count"));
         assert_eq!(validate_sort_field("location_summary"), Some("location_summary"));
         assert_eq!(validate_sort_field("room_names"), Some("room_names"));
-
-        // Legacy поле location больше не должно работать
         assert_eq!(validate_sort_field("location"), None);
-
-        // SQL-инъекции блокируются
         assert_eq!(validate_sort_field("created_at; DROP TABLE users"), None);
         assert_eq!(validate_sort_field("1=1 OR 1=1"), None);
         assert_eq!(validate_sort_field("password"), None);
@@ -741,7 +921,6 @@ mod tests {
             operator: "gt".to_string(),
             value: serde_json::json!(10),
         };
-        
         let filter = req.to_report_filter();
         assert!(filter.is_some());
         let f = filter.unwrap();
@@ -756,7 +935,6 @@ mod tests {
             operator: "INVALID_OP".to_string(),
             value: serde_json::json!("test"),
         };
-        
         assert!(req.to_report_filter().is_none());
     }
 }

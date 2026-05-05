@@ -4,6 +4,7 @@
 use actix_web::{
     middleware::{Logger, DefaultHeaders, Compress},
     web, App, HttpResponse, HttpServer, HttpRequest, Result,
+    dev::{fn_service, ServiceRequest, ServiceResponse},
 };
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web::http::header;
@@ -184,19 +185,59 @@ async fn main() -> anyhow::Result<()> {
                     .route("/equipment/{id}/files/{file_id}", web::get().to(equipment_handlers::download_equipment_file))
             )
 
-            // All protected API routes
+            // All protected API routes (MUST come before static files)
             .configure(routes::configure_api);
 
+        // ============================================
         // Static files (production)
+        //
+        // KEY POINTS:
+        // 1. Files::new("/", build_dir) serves ALL files from build/ root,
+        //    so /favicon.ico, /logo.png, /logo192.png, /manifest.json,
+        //    /static/js/*.js, /static/css/*.css все находятся автоматически.
+        // 2. default_handler срабатывает только если файла нет.
+        //    Если запрос похож на ассет (есть точка в последнем сегменте) —
+        //    отдаём 404 вместо index.html. Это критично:
+        //    - чинит баг с лого (раньше /logo.png отдавал HTML)
+        //    - чинит баг с CSV-экспортом (раньше промах по API-роуту
+        //      возвращал index.html, и фронт сохранял HTML как .csv)
+        // 3. Для не-ассетов (SPA-роуты типа /reagents, /reports) —
+        //    отдаём index.html, чтобы React Router работал.
+        // ============================================
         if env::var("LIMS_ENV").as_deref() == Ok("production") {
             let build_dir = env::var("FRONTEND_BUILD_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("..").join("lims-frontend").join("build"));
-            let build_dir_str = build_dir.to_string_lossy().to_string();
-            app.service(Files::new("/static", format!("{}/static", build_dir_str)))
-                .service(Files::new("/assets", format!("{}/assets", build_dir_str)))
-                .service(Files::new("/logo.png", format!("{}/logo.png", build_dir_str)))
-                .default_service(web::route().to(serve_index))
+            let index_path = build_dir.join("index.html");
+
+            app.service(
+                Files::new("/", &build_dir)
+                    .index_file("index.html")
+                    .default_handler(fn_service(move |req: ServiceRequest| {
+                        let index_path = index_path.clone();
+                        async move {
+                            let (req, _) = req.into_parts();
+                            let path = req.path();
+
+                            // Запрос с расширением (.png, .js, .css, .ico, .map, …)
+                            // = ассет. Если файла нет — отдаём 404, а НЕ index.html.
+                            let looks_like_asset = path.rsplit('/').next()
+                                .map(|seg| seg.contains('.'))
+                                .unwrap_or(false);
+
+                            if looks_like_asset {
+                                let res = HttpResponse::NotFound()
+                                    .body(format!("Not found: {}", path));
+                                return Ok(ServiceResponse::new(req, res));
+                            }
+
+                            // SPA-роут (/reagents, /reports, /login, …) → index.html
+                            let file = NamedFile::open(&index_path)?;
+                            let res = file.into_response(&req);
+                            Ok(ServiceResponse::new(req, res))
+                        }
+                    }))
+            )
         } else {
             app.route("/", web::get().to(serve_index))
         }
@@ -335,6 +376,7 @@ async fn create_default_admin_if_needed(pool: &SqlitePool, auth_service: &AuthSe
     Ok(())
 }
 
+// Используется только в dev-режиме (production обрабатывается через Files::default_handler выше)
 async fn serve_index() -> Result<NamedFile> {
     let path: PathBuf = match env::var("LIMS_ENV").as_deref() {
         Ok("production") => {

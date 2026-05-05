@@ -2,6 +2,7 @@
   "name": "lims-frontend",
   "version": "0.1.0",
   "private": true,
+  "proxy": "http://localhost:8080",
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.1.0",
     "@testing-library/jest-dom": "^5.17.0",
