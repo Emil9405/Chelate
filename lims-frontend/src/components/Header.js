@@ -78,7 +78,7 @@ const Header = ({ user, onLogout, currentPage, setCurrentPage }) => {
           }}
           onClick={() => setCurrentPage('dashboard')}
         >
-          <ChelateLogo src="/logo.png" size={42} showText={true} />
+          <ChelateLogo src={`/logo.png?v=${process.env.REACT_APP_BUILD_ID || Date.now()}`} size={42} showText={true} />
         </div>
         
         {/* Navigation */}
