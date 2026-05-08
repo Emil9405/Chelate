@@ -1282,9 +1282,11 @@ pub async fn dispense_units(
         .map_err(|_| ApiError::batch_not_found(&batch_id))?;
 
     // Проверяем статус батча
-    if batch.status != "available" {
+    // Проверяем статус батча — разрешаем списание из 'available' и 'low_stock'.
+    // Без этого батч в low_stock застревает и никогда не доходит до 'depleted'.
+    if batch.status != "available" && batch.status != "low_stock" {
         return Err(ApiError::BadRequest(format!(
-            "Batch is not available for dispensing. Current status: '{}'", 
+            "Batch is not available for dispensing. Current status: '{}'",
             batch.status
         )));
     }
@@ -1346,14 +1348,16 @@ pub async fn dispense_units(
     .execute(&mut *tx)
     .await?;
 
-    // Вычисляем новое количество и статус
+// Вычисляем новое количество и статус.
+    // Допуск 0.001 — для согласованности с container_handlers и обработки
+    // float-остатков после многошагового списания.
     let new_quantity = batch.quantity - quantity_to_dispense;
-    let new_status = if new_quantity <= 0.0 { 
-        "depleted" 
+    let new_status = if new_quantity <= 0.001 {
+        "depleted"
     } else if new_quantity <= pack_size {
         "low_stock"  // Осталась последняя единица или меньше
-    } else { 
-        "available" 
+    } else {
+        "available"
     };
 
     // Обновляем батч

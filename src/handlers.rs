@@ -212,8 +212,13 @@ pub async fn use_reagent(
         .await
         .map_err(|_| ApiError::batch_not_found(&batch_id))?;
 
-    if batch.status != "available" {
-        return Err(ApiError::BadRequest("Batch is not available for use".to_string()));
+    // Allow dispensing from both 'available' and 'low_stock' batches.
+    // Only 'depleted' / 'expired' / 'reserved' are blocked.
+    if batch.status != "available" && batch.status != "low_stock" {
+        return Err(ApiError::BadRequest(format!(
+            "Batch is not available for use. Current status: '{}'",
+            batch.status
+        )));
     }
 
     if request.quantity_used > batch.quantity {
@@ -240,8 +245,19 @@ pub async fn use_reagent(
         .execute(&mut *tx)
         .await?;
 
-    let new_quantity = batch.quantity - request.quantity_used;
-    let new_status = if new_quantity <= 0.0 { "depleted" } else { "available" };
+let new_quantity = batch.quantity - request.quantity_used;
+    // Mirror the same threshold logic used by container_handlers::use_from_container.
+    // Use 0.001 tolerance (same as `compute_container_status` empty threshold) to
+    // handle floating-point residue after multi-step auto-distribute — without it,
+    // a batch can end at e.g. 1e-15 and incorrectly stay in 'low_stock'.
+    let low_stock_threshold = batch.original_quantity * 0.2;
+    let new_status = if new_quantity <= 0.001 {
+        "depleted"
+    } else if new_quantity <= low_stock_threshold {
+        "low_stock"
+    } else {
+        "available"
+    };
 
     sqlx::query("UPDATE batches SET quantity = ?, status = ?, updated_at = ? WHERE id = ?")
         .bind(new_quantity.max(0.0))

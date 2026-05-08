@@ -691,10 +691,32 @@ pub async fn use_from_container(
         .await?;
     }
 
-    // 2. Sync batch total quantity
+  
+// 2. Sync batch total quantity
     let new_batch_qty = (batch.quantity - request.quantity).max(0.0);
     let low_stock_threshold = batch.original_quantity * 0.2;
-    let batch_status = if new_batch_qty <= 0.0 {
+
+    // Container-based depletion check: a batch is "physically depleted" once every
+    // container belonging to it is empty or disposed. This is more reliable than
+    // comparing the float quantity field, because it doesn't depend on arithmetic
+    // precision after multi-step auto-distribute. The query runs inside the same
+    // transaction, so it sees the just-updated container status from step 1 above.
+    let (total_containers, active_containers): (i64, i64) = sqlx::query_as(
+        r#"SELECT
+              COUNT(*),
+              COALESCE(SUM(CASE WHEN status NOT IN ('empty','disposed') THEN 1 ELSE 0 END), 0)
+           FROM batch_containers
+           WHERE batch_id = ?"#
+    )
+    .bind(&batch.id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let physically_depleted = total_containers > 0 && active_containers == 0;
+
+    let batch_status = if physically_depleted || new_batch_qty <= 0.001 {
+        // Either every container is gone, OR (legacy fallback) the quantity is
+        // effectively zero. Either way — batch is done.
         "depleted"
     } else if new_batch_qty <= low_stock_threshold {
         "low_stock"
@@ -791,17 +813,64 @@ pub async fn dispose_container(
     }
 
     // Remove placement if exists
+  // Wrap dispose + batch-status sync in a single transaction so we never
+    // leave the batch in an inconsistent state.
+    let mut tx = app_state.db_pool.begin().await?;
+
+    // Remove placement if exists
     sqlx::query("DELETE FROM batch_placements WHERE container_id = ?")
         .bind(&container_id)
-        .execute(&app_state.db_pool)
+        .execute(&mut *tx)
         .await?;
 
-    // Mark as disposed (or delete — your choice)
+    // Mark as disposed
     sqlx::query("UPDATE batch_containers SET status = 'disposed', updated_at = ? WHERE id = ?")
         .bind(&now)
         .bind(&container_id)
-        .execute(&app_state.db_pool)
+        .execute(&mut *tx)
         .await?;
+
+    // === Sync batch status ===
+    // After disposal, check whether any active (non-disposed, non-empty) containers remain.
+    // If none AND the batch quantity is effectively zero, transition the batch to 'depleted'
+    // so it appears in the Depleted Batches Report immediately.
+    let remaining_active: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM batch_containers
+           WHERE batch_id = ? AND status NOT IN ('disposed', 'empty')"#
+    )
+    .bind(&container.batch_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if remaining_active == 0 {
+        // Recompute total physical quantity from surviving containers.
+        let physical_qty: f64 = sqlx::query_scalar(
+            r#"SELECT COALESCE(SUM(quantity), 0.0) FROM batch_containers
+               WHERE batch_id = ? AND status NOT IN ('disposed')"#
+        )
+        .bind(&container.batch_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if physical_qty <= 0.001 {
+            sqlx::query(
+                r#"UPDATE batches
+                   SET quantity = 0, status = 'depleted', updated_at = ?
+                   WHERE id = ? AND status != 'depleted'"#
+            )
+            .bind(&now)
+            .bind(&container.batch_id)
+            .execute(&mut *tx)
+            .await?;
+
+            info!(
+                "📦 Batch {} auto-transitioned to 'depleted' after last container disposal",
+                container.batch_id
+            );
+        }
+    }
+
+    tx.commit().await?;
 
     info!("🗑️ Container #{} disposed", container.sequence_number);
 
@@ -809,7 +878,7 @@ pub async fn dispose_container(
         (),
         "Empty container disposed".to_string(),
     )))
-}
+}  
 
 // ==================== ROOM INVENTORY (updated for containers) ====================
 
