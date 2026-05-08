@@ -180,7 +180,8 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
     return typeof raw === 'object' && raw !== null ? raw.parsedValue : raw;
   };
 
-  const handleQuantityUse = useCallback(async (batch) => {
+
+const handleQuantityUse = useCallback(async (batch) => {
     const input = usageInputs[batch.id] || { quantity: '' };
     const qty = parseFloat(input.quantity);
 
@@ -190,11 +191,17 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
     }
 
     const containers = containersMap[batch.id] || [];
-    const selectedContainerId = usageContainer[batch.id];
+    const selectedValue = usageContainer[batch.id];
 
-    // --- If a specific container is selected, use only from it ---
-    if (selectedContainerId) {
-      const container = containers.find(c => c.id === selectedContainerId);
+    // Selection can be empty, a single ID, or comma-separated IDs (sealed group).
+    const selectedIds = selectedValue
+      ? String(selectedValue).split(',').filter(Boolean)
+      : [];
+
+    // --- Single container selected ---
+    if (selectedIds.length === 1) {
+      const onlyId = selectedIds[0];
+      const container = containers.find(c => c.id === onlyId);
       const cQty = getContainerQty(container);
 
       if (container && qty > cQty + 0.001) {
@@ -209,7 +216,7 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
       setUsageError(prev => ({ ...prev, [batch.id]: '' }));
 
       try {
-        await api.useFromContainer(selectedContainerId, {
+        await api.useFromContainer(onlyId, {
           quantity: qty, purpose: null, notes: null,
         });
         setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}` }));
@@ -226,10 +233,16 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
       return;
     }
 
-    // --- No container selected: auto-distribute across containers ---
-    if (containers.length > 0) {
+    // --- Group selected (≥2 IDs) OR no selection: auto-distribute ---
+    // Group selection narrows the candidate pool to those specific containers;
+    // empty selection uses all containers in the batch.
+    const candidateContainers = selectedIds.length > 1
+      ? containers.filter(c => selectedIds.includes(c.id))
+      : containers;
+
+    if (candidateContainers.length > 0) {
       // Sort: opened first, then by sequence_number
-      const sorted = [...containers]
+      const sorted = [...candidateContainers]
         .filter(c => getContainerQty(c) > 0)
         .sort((a, b) => (b.is_opened ? 1 : 0) - (a.is_opened ? 1 : 0) || a.sequence_number - b.sequence_number);
 
@@ -278,10 +291,12 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
       return;
     }
 
-    // --- Legacy path (no containers) ---
+    // --- Legacy path (no containers attached to batch) ---
     const rawAvailable = batch.quantity - (batch.reserved_quantity || 0);
-    const available = typeof rawAvailable === 'object' && rawAvailable !== null ? rawAvailable.parsedValue : rawAvailable;
-    
+    const available = typeof rawAvailable === 'object' && rawAvailable !== null
+      ? rawAvailable.parsedValue
+      : rawAvailable;
+
     if (qty > available) {
       setUsageError(prev => ({ ...prev, [batch.id]: `Max: ${available}` }));
       return;
@@ -303,7 +318,6 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
       setUsageLoading(prev => ({ ...prev, [batch.id]: false }));
     }
   }, [reagentId, usageInputs, usageContainer, containersMap, loadBatches, loadContainers, onReagentsRefresh]);
-
   const adjustQuantityByPack = (batchId, packSize, direction, available) => {
     const current = parseFloat(getUsageInput(batchId).quantity) || 0;
     let newValue;

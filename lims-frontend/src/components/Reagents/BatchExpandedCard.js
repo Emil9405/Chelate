@@ -273,6 +273,12 @@ const UsageBar = ({
   const available = batch.quantity - (batch.reserved_quantity || 0);
   const hasPackSize = batch.pack_size && batch.pack_size > 0;
   const input = getUsageInput(batch.id);
+
+  // Countable units (pcs / шт / units …) only allow integer dispensing.
+  // Avoids "2.01" when the unit is whole items.
+  const isCountableUnit = batch.unit
+    && ['pcs', 'шт', 'штук', 'units', 'unit', 'count', 'item', 'items']
+        .includes(String(batch.unit).toLowerCase().trim());
   const isLoading = usageLoading[batch.id];
   const success = usageSuccess[batch.id];
   const error = usageError[batch.id];
@@ -293,11 +299,30 @@ const UsageBar = ({
   );
   const hasMultipleContainers = usableContainers.length > 1;
 
-  const selectedId = usageContainer[batch.id];
-  const selectedContainer = usableContainers.find(c => c.id === selectedId);
-  const maxQty = selectedContainer
-    ? extractQty(selectedContainer)
-    : available;
+ 
+  // Selection can be empty, a single ID, or comma-separated IDs (sealed group).
+  const selectedValue = usageContainer[batch.id];
+  const selectedIds = selectedValue
+    ? String(selectedValue).split(',').filter(Boolean)
+    : [];
+  const isGroupSelection = selectedIds.length > 1;
+
+  const selectedContainer = selectedIds.length === 1
+    ? usableContainers.find(c => c.id === selectedIds[0])
+    : null;
+
+  // Max for the input:
+  //   single container → that container's qty
+  //   group selection  → sum of group's container qtys
+  //   no selection     → batch-wide available
+  const maxQty = isGroupSelection
+    ? usableContainers
+        .filter(c => selectedIds.includes(c.id))
+        .reduce((sum, c) => sum + extractQty(c), 0)
+    : (selectedContainer ? extractQty(selectedContainer) : available);
+
+  // Backward-compat alias used in existing JSX below:
+  const selectedId = selectedValue;
 
   const getFullLocation = (c) => {
     if (!c.room_name) return 'Not placed';
@@ -306,7 +331,12 @@ const UsageBar = ({
       .join(' / ');
   };
 
-  if (batch.status !== 'available' || available <= 0) {
+// Allow dispensing from 'available' AND 'low_stock' batches.
+  // Only fully blocked if status is 'depleted'/'expired'/'reserved' OR no quantity left.
+  const canDispense =
+    (batch.status === 'available' || batch.status === 'low_stock') && available > 0;
+
+  if (!canDispense) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
         <span style={{ fontSize: '0.8rem', color: '#a0aec0' }}>
@@ -315,14 +345,13 @@ const UsageBar = ({
       </div>
     );
   }
-
-  const groupedOptions = usableContainers.reduce((acc, c) => {
+const groupedOptions = usableContainers.reduce((acc, c) => {
     const loc = getFullLocation(c);
     if (!acc[loc]) acc[loc] = { opened: [], sealed: {} };
 
-    const isOpened = 
-      c.is_opened === true || c.is_opened === 1 || 
-      String(c.is_opened).toLowerCase() === 'true' || 
+    const isOpened =
+      c.is_opened === true || c.is_opened === 1 ||
+      String(c.is_opened).toLowerCase() === 'true' ||
       c.container_status === 'partial';
 
     if (isOpened) {
@@ -331,11 +360,14 @@ const UsageBar = ({
       const qty = extractQty(c);
       const key = String(qty);
       if (!acc[loc].sealed[key]) {
-        acc[loc].sealed[key] = { 
-          count: 0, firstId: c.id, firstSeq: c.sequence_number, qty: qty, unit: batch.unit 
+        acc[loc].sealed[key] = {
+          count: 0, firstId: c.id, firstSeq: c.sequence_number,
+          qty: qty, unit: batch.unit,
+          containerIds: [],   // NEW: track all IDs in this sealed-group
         };
       }
       acc[loc].sealed[key].count += 1;
+      acc[loc].sealed[key].containerIds.push(c.id);   // NEW
     }
     return acc;
   }, {});
@@ -372,10 +404,16 @@ const UsageBar = ({
                       #{c.sequence_number} — {extractQty(c).toFixed(1)} {batch.unit} (opened)
                     </option>
                   ))}
-                  {Object.values(data.sealed).map(g => (
-                    <option key={g.firstId} value={g.firstId} style={{ fontWeight: '400', paddingLeft: '10px' }}>
-                      {g.count > 1 
-                        ? `${g.count} × ${g.qty.toFixed(1)} ${g.unit} (sealed)`
+                 {Object.values(data.sealed).map(g => (
+                    <option
+                      key={g.firstId}
+                      // Group selection: comma-separated container IDs.
+                      // For groups of 1, this is just the single ID (backward compatible).
+                      value={g.containerIds.join(',')}
+                      style={{ fontWeight: '400', paddingLeft: '10px' }}
+                    >
+                      {g.count > 1
+                        ? `${g.count} × ${g.qty.toFixed(1)} ${g.unit} (sealed) — pool of ${(g.count * g.qty).toFixed(1)} ${g.unit}`
                         : `#${g.firstSeq} — ${g.qty.toFixed(1)} ${g.unit} (sealed)`}
                     </option>
                   ))}
@@ -447,12 +485,27 @@ const UsageBar = ({
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
             <div style={{ display: 'flex', alignItems: 'center', position: 'relative' }}>
-              <input
+             <input
                 type="number"
-                step={hasPackSize ? batch.pack_size : '0.01'}
-                min="0.01"
+                // For countable units, force integer step regardless of pack_size.
+                step={isCountableUnit ? '1' : (hasPackSize ? batch.pack_size : '0.01')}
+                min={isCountableUnit ? '1' : '0.01'}
                 value={input.quantity}
                 onChange={(e) => setUsageQuantity(batch.id, e.target.value)}
+                onBlur={(e) => {
+                  // Defensive: if user typed a fractional value for a countable unit,
+                  // round it down to an integer on blur (HTML step="1" only governs
+                  // the spinner, not manual typing).
+                  if (isCountableUnit && e.target.value !== '') {
+                    const n = parseFloat(e.target.value);
+                    if (Number.isFinite(n)) {
+                      const rounded = Math.max(1, Math.floor(n));
+                      if (String(rounded) !== e.target.value) {
+                        setUsageQuantity(batch.id, String(rounded));
+                      }
+                    }
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') { e.preventDefault(); handleQuantityUse(batch); }
                 }}
@@ -464,7 +517,7 @@ const UsageBar = ({
                   border: error ? '1px solid #e53e3e' : '1px solid #e2e8f0',
                   borderRadius: '6px', fontSize: '13px', textAlign: 'right', fontWeight: '500',
                 }}
-              />
+              /> 
               {!hasUnitChoice && (
                 <span style={{
                   fontSize: '11px', color: '#718096', position: 'absolute', right: '6px',
@@ -495,16 +548,22 @@ const UsageBar = ({
               </select>
             )}
 
-            <Button
+           <Button
               size="small"
               variant="primary"
               onClick={() => handleQuantityUse(batch)}
-              disabled={isLoading || !input.quantity || (hasMultipleContainers && !selectedId)}
+              // Enabled whenever a positive quantity is entered.
+              // If no container is selected, handleQuantityUse auto-distributes
+              // across containers (opened first, then by sequence).
+              disabled={isLoading || !input.quantity}
               icon={<UseIcon size={14} />}
               style={{ backgroundColor: '#38a169', height: '30px', padding: '0 12px' }}
+              title={hasMultipleContainers && !selectedId
+                ? 'No container selected — will auto-distribute across containers'
+                : undefined}
             >
               {isLoading ? '...' : 'Use'}
-            </Button>
+            </Button> 
           </div>
         </div>
       </div>
