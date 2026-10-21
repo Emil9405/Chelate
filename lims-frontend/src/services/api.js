@@ -408,6 +408,18 @@ export const api = {
         });
     },
 
+    requalifyBatch: async (batchId, data) => {
+        return await apiCall(`${API_V1_BASE}/batches/${batchId}/requalify`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    },
+
+    getBatchRequalifications: async (batchId) => {
+        const response = await apiCall(`${API_V1_BASE}/batches/${batchId}/requalifications`);
+        return response.data || response;
+    },
+
     splitBatchIntoContainers: async (batchId, packSize) => {
         return await apiCall(`${API_V1_BASE}/batches/${batchId}/containers/split`, {
             method: 'POST',

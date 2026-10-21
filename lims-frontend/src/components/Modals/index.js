@@ -26,6 +26,7 @@ export { CreateEquipmentModal, EditEquipmentModal } from './EquipmentModals';
 
 // Batch Modals & Inline Usage
 export { CreateBatchModal, EditBatchModal } from './BatchModals';
+export { RequalifyBatchModal } from './RequalifyBatchModal';
 export { BatchUsageInput } from './BatchUsageInput';
 
 // Reagent Modals

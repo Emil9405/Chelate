@@ -1221,6 +1221,12 @@ pub struct DispenseUnitsRequest {
     /// Дополнительные заметки
     #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
     pub notes: Option<String>,
+
+    /// Explicit confirmation to use an expired batch
+    pub allow_expired: Option<bool>,
+    /// Required when allow_expired is set
+    #[validate(length(max = 500, message = "Reason cannot exceed 500 characters"))]
+    pub expired_reason: Option<String>,
 }
 
 /// Ответ на штучное списание
@@ -1286,6 +1292,8 @@ pub async fn dispense_units(
     );
     req.purpose = request.purpose.as_deref();
     req.notes = request.notes.as_deref();
+    req.allow_expired = request.allow_expired.unwrap_or(false);
+    req.expired_reason = request.expired_reason.as_deref();
     let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
 
@@ -1383,4 +1391,186 @@ pub async fn get_batch_units_info(
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(info)))
+}
+
+// ==================== REQUALIFICATION (EXTEND SHELF LIFE) ====================
+
+#[derive(Debug, serde::Deserialize, Validate)]
+pub struct RequalifyBatchRequest {
+    /// New expiry / retest date; must be in the future
+    pub new_expiry_date: DateTime<Utc>,
+    /// Basis for the extension, e.g. "assay by titration 99.2%, meets spec"
+    #[validate(length(min = 1, max = 500, message = "Reason must be 1-500 characters"))]
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BatchRequalification {
+    pub id: String,
+    pub batch_id: String,
+    pub old_expiry_date: Option<DateTime<Utc>>,
+    pub new_expiry_date: DateTime<Utc>,
+    pub old_status: String,
+    pub new_status: String,
+    pub reason: String,
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// POST /api/v1/batches/{batch_id}/requalify
+/// Extends the expiry (retest) date after the batch was checked and found fit
+/// for use. Recomputes the status (expired -> available/low_stock) and keeps a
+/// durable record of who extended it, from/to which date and why.
+pub async fn requalify_batch(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+    request: web::Json<RequalifyBatchRequest>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    request.validate()?;
+    let claims = get_current_user(&http_request)?;
+    let batch_id = path.into_inner();
+    let reason = request.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(ApiError::bad_request("A reason is required to extend the expiry date"));
+    }
+    let now = Utc::now();
+    if request.new_expiry_date <= now {
+        return Err(ApiError::bad_request("New expiry date must be in the future"));
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        batch_number: String,
+        reagent_name: String,
+        quantity: f64,
+        original_quantity: f64,
+        status: String,
+        expiry_date: Option<DateTime<Utc>>,
+    }
+
+    let mut tx = app_state.db_pool.begin().await?;
+
+    // First statement is a write: take the lock before reading
+    let touched = sqlx::query(
+        "UPDATE batches SET updated_at = updated_at WHERE id = ? AND deleted_at IS NULL"
+    )
+        .bind(&batch_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if touched == 0 {
+        return Err(ApiError::batch_not_found(&batch_id));
+    }
+
+    let b: Row = sqlx::query_as(
+        "SELECT b.batch_number, r.name AS reagent_name, b.quantity, \
+                COALESCE(b.original_quantity, b.quantity) AS original_quantity, b.status, b.expiry_date \
+         FROM batches b JOIN reagents r ON r.id = b.reagent_id WHERE b.id = ?"
+    )
+        .bind(&batch_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    if b.status == "depleted" {
+        return Err(ApiError::bad_request("Batch is depleted; nothing to requalify"));
+    }
+
+    let (total_containers, active_containers): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status NOT IN ('empty','disposed') THEN 1 ELSE 0 END), 0) \
+         FROM batch_containers WHERE batch_id = ?"
+    )
+        .bind(&batch_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // Status as if never expired: same rules as every write-off
+    let new_status = crate::consumption::compute_batch_status(
+        b.quantity, b.original_quantity, total_containers > 0, active_containers, "available",
+    );
+
+    sqlx::query(
+        "UPDATE batches SET expiry_date = ?, status = ?, updated_by = ?, updated_at = ? WHERE id = ?"
+    )
+        .bind(request.new_expiry_date)
+        .bind(new_status)
+        .bind(&claims.sub)
+        .bind(now)
+        .bind(&batch_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let record_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO batch_requalifications \
+         (id, batch_id, old_expiry_date, new_expiry_date, old_status, new_status, reason, user_id, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+        .bind(&record_id)
+        .bind(&batch_id)
+        .bind(b.expiry_date)
+        .bind(request.new_expiry_date)
+        .bind(&b.status)
+        .bind(new_status)
+        .bind(&reason)
+        .bind(&claims.sub)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    let fmt = |d: Option<DateTime<Utc>>| d.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "none".into());
+    let mut cs = crate::audit::ChangeSet::new();
+    cs.add("expiry_date", &fmt(b.expiry_date), &fmt(Some(request.new_expiry_date)));
+    if b.status != new_status {
+        cs.add("status", &b.status, new_status);
+    }
+    cs.created("requalification_reason", &reason);
+    crate::audit::audit_with_changes(
+        &app_state.db_pool, &claims.sub, "requalify", "batch", &batch_id,
+        &format!(
+            "Shelf life of reagent \"{}\" batch {} extended: {} -> {} (reason: {})",
+            b.reagent_name, b.batch_number, fmt(b.expiry_date), fmt(Some(request.new_expiry_date)), reason
+        ),
+        &cs, &http_request,
+    ).await;
+
+    log::info!(
+        "User {} requalified batch {} ({}): expiry {} -> {}, status {} -> {}",
+        claims.username, b.batch_number, batch_id, fmt(b.expiry_date),
+        fmt(Some(request.new_expiry_date)), b.status, new_status
+    );
+
+    Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
+        serde_json::json!({
+            "id": record_id,
+            "batch_id": batch_id,
+            "old_expiry_date": b.expiry_date,
+            "new_expiry_date": request.new_expiry_date,
+            "old_status": b.status,
+            "new_status": new_status,
+            "reason": reason,
+        }),
+        "Expiry date extended".to_string(),
+    )))
+}
+
+/// GET /api/v1/batches/{batch_id}/requalifications — newest first
+pub async fn get_batch_requalifications(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let batch_id = path.into_inner();
+    let rows: Vec<BatchRequalification> = sqlx::query_as(
+        "SELECT q.id, q.batch_id, q.old_expiry_date, q.new_expiry_date, q.old_status, q.new_status, \
+                q.reason, q.user_id, u.username, q.created_at \
+         FROM batch_requalifications q LEFT JOIN users u ON u.id = q.user_id \
+         WHERE q.batch_id = ? ORDER BY q.created_at DESC"
+    )
+        .bind(&batch_id)
+        .fetch_all(&app_state.db_pool)
+        .await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::success(rows)))
 }

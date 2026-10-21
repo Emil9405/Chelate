@@ -645,6 +645,8 @@ pub async fn use_from_container(
     req.container_id = Some(&container_id);
     req.purpose = request.purpose.as_deref();
     req.notes = request.notes.as_deref();
+    req.allow_expired = request.allow_expired.unwrap_or(false);
+    req.expired_reason = request.expired_reason.as_deref();
     let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
 

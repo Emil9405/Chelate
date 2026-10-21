@@ -123,4 +123,10 @@ pub struct UseFromContainerRequest {
 
     #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
     pub notes: Option<String>,
+
+    /// Explicit confirmation to use an expired batch
+    pub allow_expired: Option<bool>,
+    /// Required when allow_expired is set
+    #[validate(length(max = 500, message = "Reason cannot exceed 500 characters"))]
+    pub expired_reason: Option<String>,
 }

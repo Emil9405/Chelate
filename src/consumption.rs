@@ -12,7 +12,7 @@
 //!
 //! Audit entries are written by callers *after* commit (they need the request).
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 use uuid::Uuid;
@@ -81,8 +81,11 @@ pub struct ConsumeRequest<'a> {
     pub experiment_id: Option<&'a str>,
     /// Part of batch.reserved_quantity this write-off fulfils (experiments)
     pub release_reserved: f64,
-    /// Experiments may consume stock reserved before it expired
+    /// Explicit confirmation to use an expired batch (expiry passed or status 'expired')
     pub allow_expired: bool,
+    /// Why an expired batch is used. Required for ad-hoc use; recorded in
+    /// usage_logs.notes and the audit entry.
+    pub expired_reason: Option<&'a str>,
 }
 
 impl<'a> ConsumeRequest<'a> {
@@ -98,6 +101,7 @@ impl<'a> ConsumeRequest<'a> {
             experiment_id: None,
             release_reserved: 0.0,
             allow_expired: false,
+            expired_reason: None,
         }
     }
 }
@@ -125,6 +129,14 @@ pub struct ConsumeResult {
     pub status_before: String,
     pub status_after: String,
     pub containers: Vec<ContainerDraw>,
+    /// Set when an expired batch was used
+    pub expired_use: Option<ExpiredUse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExpiredUse {
+    pub expiry_date: Option<String>,
+    pub reason: String,
 }
 
 impl ConsumeResult {
@@ -140,6 +152,9 @@ impl ConsumeResult {
                 c.quantity_before,
                 c.quantity_after,
             );
+        }
+        if let Some(e) = &self.expired_use {
+            cs.created("expired_use_reason", &e.reason);
         }
         cs
     }
@@ -158,10 +173,17 @@ impl ConsumeResult {
             ),
         };
         let ctx = context.map(|c| format!(" {}", c)).unwrap_or_default();
+        let expired = match &self.expired_use {
+            Some(e) => format!(
+                " [EXPIRED batch, expiry {}; reason: {}]",
+                e.expiry_date.as_deref().unwrap_or("n/a"), e.reason
+            ),
+            None => String::new(),
+        };
         format!(
-            "Used {} {} from reagent \"{}\" batch {}{}{} (remaining: {} {})",
+            "Used {} {} from reagent \"{}\" batch {}{}{} (remaining: {} {}){}",
             self.quantity_used, self.unit, self.reagent_name, self.batch_number,
-            from, ctx, self.batch_quantity_after, self.unit
+            from, ctx, self.batch_quantity_after, self.unit, expired
         )
     }
 }
@@ -178,6 +200,7 @@ struct BatchRow {
     original_quantity: f64,
     reserved_quantity: f64,
     status: String,
+    expiry_date: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -219,7 +242,7 @@ pub async fn consume_from_batch(
     let batch: BatchRow = sqlx::query_as(
         "SELECT b.reagent_id, r.name AS reagent_name, b.batch_number, b.unit, b.quantity, \
                 COALESCE(b.original_quantity, b.quantity) AS original_quantity, \
-                COALESCE(b.reserved_quantity, 0) AS reserved_quantity, b.status \
+                COALESCE(b.reserved_quantity, 0) AS reserved_quantity, b.status, b.expiry_date \
          FROM batches b JOIN reagents r ON r.id = b.reagent_id \
          WHERE b.id = ? AND r.deleted_at IS NULL"
     )
@@ -229,11 +252,7 @@ pub async fn consume_from_batch(
         .ok_or_else(|| ApiError::batch_not_found(req.batch_id))?;
 
     match batch.status.as_str() {
-        "available" | "low_stock" | "in_use" => {}
-        "expired" if req.allow_expired => {}
-        "expired" => return Err(ApiError::bad_request(&format!(
-            "Batch {} is expired and cannot be used", batch.batch_number
-        ))),
+        "available" | "low_stock" | "in_use" | "expired" => {}
         "depleted" => return Err(ApiError::bad_request(&format!(
             "Batch {} is depleted", batch.batch_number
         ))),
@@ -241,6 +260,31 @@ pub async fn consume_from_batch(
             "Batch {} is not available for use (status '{}')", batch.batch_number, other
         ))),
     }
+
+    // Expired = status 'expired' or expiry date already passed (the background
+    // job flips the status only hourly). Expired stock may still be fit for use,
+    // so it is allowed, but only on explicit confirmation with a reason.
+    let expiry_str = batch.expiry_date.map(|d| d.format("%Y-%m-%d").to_string());
+    let is_expired = batch.status == "expired"
+        || batch.expiry_date.map(|d| d <= now).unwrap_or(false);
+    let expired_use = if is_expired {
+        if !req.allow_expired {
+            return Err(ApiError::BadRequest(format!(
+                "Batch {} expired on {}. To use it anyway, confirm and give a reason.",
+                batch.batch_number, expiry_str.as_deref().unwrap_or("n/a")
+            )));
+        }
+        let reason = req.expired_reason.map(str::trim).filter(|r| !r.is_empty());
+        let reason = match reason {
+            Some(r) => r.chars().take(500).collect::<String>(),
+            None => return Err(ApiError::bad_request(
+                "A reason is required to use an expired batch"
+            )),
+        };
+        Some(ExpiredUse { expiry_date: expiry_str.clone(), reason })
+    } else {
+        None
+    };
 
     // 3. Reservations: stock reserved for experiments is not free to use,
     //    except the part this write-off fulfils.
@@ -382,7 +426,8 @@ pub async fn consume_from_batch(
         0
     };
     let status_after = compute_batch_status(
-        new_quantity, batch.original_quantity, total_containers > 0, active_containers, &batch.status,
+        new_quantity, batch.original_quantity, total_containers > 0, active_containers,
+        if is_expired { "expired" } else { &batch.status },
     );
 
     sqlx::query(
@@ -400,8 +445,22 @@ pub async fn consume_from_batch(
         .execute(&mut *conn)
         .await?;
 
-    // 6. Usage log
+    // 6. Usage log (the expired-use reason is kept here durably: audit_logs are pruned)
     let usage_id = Uuid::new_v4().to_string();
+    let notes: Option<String> = match (&expired_use, req.notes) {
+        (Some(e), n) => Some(
+            format!(
+                "Expired batch used (expiry {}). Reason: {}{}",
+                e.expiry_date.as_deref().unwrap_or("n/a"),
+                e.reason,
+                n.map(|n| format!(" | {}", n)).unwrap_or_default()
+            )
+            .chars()
+            .take(1000)
+            .collect(),
+        ),
+        (None, n) => n.map(str::to_string),
+    };
     sqlx::query(
         "INSERT INTO usage_logs \
          (id, reagent_id, batch_id, user_id, experiment_id, quantity_used, unit, purpose, notes, created_at) \
@@ -415,7 +474,7 @@ pub async fn consume_from_batch(
         .bind(req.quantity)
         .bind(&batch.unit)
         .bind(req.purpose.map(|p| p.chars().take(500).collect::<String>()))
-        .bind(req.notes)
+        .bind(notes)
         .bind(now)
         .execute(&mut *conn)
         .await?;
@@ -433,6 +492,7 @@ pub async fn consume_from_batch(
         status_before: batch.status,
         status_after: status_after.to_string(),
         containers: draws,
+        expired_use,
     })
 }
 
@@ -471,7 +531,11 @@ pub async fn consume_experiment_link(
     req.purpose = Some(&purpose);
     req.experiment_id = Some(experiment_id);
     req.release_reserved = qty;
+    // Stock was reserved for this experiment; if it expired meanwhile the
+    // write-off still records what was physically used.
+    let expired_reason = format!("consumed by experiment \"{}\" (reserved stock)", experiment_title);
     req.allow_expired = true;
+    req.expired_reason = Some(&expired_reason);
 
     consume_from_batch(conn, req).await.map(Some)
 }
@@ -539,7 +603,7 @@ mod tests {
             "CREATE TABLE reagents (id TEXT PRIMARY KEY, name TEXT, deleted_at TEXT)",
             "CREATE TABLE batches (id TEXT PRIMARY KEY, reagent_id TEXT, batch_number TEXT, unit TEXT, \
              quantity REAL, original_quantity REAL, reserved_quantity REAL DEFAULT 0, status TEXT, \
-             deleted_at TEXT, updated_by TEXT, updated_at TEXT)",
+             deleted_at TEXT, updated_by TEXT, updated_at TEXT, expiry_date TEXT)",
             "CREATE TABLE batch_containers (id TEXT PRIMARY KEY, batch_id TEXT, sequence_number INTEGER, \
              quantity REAL, original_quantity REAL, is_opened INTEGER DEFAULT 0, opened_at TEXT, \
              opened_by TEXT, status TEXT, updated_at TEXT)",
@@ -556,7 +620,7 @@ mod tests {
     }
 
     async fn add_batch(pool: &SqlitePool, id: &str, qty: f64, reserved: f64, status: &str) {
-        sqlx::query("INSERT INTO batches VALUES (?, 'r1', ?, 'g', ?, ?, ?, ?, NULL, NULL, NULL)")
+        sqlx::query("INSERT INTO batches VALUES (?, 'r1', ?, 'g', ?, ?, ?, ?, NULL, NULL, NULL, NULL)")
             .bind(id).bind(format!("B-{}", id)).bind(qty).bind(qty).bind(reserved).bind(status)
             .execute(pool).await.unwrap();
     }
@@ -672,15 +736,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_batch_only_for_experiments() {
+    async fn expired_batch_needs_confirmation_and_reason() {
         let pool = setup().await;
         add_batch(&pool, "b", 5.0, 0.0, "expired").await;
         let mut tx = pool.begin().await.unwrap();
+
+        // no confirmation
         assert!(consume_from_batch(&mut *tx, ConsumeRequest::new("b", 1.0, None)).await.is_err());
+        // confirmation without reason
         let mut req = ConsumeRequest::new("b", 1.0, None);
         req.allow_expired = true;
+        req.expired_reason = Some("   ");
+        assert!(consume_from_batch(&mut *tx, req).await.is_err());
+        // confirmation with reason
+        let mut req = ConsumeRequest::new("b", 1.0, None);
+        req.allow_expired = true;
+        req.expired_reason = Some("purity checked by titration, 99.1%");
         let r = consume_from_batch(&mut *tx, req).await.unwrap();
+        tx.commit().await.unwrap();
+
         assert_eq!(r.status_after, "expired");
+        assert!(r.describe(None).contains("EXPIRED"));
+        let notes: String = sqlx::query_scalar("SELECT notes FROM usage_logs").fetch_one(&pool).await.unwrap();
+        assert!(notes.contains("titration"));
+    }
+
+    #[tokio::test]
+    async fn past_expiry_date_counts_as_expired_even_if_status_lags() {
+        let pool = setup().await;
+        add_batch(&pool, "b", 5.0, 0.0, "available").await;
+        sqlx::query("UPDATE batches SET expiry_date = datetime('now', '-1 day') WHERE id = 'b'")
+            .execute(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        match consume_from_batch(&mut *tx, ConsumeRequest::new("b", 1.0, None)).await {
+            Err(ApiError::BadRequest(msg)) => assert!(msg.contains("expired on"), "{}", msg),
+            other => panic!("expected expired error, got {:?}", other.map(|r| r.status_after)),
+        }
     }
 
     #[tokio::test]

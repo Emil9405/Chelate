@@ -397,6 +397,29 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await?;
 
+    // ==================== BATCH_REQUALIFICATIONS TABLE ====================
+    // Durable history of shelf-life extensions (audit_logs are pruned after 90 days)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS batch_requalifications (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+            old_expiry_date DATETIME,
+            new_expiry_date DATETIME NOT NULL,
+            old_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 500),
+            user_id TEXT REFERENCES users(id),
+            created_at DATETIME NOT NULL
+        )
+        "#,
+    )
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_batch_requalifications_batch ON batch_requalifications(batch_id)")
+        .execute(pool)
+        .await?;
+
     // ==================== AUDIT_LOGS TABLE ====================
     sqlx::query(
         r#"
@@ -842,6 +865,7 @@ pub async fn reset_database(pool: &SqlitePool) -> Result<()> {
         "DROP TABLE IF EXISTS rooms",
         "DROP TABLE IF EXISTS equipment",
         "DROP TABLE IF EXISTS audit_logs",
+        "DROP TABLE IF EXISTS batch_requalifications",
         "DROP TABLE IF EXISTS usage_logs",
         "DROP TABLE IF EXISTS user_permissions",
         "DROP TABLE IF EXISTS batches",

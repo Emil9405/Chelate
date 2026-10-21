@@ -18,7 +18,8 @@ import {
   CreateBatchModal,
   EditBatchModal,
   UsageHistoryModal,
-  PrintStickerModal
+  PrintStickerModal,
+  RequalifyBatchModal
 } from '../Modals';
 
 import {
@@ -387,6 +388,7 @@ const ReagentAccordionItem = ({
                       onEdit={(b) => { logic.setSelectedBatch(b); logic.setShowEditBatch(true); }}
                       onDelete={logic.handleDeleteBatch}
                       onHistory={(b) => { logic.setSelectedBatch(b); logic.setShowUsageHistory(true); }}
+                      onRequalify={(b) => { logic.setSelectedBatch(b); logic.setShowRequalify(true); }}
                       onRefresh={logic.loadBatches}
                     />
                   )}
@@ -410,6 +412,14 @@ const ReagentAccordionItem = ({
               isOpen={logic.showEditBatch}
               batch={logic.selectedBatch}
               onClose={() => { logic.setShowEditBatch(false); logic.setSelectedBatch(null); }}
+              onSave={logic.handleBatchUpdated}
+            />
+          )}
+          {logic.showRequalify && logic.selectedBatch && (
+            <RequalifyBatchModal
+              isOpen={logic.showRequalify}
+              batch={logic.selectedBatch}
+              onClose={() => { logic.setShowRequalify(false); logic.setSelectedBatch(null); }}
               onSave={logic.handleBatchUpdated}
             />
           )}

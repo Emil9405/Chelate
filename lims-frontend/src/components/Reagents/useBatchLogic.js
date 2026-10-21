@@ -19,6 +19,7 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
   const [showEditBatch, setShowEditBatch] = useState(false);
   const [showUsageHistory, setShowUsageHistory] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [showRequalify, setShowRequalify] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState(null);
 
   // State for Placement Modal
@@ -181,9 +182,15 @@ const useBatchLogic = (reagentId, isExpanded, onReagentsRefresh) => {
   };
 
 
-const handleQuantityUse = useCallback(async (batch) => {
+// expiredOpts: { allow_expired: true, expired_reason } — required by the
+// server for batches past their expiry date
+const handleQuantityUse = useCallback(async (batch, expiredOpts = null) => {
     const input = usageInputs[batch.id] || { quantity: '' };
     const qty = parseFloat(input.quantity);
+    const expiredFields = expiredOpts ? {
+      allow_expired: true,
+      expired_reason: expiredOpts.expired_reason,
+    } : {};
 
     if (!qty || qty <= 0) {
       setUsageError(prev => ({ ...prev, [batch.id]: 'Enter quantity' }));
@@ -217,7 +224,7 @@ const handleQuantityUse = useCallback(async (batch) => {
 
       try {
         await api.useFromContainer(onlyId, {
-          quantity: qty, purpose: null, notes: null,
+          quantity: qty, purpose: null, notes: null, ...expiredFields,
         });
         setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}` }));
         setUsageInputs(prev => ({ ...prev, [batch.id]: { quantity: '' } }));
@@ -258,6 +265,7 @@ const handleQuantityUse = useCallback(async (batch) => {
         const result = await api.useReagent(reagentId, batch.id, {
           quantity_used: qty,
           ...(selectedIds.length > 1 ? { container_ids: selectedIds } : {}),
+          ...expiredFields,
         });
         const used = result?.data?.containers_used ?? result?.containers_used ?? 1;
         const usedFrom = used > 1 ? ` (from ${used} containers)` : '';
@@ -290,7 +298,7 @@ const handleQuantityUse = useCallback(async (batch) => {
     setUsageError(prev => ({ ...prev, [batch.id]: '' }));
 
     try {
-      await api.useReagent(reagentId, batch.id, { quantity_used: qty });
+      await api.useReagent(reagentId, batch.id, { quantity_used: qty, ...expiredFields });
       setUsageSuccess(prev => ({ ...prev, [batch.id]: `−${qty} ${batch.unit}` }));
       setUsageInputs(prev => ({ ...prev, [batch.id]: { quantity: '' } }));
       loadBatches();
@@ -330,6 +338,7 @@ const handleQuantityUse = useCallback(async (batch) => {
     showEditBatch, setShowEditBatch,
     showUsageHistory, setShowUsageHistory,
     showPrintModal, setShowPrintModal,
+    showRequalify, setShowRequalify,
     selectedBatch, setSelectedBatch,
 
     // CRUD

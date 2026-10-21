@@ -159,6 +159,12 @@ pub struct UseReagentRequest {
     pub notes: Option<String>,
     /// Optional: limit auto-distribution to these containers (selected group)
     pub container_ids: Option<Vec<String>>,
+
+    /// Explicit confirmation to use an expired batch
+    pub allow_expired: Option<bool>,
+    /// Required when allow_expired is set
+    #[validate(length(max = 500, message = "Reason cannot exceed 500 characters"))]
+    pub expired_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -207,6 +213,8 @@ pub async fn use_reagent(
     req.purpose = request.purpose.as_deref();
     req.notes = request.notes.as_deref();
     req.container_ids = request.container_ids.as_deref();
+    req.allow_expired = request.allow_expired.unwrap_or(false);
+    req.expired_reason = request.expired_reason.as_deref();
     let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
 
