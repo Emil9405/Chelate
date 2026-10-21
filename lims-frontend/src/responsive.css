@@ -1,0 +1,60 @@
+/* =========================================================
+   Phone layout (< 768px)
+   Most components use inline styles, so structural changes are done in JS
+   (useIsMobile). This file only holds rules that classes can express:
+   room for the bottom tab bar, modal sizing, and overflow containment.
+   ========================================================= */
+
+@media (max-width: 767px) {
+  /* Space for the fixed bottom tab bar (see Header.js) */
+  body.has-mobile-nav {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+
+  /* Modals: use the whole width, keep the header and actions reachable */
+  .modal-overlay {
+    padding: 8px !important;
+    align-items: flex-end !important;
+  }
+  .modal-content {
+    width: 100% !important;
+    border-radius: 16px !important;
+    max-height: calc(100vh - 16px) !important;
+    max-height: calc(100dvh - 16px) !important;
+  }
+
+  /* Multi-column form layouts inside modals stack into one column
+     (matches inline styles like gridTemplateColumns: '1fr 1fr', '340px 1fr') */
+  .modal-content [style*="grid-template-columns: 1fr 1fr"],
+  .modal-content [style*="grid-template-columns: 340px 1fr"],
+  .modal-content [style*="grid-template-columns: repeat(4, 1fr)"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  /* Side-by-side panes that each scroll (e.g. reagent details):
+     on a phone the whole body scrolls as one column */
+  .modal-two-col {
+    display: block !important;
+    overflow-y: auto !important;
+  }
+  .modal-two-col > * {
+    overflow: visible !important;
+    border-right: none !important;
+  }
+
+  /* Wide tables scroll inside their card instead of widening the page */
+  .table-scroll {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-scroll table {
+    min-width: 560px;
+  }
+
+  /* Bigger tap targets for form controls (and no iOS zoom-on-focus) */
+  input:not([type=checkbox]):not([type=radio]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

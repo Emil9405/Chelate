@@ -442,12 +442,13 @@ const ViewBatchCard = ({ batch, reagent, rooms, isExpanded, onToggle, onAction, 
         onClick={onToggle}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexWrap: 'wrap', gap: '6px 10px',
           padding: '10px 14px', cursor: 'pointer',
           backgroundColor: isExpanded ? '#f7faff' : '#fff',
           transition: 'background 0.15s',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px 10px', flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
           <span style={{ fontWeight: '700', fontSize: '0.9rem', color: '#1a365d', whiteSpace: 'nowrap' }}>
             {batch.batch_number}
           </span>
@@ -621,13 +622,13 @@ const totalDisplay = Object.entries(totalsByUnit)
   }).length;
 
   return (
-    <div style={{
+    <div className="modal-overlay" style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
       backgroundColor: 'rgba(0,0,0,0.5)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       zIndex: 2000,
     }}>
-      <div style={{
+      <div className="modal-content" style={{
         backgroundColor: 'white', borderRadius: '14px',
         maxWidth: '1060px', width: '95%', maxHeight: '90vh',
         display: 'flex', flexDirection: 'column',
@@ -662,7 +663,7 @@ const totalDisplay = Object.entries(totalsByUnit)
         </div>
 
         {/* ===== Two-Column Body ===== */}
-        <div style={{
+        <div className="modal-two-col" style={{
           display: 'grid', gridTemplateColumns: '340px 1fr',
           flex: 1, overflow: 'hidden', minHeight: 0,
         }}>

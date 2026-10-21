@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../services/api';
 import StatsCard from './StatsCard';
 import LoadingOverlay from './LoadingOverlay';
+import useIsMobile from './hooks/useIsMobile';
 import {
   FlaskIcon,
   DatabaseIcon,
@@ -236,6 +237,9 @@ const WrenchIcon = ({ size = 24, color = 'currentColor' }) => (
 // ==================== MAIN DASHBOARD COMPONENT ====================
 
 const Dashboard = ({ user, showToast, onNavigate }) => {
+  const isMobile = useIsMobile();
+  // <=1200px: 2 stat cards per row, side column moves under the charts
+  const isNarrow = useIsMobile('(max-width: 1200px)');
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [recentActivity, setRecentActivity] = useState([]);
@@ -403,7 +407,8 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
   ] : [];
 
   return (
-    <div className="dashboard">
+    // Same page frame as the other sections: clear the fixed header, side padding
+    <div className="dashboard" style={isMobile ? { padding: '12px', paddingTop: '68px' } : { padding: '20px', paddingTop: '90px' }}>
       {loading && <LoadingOverlay />}
 
       {/* Page Header */}
@@ -411,11 +416,13 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: '8px'
+        marginBottom: '8px',
+        gap: '12px',
+        flexWrap: 'wrap'
       }}>
-        <div>
+        <div style={{ minWidth: 0 }}>
           <h1 style={{
-            fontSize: '1.75rem',
+            fontSize: isMobile ? '1.35rem' : '1.75rem',
             fontWeight: '800',
             color: '#1a365d',
             marginBottom: '4px'
@@ -473,9 +480,9 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
       {/* Stats Grid — 4 actionable cards */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
-        gap: '20px',
-        marginBottom: '24px'
+        gridTemplateColumns: isNarrow ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, 1fr)',
+        gap: isMobile ? '10px' : '20px',
+        marginBottom: isMobile ? '16px' : '24px'
       }}>
         {statsConfig.map(stat => (
           <StatsCard
@@ -493,8 +500,8 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
       {/* Main Grid */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: '1fr 350px',
-        gap: '24px'
+        gridTemplateColumns: isNarrow ? 'minmax(0, 1fr)' : '1fr 350px',
+        gap: isMobile ? '16px' : '24px'
       }}>
         {/* Left Column — Charts */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -752,21 +759,6 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
       </div>
 
       {/* Responsive Styles */}
-      <style>{`
-        @media (max-width: 1200px) {
-          .dashboard > div:nth-child(4) {
-            grid-template-columns: repeat(2, 1fr) !important;
-          }
-          .dashboard > div:nth-child(5) {
-            grid-template-columns: 1fr !important;
-          }
-        }
-        @media (max-width: 768px) {
-          .dashboard > div:nth-child(4) {
-            grid-template-columns: 1fr !important;
-          }
-        }
-      `}</style>
     </div>
   );
 };
