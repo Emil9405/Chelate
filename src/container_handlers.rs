@@ -93,16 +93,7 @@ async fn validate_position(pool: &sqlx::SqlitePool, position_id: &str) -> ApiRes
     .map_err(|_| ApiError::not_found("Storage position"))
 }
 
-/// Compute container status from quantity vs original
-fn compute_container_status(quantity: f64, original_quantity: f64) -> &'static str {
-    if quantity <= 0.001 {
-        "empty"
-    } else if (quantity - original_quantity).abs() < 0.001 {
-        "full"
-    } else {
-        "partial"
-    }
-}
+use crate::consumption::compute_container_status;
 
 /// Get next sequence number for batch
 async fn next_sequence(pool: &sqlx::SqlitePool, batch_id: &str) -> ApiResult<i64> {
@@ -644,154 +635,27 @@ pub async fn use_from_container(
     request.validate()?;
     let container_id = path.into_inner();
     let claims = get_current_user(&http_request)?;
-    let now = Utc::now();
 
     let container = get_container_or_404(&app_state.db_pool, &container_id).await?;
-    let batch = get_batch_or_404(&app_state.db_pool, &container.batch_id).await?;
-
-    // Validate: enough in this container
-    if request.quantity > container.quantity + 0.001 {
-        return Err(ApiError::bad_request(&format!(
-            "Insufficient quantity in container #{}: available {:.2} {}, requested {:.2}",
-            container.sequence_number, container.quantity, batch.unit, request.quantity
-        )));
-    }
 
     let mut tx = app_state.db_pool.begin().await?;
-
-    // 1. Update container quantity + mark opened
-    let new_container_qty = (container.quantity - request.quantity).max(0.0);
-    let new_status = compute_container_status(new_container_qty, container.original_quantity);
-
-    if !container.is_opened {
-        // First time opening
-        sqlx::query(
-            r#"UPDATE batch_containers 
-               SET quantity = ?, is_opened = 1, opened_at = ?, opened_by = ?,
-                   status = ?, updated_at = ?
-               WHERE id = ?"#
-        )
-        .bind(new_container_qty)
-        .bind(&now)
-        .bind(&claims.sub)
-        .bind(new_status)
-        .bind(&now)
-        .bind(&container_id)
-        .execute(&mut *tx)
-        .await?;
-    } else {
-        sqlx::query(
-            "UPDATE batch_containers SET quantity = ?, status = ?, updated_at = ? WHERE id = ?"
-        )
-        .bind(new_container_qty)
-        .bind(new_status)
-        .bind(&now)
-        .bind(&container_id)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-  
-// 2. Sync batch total quantity
-    let new_batch_qty = (batch.quantity - request.quantity).max(0.0);
-    let low_stock_threshold = batch.original_quantity * 0.2;
-
-    // Container-based depletion check: a batch is "physically depleted" once every
-    // container belonging to it is empty or disposed. This is more reliable than
-    // comparing the float quantity field, because it doesn't depend on arithmetic
-    // precision after multi-step auto-distribute. The query runs inside the same
-    // transaction, so it sees the just-updated container status from step 1 above.
-    let (total_containers, active_containers): (i64, i64) = sqlx::query_as(
-        r#"SELECT
-              COUNT(*),
-              COALESCE(SUM(CASE WHEN status NOT IN ('empty','disposed') THEN 1 ELSE 0 END), 0)
-           FROM batch_containers
-           WHERE batch_id = ?"#
-    )
-    .bind(&batch.id)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    let physically_depleted = total_containers > 0 && active_containers == 0;
-
-    let batch_status = if physically_depleted || new_batch_qty <= 0.001 {
-        // Either every container is gone, OR (legacy fallback) the quantity is
-        // effectively zero. Either way — batch is done.
-        "depleted"
-    } else if new_batch_qty <= low_stock_threshold {
-        "low_stock"
-    } else {
-        "available"
-    };
-
-    sqlx::query(
-        "UPDATE batches SET quantity = ?, status = ?, updated_by = ?, updated_at = ? WHERE id = ?"
-    )
-    .bind(new_batch_qty)
-    .bind(batch_status)
-    .bind(&claims.sub)
-    .bind(&now)
-    .bind(&batch.id)
-    .execute(&mut *tx)
-    .await?;
-
-    // 3. Log usage
-    let usage_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"INSERT INTO usage_logs (id, reagent_id, batch_id, user_id, quantity_used, unit, purpose, notes, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
-    )
-    .bind(&usage_id)
-    .bind(&batch.reagent_id)
-    .bind(&batch.id)
-    .bind(&claims.sub)
-    .bind(request.quantity)
-    .bind(&batch.unit)
-    .bind(&request.purpose)
-    .bind(&request.notes)
-    .bind(&now)
-    .execute(&mut *tx)
-    .await?;
-
+    let mut req = crate::consumption::ConsumeRequest::new(
+        &container.batch_id, request.quantity, Some(&claims.sub),
+    );
+    req.container_id = Some(&container_id);
+    req.purpose = request.purpose.as_deref();
+    req.notes = request.notes.as_deref();
+    let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
 
-    // Audit: every write-off must be traceable (who, what, how much, from where)
-    let reagent_name: String = sqlx::query_scalar("SELECT name FROM reagents WHERE id = ?")
-        .bind(&batch.reagent_id)
-        .fetch_optional(&app_state.db_pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| batch.reagent_id.clone());
-
-    let mut cs = crate::audit::ChangeSet::new();
-    cs.add_f64("quantity", batch.quantity, new_batch_qty);
-    if batch.status != batch_status {
-        cs.add("status", &batch.status, batch_status);
-    }
-    cs.add_f64(
-        &format!("container #{} quantity", container.sequence_number),
-        container.quantity,
-        new_container_qty,
-    );
-
     crate::audit::audit_with_changes(
-        &app_state.db_pool, &claims.sub, "use_reagent", "batch", &batch.id,
-        &format!(
-            "Used {} {} from reagent \"{}\" batch {}, container #{} (remaining in batch: {} {})",
-            request.quantity, batch.unit, reagent_name, batch.batch_number,
-            container.sequence_number, new_batch_qty, batch.unit
-        ),
-        &cs, &http_request,
+        &app_state.db_pool, &claims.sub, "use_reagent", "batch", &result.batch_id,
+        &result.describe(None), &result.audit_changes(), &http_request,
     ).await;
 
-    info!(
-        "📦 Used {:.2} {} from container #{} (batch {}). Container: {:.2} → {:.2}. Batch: {:.2} → {:.2}",
-        request.quantity, batch.unit,
-        container.sequence_number, batch.batch_number,
-        container.quantity, new_container_qty,
-        batch.quantity, new_batch_qty,
-    );
+    info!("📦 {}", result.describe(None));
+
+    let draw = result.containers.first();
 
     #[derive(Serialize)]
     struct UseResponse {
@@ -808,17 +672,17 @@ pub async fn use_from_container(
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         UseResponse {
-            usage_id,
+            usage_id: result.usage_id.clone(),
             container_id: container.id,
-            quantity_used: request.quantity,
-            container_remaining: new_container_qty,
-            container_status: new_status.to_string(),
+            quantity_used: result.quantity_used,
+            container_remaining: draw.map(|d| d.quantity_after).unwrap_or(0.0),
+            container_status: draw.map(|d| d.status.clone()).unwrap_or_default(),
             is_opened: true,
-            batch_remaining: new_batch_qty,
-            batch_status: batch_status.to_string(),
-            unit: batch.unit,
+            batch_remaining: result.batch_quantity_after,
+            batch_status: result.status_after.clone(),
+            unit: result.unit.clone(),
         },
-        format!("Dispensed {:.2} from container #{}", request.quantity, container.sequence_number),
+        format!("Dispensed {} from container #{}", result.quantity_used, container.sequence_number),
     )))
 }
 

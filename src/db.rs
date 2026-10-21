@@ -555,8 +555,12 @@ async fn create_batch_triggers(pool: &SqlitePool) -> Result<()> {
         "DROP TRIGGER IF EXISTS trg_batches_delete",
     ];
 
+    // DROP + CREATE on one connection, in one transaction (see
+    // ensure_reagents_fts_update_trigger): otherwise `CREATE ... IF NOT EXISTS`
+    // on another pooled connection with a stale schema could silently skip.
+    let mut tx = pool.begin().await?;
     for query in drop_triggers {
-        let _ = sqlx::query(query).execute(pool).await;
+        sqlx::query(query).execute(&mut *tx).await?;
     }
 
     // Every trigger does a full recompute for the affected reagent(s), using the
@@ -569,14 +573,14 @@ async fn create_batch_triggers(pool: &SqlitePool) -> Result<()> {
         "CREATE TRIGGER IF NOT EXISTS trg_batches_insert AFTER INSERT ON batches \
          BEGIN UPDATE reagents SET {new_set} WHERE id = NEW.reagent_id; END"
     ))
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     sqlx::query(&format!(
         "CREATE TRIGGER IF NOT EXISTS trg_batches_delete AFTER DELETE ON batches \
          BEGIN UPDATE reagents SET {old_set} WHERE id = OLD.reagent_id; END"
     ))
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     // On update also refresh the old reagent if reagent_id changed
@@ -587,8 +591,10 @@ async fn create_batch_triggers(pool: &SqlitePool) -> Result<()> {
             UPDATE reagents SET {old_set} WHERE id = OLD.reagent_id AND OLD.reagent_id != NEW.reagent_id; \
          END"
     ))
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
 
     info!("Batch triggers created successfully (unit-aware).");
     Ok(())
@@ -607,6 +613,7 @@ async fn create_fts_tables(pool: &SqlitePool) -> Result<()> {
     ).fetch_one(pool).await?;
 
     if exists.0 > 0 {
+        ensure_reagents_fts_update_trigger(pool).await?;
         info!("FTS table already exists, skipping creation.");
         return Ok(());
     }
@@ -640,14 +647,7 @@ async fn create_fts_tables(pool: &SqlitePool) -> Result<()> {
     "#).execute(pool).await?;
 
     // UPDATE trigger - update FTS index
-    sqlx::query(r#"
-        CREATE TRIGGER reagents_fts_update AFTER UPDATE ON reagents BEGIN
-            INSERT INTO reagents_fts(reagents_fts, rowid, name, cas_number, formula)
-            VALUES ('delete', OLD.rowid, OLD.name, OLD.cas_number, OLD.formula);
-            INSERT INTO reagents_fts(rowid, name, cas_number, formula)
-            VALUES (NEW.rowid, NEW.name, NEW.cas_number, NEW.formula);
-        END
-    "#).execute(pool).await?;
+    ensure_reagents_fts_update_trigger(pool).await?;
 
     // Populate FTS with existing data
     sqlx::query(r#"
@@ -659,6 +659,28 @@ async fn create_fts_tables(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("INSERT INTO reagents_fts(reagents_fts) VALUES('optimize')").execute(pool).await;
 
     info!("FTS5 table created and populated.");
+    Ok(())
+}
+
+/// Re-index FTS only when an indexed column changes.
+/// A plain `AFTER UPDATE ON reagents` trigger rewrote the FTS row on every
+/// stock change (batch triggers update reagents' cached totals), and the FTS5
+/// write inside that chain made concurrent write-offs fail immediately with
+/// "database is locked" instead of waiting for the lock.
+async fn ensure_reagents_fts_update_trigger(pool: &SqlitePool) -> Result<()> {
+    // DROP + CREATE on one connection, in one transaction: across pooled
+    // connections a stale schema cache can report "already exists".
+    let mut tx = pool.begin().await?;
+    sqlx::query("DROP TRIGGER IF EXISTS reagents_fts_update").execute(&mut *tx).await?;
+    sqlx::query(r#"
+        CREATE TRIGGER reagents_fts_update AFTER UPDATE OF name, cas_number, formula ON reagents BEGIN
+            INSERT INTO reagents_fts(reagents_fts, rowid, name, cas_number, formula)
+            VALUES ('delete', OLD.rowid, OLD.name, OLD.cas_number, OLD.formula);
+            INSERT INTO reagents_fts(rowid, name, cas_number, formula)
+            VALUES (NEW.rowid, NEW.name, NEW.cas_number, NEW.formula);
+        END
+    "#).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
