@@ -208,7 +208,9 @@ const Reagents = ({ user }) => {
           <p style={{ margin: '4px 0 0 0', color: '#718096', fontSize: '0.875rem' }}>Manage your laboratory reagents and batches</p>
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
-          <Button variant="secondary" onClick={() => setShowImportModal(true)} icon={<UploadIcon size={16} />}>Import</Button>
+          {hasPermission('import_data') && (
+            <Button variant="secondary" onClick={() => setShowImportModal(true)} icon={<UploadIcon size={16} />}>Import</Button>
+          )}
           {canEditReagents() && (
               <Button variant="primary" onClick={() => setShowCreateModal(true)} icon={<PlusIcon size={16} />}>Add Reagent</Button>
           )}

@@ -1,7 +1,7 @@
 // src/import_export/equipment.rs
 //! Equipment import/export handlers
 
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpResponse, HttpRequest};
 use actix_multipart::Multipart;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -18,12 +18,14 @@ use super::{save_multipart_to_temp, optimize_sqlite_for_bulk};
 // EQUIPMENT IMPORT
 // ==========================================
 
-pub async fn import_equipment_json(app_state: web::Data<Arc<AppState>>, body: web::Json<Vec<EquipmentImportDto>>) -> ApiResult<HttpResponse> {
+pub async fn import_equipment_json(app_state: web::Data<Arc<AppState>>, body: web::Json<Vec<EquipmentImportDto>>, req: HttpRequest) -> ApiResult<HttpResponse> {
+    crate::auth_handlers::require_permission_key(&req, &app_state.db_pool, "import_data", crate::auth::UserRole::can_import_data).await?;
     let count = import_equipment_logic(&app_state.db_pool, body.into_inner()).await?;
     Ok(HttpResponse::Ok().json(ApiResponse::<()>::success_with_message((), format!("Imported {} equipment", count))))
 }
 
-pub async fn import_equipment_excel(app_state: web::Data<Arc<AppState>>, payload: Multipart) -> ApiResult<HttpResponse> {
+pub async fn import_equipment_excel(app_state: web::Data<Arc<AppState>>, payload: Multipart, req: HttpRequest) -> ApiResult<HttpResponse> {
+    crate::auth_handlers::require_permission_key(&req, &app_state.db_pool, "import_data", crate::auth::UserRole::can_import_data).await?;
     let file_path = save_multipart_to_temp(payload).await?;
     let path_clone = file_path.clone();
     let items_res = web::block(move || {
@@ -45,8 +47,8 @@ pub async fn import_equipment_excel(app_state: web::Data<Arc<AppState>>, payload
     }
 }
 
-pub async fn import_equipment(app_state: web::Data<Arc<AppState>>, body: web::Json<Vec<EquipmentImportDto>>) -> ApiResult<HttpResponse> {
-    import_equipment_json(app_state, body).await
+pub async fn import_equipment(app_state: web::Data<Arc<AppState>>, body: web::Json<Vec<EquipmentImportDto>>, req: HttpRequest) -> ApiResult<HttpResponse> {
+    import_equipment_json(app_state, body, req).await
 }
 
 async fn import_equipment_logic(pool: &SqlitePool, items: Vec<EquipmentImportDto>) -> ApiResult<usize> {

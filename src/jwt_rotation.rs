@@ -142,33 +142,37 @@ pub fn update_env_file(env_path: &str, new_secret: &str) -> Result<()> {
 
 
 
-    // Создаем резервную копию
-
-    let backup_path = format!("{}.backup.{}", env_path, Utc::now().timestamp());
-
-    fs::write(&backup_path, &content)
-
-        .context("Failed to create backup")?;
-
-
-
-    // Записываем новый файл
-
-    fs::write(path, new_content)
-
+    // No backup copies: each one kept a full copy of .env (old JWT secret,
+    // admin password) next to the project and they ended up in the repository.
+    // Write to a temp file and rename, so a crash never leaves a truncated .env.
+    let tmp_path = format!("{}.tmp", env_path);
+    write_private(&tmp_path, &new_content)
+        .context("Failed to write temporary .env file")?;
+    fs::rename(&tmp_path, path)
         .context("Failed to update .env file")?;
 
-
-
-    log::info!("✓ JWT secret rotated, backup saved to: {}", backup_path);
-
-
+    log::info!("✓ JWT secret rotated in {}", env_path);
 
     Ok(())
 
 }
 
 
+
+/// Write a file readable only by the owner (0600 on Unix)
+fn write_private(path: &str, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(content.as_bytes())?;
+    f.sync_all()
+}
 
 /// Инициализирует таблицу для отслеживания ротации ключей
 

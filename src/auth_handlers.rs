@@ -269,6 +269,12 @@ pub async fn login(
         return Err(ApiError::BadRequest("Invalid username or password".to_string()));
     }
 
+    // Deactivated accounts cannot sign in (checked after the password so the
+    // response does not reveal which usernames exist)
+    if !user.is_active {
+        return Err(ApiError::AuthError("Account is disabled. Contact an administrator.".to_string()));
+    }
+
     // Check if lock has expired and reset
     if let Some(locked_until) = user.locked_until {
         if Utc::now() > locked_until {
@@ -311,40 +317,16 @@ pub async fn register(
 ) -> ApiResult<HttpResponse> {
     request.validate()?;
 
-    // Determine user role with transaction to prevent race condition
-    let role = if let Ok(claims) = get_current_user(&http_request) {
-        // Admin is creating a new user
-        check_permission(&claims, |role| role.can_manage_users())?;
-
-        // Admin can specify role or default to Viewer
-        if let Some(role_str) = &request.role {
-            UserRole::from_str(role_str)
-                .ok_or_else(|| ApiError::BadRequest("Invalid role specified".to_string()))?
-        } else {
-            UserRole::Viewer
-        }
-    } else {
-        // FIXED: Use transaction to prevent race condition on first user
-        let mut tx = app_state.db_pool.begin().await?;
-        
-        // Lock users table and count within transaction
-        let user_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM users"
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let role = if user_count.0 == 0 {
-            UserRole::Admin // First user becomes admin
-        } else {
-            UserRole::Viewer // Self-registration only allows Viewer
-        };
-        
-        // Commit transaction to release lock
-        tx.commit().await?;
-        
-        role
-    };
+    // Public endpoint (outside the JWT middleware). Accounts are created by an
+    // admin via /api/v1/auth/users; self-registration only when explicitly
+    // enabled (AUTH_ALLOW_SELF_REGISTRATION=true), and always as Viewer.
+    // The first admin is created at startup (create_default_admin_if_needed).
+    if !app_state.config.auth.allow_self_registration {
+        return Err(ApiError::Forbidden(
+            "Self-registration is disabled. Ask an administrator to create an account.".to_string()
+        ));
+    }
+    let role = UserRole::Viewer;
 
     // Create user (this will start its own transaction internally)
     let user = User::create(&app_state.db_pool, request.into_inner(), role, &auth_service).await?;
@@ -1481,4 +1463,40 @@ pub async fn get_user_activity(
         .collect();
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(activities)))
+}
+
+// ======== PERMISSION BY KEY ========
+
+/// Check a permission key (e.g. "import_data"). Custom permissions from
+/// user_permissions take priority; without them the role default applies.
+pub async fn require_permission_key(
+    http_request: &HttpRequest,
+    pool: &sqlx::SqlitePool,
+    key: &str,
+    role_default: fn(&UserRole) -> bool,
+) -> ApiResult<crate::auth::Claims> {
+    let claims = get_current_user(http_request)?;
+    if claims.role == UserRole::Admin {
+        return Ok(claims);
+    }
+
+    let custom: Option<(String,)> = sqlx::query_as(
+        "SELECT permissions FROM user_permissions WHERE user_id = ?"
+    )
+        .bind(&claims.sub)
+        .fetch_optional(pool)
+        .await?;
+
+    let allowed = match custom.and_then(|(json,)| {
+        serde_json::from_str::<std::collections::HashMap<String, bool>>(&json).ok()
+    }) {
+        Some(perms) => perms.get(key).copied().unwrap_or(false),
+        None => role_default(&claims.role),
+    };
+
+    if allowed {
+        Ok(claims)
+    } else {
+        Err(ApiError::Forbidden("Insufficient permissions".to_string()))
+    }
 }

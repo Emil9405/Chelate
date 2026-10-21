@@ -593,14 +593,43 @@ pub async fn jwt_middleware(
         }
     };
 
-    match auth_service.verify_token(token) {
-        Ok(claims) => {
-            req.extensions_mut().insert(claims);
-            Ok(req)
-        }
+    let mut claims = match auth_service.verify_token(token) {
+        Ok(claims) => claims,
         Err(err) => {
             log::warn!("JWT verification failed: {}", err);
-            Err((err.into(), req))
+            return Err((err.into(), req));
+        }
+    };
+
+    // A token stays valid for 24h, so check the account on every request:
+    // deactivated/deleted users are rejected at once, and role changes
+    // (e.g. admin -> viewer) apply immediately instead of at token expiry.
+    let pool = match req.app_data::<web::Data<std::sync::Arc<crate::AppState>>>() {
+        Some(state) => state.db_pool.clone(),
+        None => {
+            log::error!("AppState not found in app data");
+            return Err((ApiError::InternalServerError("App state not available".to_string()).into(), req));
+        }
+    };
+    let account: Result<Option<(String, bool)>, sqlx::Error> =
+        sqlx::query_as("SELECT role, is_active FROM users WHERE id = ?")
+            .bind(&claims.sub)
+            .fetch_optional(&pool)
+            .await;
+    match account {
+        Ok(Some((role, true))) => {
+            claims.role = UserRole::from_str(&role).unwrap_or(UserRole::Viewer);
+        }
+        Ok(_) => {
+            log::warn!("Rejected token for inactive or deleted user {}", claims.username);
+            return Err((ApiError::Unauthorized("Account is disabled".to_string()).into(), req));
+        }
+        Err(e) => {
+            log::error!("Account check failed: {}", e);
+            return Err((ApiError::InternalServerError("Database error".to_string()).into(), req));
         }
     }
+
+    req.extensions_mut().insert(claims);
+    Ok(req)
 }

@@ -11,6 +11,12 @@
 .env.test
 .env.production
 .env.*.local
+# Backups/temp copies of .env (contain secrets)
+.env.backup*
+*.env.backup*
+.env.tmp
+.env.*
+!.env.example
 
 # ==========================================
 # RUST / CARGO
