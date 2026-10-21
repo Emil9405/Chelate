@@ -755,6 +755,36 @@ pub async fn use_from_container(
 
     tx.commit().await?;
 
+    // Audit: every write-off must be traceable (who, what, how much, from where)
+    let reagent_name: String = sqlx::query_scalar("SELECT name FROM reagents WHERE id = ?")
+        .bind(&batch.reagent_id)
+        .fetch_optional(&app_state.db_pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| batch.reagent_id.clone());
+
+    let mut cs = crate::audit::ChangeSet::new();
+    cs.add_f64("quantity", batch.quantity, new_batch_qty);
+    if batch.status != batch_status {
+        cs.add("status", &batch.status, batch_status);
+    }
+    cs.add_f64(
+        &format!("container #{} quantity", container.sequence_number),
+        container.quantity,
+        new_container_qty,
+    );
+
+    crate::audit::audit_with_changes(
+        &app_state.db_pool, &claims.sub, "use_reagent", "batch", &batch.id,
+        &format!(
+            "Used {} {} from reagent \"{}\" batch {}, container #{} (remaining in batch: {} {})",
+            request.quantity, batch.unit, reagent_name, batch.batch_number,
+            container.sequence_number, new_batch_qty, batch.unit
+        ),
+        &cs, &http_request,
+    ).await;
+
     info!(
         "📦 Used {:.2} {} from container #{} (batch {}). Container: {:.2} → {:.2}. Batch: {:.2} → {:.2}",
         request.quantity, batch.unit,

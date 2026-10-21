@@ -139,7 +139,7 @@ async fn consume_experiment_reagent_protected(
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_experiment_permission(&http_request, auth_handlers::ExperimentAction::Edit, &app_state.db_pool).await?;
     let claims = auth::get_current_user(&http_request)?;
-    experiment_handlers::consume_experiment_reagent(app_state, path, claims.sub).await
+    experiment_handlers::consume_experiment_reagent(app_state, path, claims.sub, &http_request).await
 }
 
 // ==================== ROUTES ====================

@@ -1,73 +1,16 @@
 // src/pagination.rs
-//! Гибридная пагинация: page-based + cursor-based (keyset)
-//! Оптимизировано для 270,000+ записей
+//! Page-based (offset) pagination for the reagents list.
+//! Cursor/keyset pagination was removed: the frontend never used it.
 
 use serde::{Deserialize, Serialize};
 
-// ==================== CURSOR ENCODING ====================
-// Используем простой hex encoding без внешних зависимостей
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-/// Кодирует cursor: (sort_value, id) -> hex
-pub fn encode_cursor(sort_value: f64, id: &str) -> String {
-    let raw = format!("{}|{}", sort_value, id);
-    to_hex(raw.as_bytes())
-}
-
-/// Декодирует cursor: hex -> (sort_value, id)
-pub fn decode_cursor(cursor: &str) -> Option<(f64, String)> {
-    let bytes = from_hex(cursor)?;
-    let raw = String::from_utf8(bytes).ok()?;
-    let mut parts = raw.splitn(2, '|');
-
-    let value: f64 = parts.next()?.parse().ok()?;
-    let id = parts.next()?.to_string();
-
-    Some((value, id))
-}
-
-/// Кодирует cursor для created_at: (timestamp_micros, id) -> hex
-pub fn encode_cursor_datetime(timestamp_micros: i64, id: &str) -> String {
-    let raw = format!("{}|{}", timestamp_micros, id);
-    to_hex(raw.as_bytes())
-}
-
-/// Декодирует cursor для created_at
-pub fn decode_cursor_datetime(cursor: &str) -> Option<(i64, String)> {
-    let bytes = from_hex(cursor)?;
-    let raw = String::from_utf8(bytes).ok()?;
-    let mut parts = raw.splitn(2, '|');
-
-    let ts: i64 = parts.next()?.parse().ok()?;
-    let id = parts.next()?.to_string();
-
-    Some((ts, id))
-}
-
 // ==================== QUERY PARAMETERS ====================
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct HybridPaginationQuery {
     // Page-based
     pub page: Option<i64>,
     pub per_page: Option<i64>,
-
-    // Cursor-based
-    pub cursor: Option<String>,
-    pub direction: Option<String>,  // "next" | "prev"
 
     // Filters
     pub search: Option<String>,     // Backend naming
@@ -78,7 +21,7 @@ pub struct HybridPaginationQuery {
     pub room_id: Option<String>,
     pub zone_id: Option<String>,
     pub position_id: Option<String>,
-    /// Включать ли скрытые реагенты (visibility='hidden'). Дефолт false.
+    /// Include reagents with visibility='hidden'. Defaults to false.
     pub include_hidden: Option<bool>,
 
     // Sorting
@@ -94,14 +37,6 @@ impl HybridPaginationQuery {
         (page, per_page, offset)
     }
 
-    pub fn is_cursor_mode(&self) -> bool {
-        self.cursor.is_some()
-    }
-
-    pub fn direction(&self) -> &str {
-        self.direction.as_deref().unwrap_or("next")
-    }
-
     pub fn sort_by(&self) -> &str {
         self.sort_by.as_deref().unwrap_or("total_quantity")
     }
@@ -110,11 +45,7 @@ impl HybridPaginationQuery {
         self.sort_order.as_deref().unwrap_or("DESC")
     }
 
-    pub fn is_desc(&self) -> bool {
-        self.sort_order().to_uppercase() == "DESC"
-    }
-
-    /// Получить поисковый запрос (поддержка обоих параметров: search и q)
+    /// Search term (supports both `search` and `q` parameters)
     pub fn get_search(&self) -> Option<&str> {
         self.search.as_deref()
             .or(self.q.as_deref())
@@ -133,8 +64,6 @@ pub struct HybridPaginationInfo {
     pub total_pages: Option<i64>,
     pub has_next: bool,
     pub has_prev: bool,
-    pub next_cursor: Option<String>,
-    pub prev_cursor: Option<String>,
 }
 
 impl HybridPaginationInfo {
@@ -147,28 +76,6 @@ impl HybridPaginationInfo {
             total_pages: Some(total_pages),
             has_next: page < total_pages,
             has_prev: page > 1,
-            next_cursor: None,
-            prev_cursor: None,
-        }
-    }
-
-    pub fn from_cursor(
-        total: i64,
-        per_page: i64,
-        has_next: bool,
-        has_prev: bool,
-        next_cursor: Option<String>,
-        prev_cursor: Option<String>,
-    ) -> Self {
-        Self {
-            total,
-            page: None,
-            per_page,
-            total_pages: None,
-            has_next,
-            has_prev,
-            next_cursor,
-            prev_cursor,
         }
     }
 }
@@ -186,33 +93,20 @@ pub struct HybridPaginatedResponse<T> {
     pub sorting: SortingInfo,
 }
 
-// ==================== CTE PAGINATION BUILDER ====================
+// ==================== QUERY BUILDER ====================
 
-/// Построитель SQL запросов с CTE для Deferred Join паттерна
+/// Builds the filtered COUNT query and the LIMIT/OFFSET page query.
 ///
-/// Генерирует запрос вида:
-/// ```sql
-/// WITH ids AS (
-///     SELECT id, total_quantity
-///     FROM reagents
-///     WHERE <filters> AND <keyset_condition>
-///     ORDER BY total_quantity DESC, id ASC
-///     LIMIT 51
-/// )
-/// SELECT r.* FROM reagents r
-/// INNER JOIN ids ON r.id = ids.id
-/// ORDER BY ids.total_quantity DESC, ids.id ASC
-/// ```
+/// Filter params are shared by both queries, so COUNT and the page
+/// always see exactly the same WHERE clause.
 pub struct CtePaginationBuilder {
     table: String,
     select_columns: String,
     sort_column: String,
     sort_order: String,
     conditions: Vec<String>,
-    filter_params: Vec<String>,      // Параметры для фильтров (используются в COUNT)
-    keyset_params: Vec<String>,       // Параметры для keyset (НЕ используются в COUNT)
+    filter_params: Vec<String>,
     limit: i64,
-    keyset_condition: Option<String>,
 }
 
 impl CtePaginationBuilder {
@@ -224,9 +118,7 @@ impl CtePaginationBuilder {
             sort_order: "DESC".to_string(),
             conditions: Vec::new(),
             filter_params: Vec::new(),
-            keyset_params: Vec::new(),
             limit: 50,
-            keyset_condition: None,
         }
     }
 
@@ -235,6 +127,7 @@ impl CtePaginationBuilder {
         self
     }
 
+    /// `column` must come from a whitelist (see `ReagentSortWhitelist`).
     pub fn sort(mut self, column: &str, order: &str) -> Self {
         self.sort_column = column.to_string();
         self.sort_order = if order.to_uppercase() == "ASC" { "ASC".to_string() } else { "DESC".to_string() };
@@ -257,37 +150,14 @@ impl CtePaginationBuilder {
         self
     }
 
-    /// Добавляет условие с множественными параметрами (для LIKE поиска)
+    /// Adds a condition with several params (e.g. multi-column LIKE search)
     pub fn add_search(&mut self, condition: &str, params: Vec<String>) -> &mut Self {
         self.conditions.push(condition.to_string());
         self.filter_params.extend(params);
         self
     }
 
-    /// Добавляет keyset условие для cursor-based пагинации
-    ///
-    /// Для DESC: (sort_col, id) < (cursor_value, cursor_id)
-    /// Для ASC: (sort_col, id) > (cursor_value, cursor_id)
-    pub fn keyset_after(&mut self, cursor_value: f64, cursor_id: &str, is_desc: bool, direction: &str) -> &mut Self {
-        // Определяем операторы в зависимости от направления и порядка
-        let (op1, op2) = match (direction, is_desc) {
-            ("prev", true)  => (">", ">"),  // DESC + prev = идём к большим значениям
-            ("prev", false) => ("<", "<"),  // ASC + prev = идём к меньшим
-            (_, true)       => ("<", "<"),  // DESC + next = идём к меньшим
-            (_, false)      => (">", ">"),  // ASC + next = идём к большим
-        };
-
-        self.keyset_condition = Some(format!(
-            "(({} {} ?) OR ({} = ? AND id {} ?))",
-            self.sort_column, op1, self.sort_column, op2
-        ));
-        self.keyset_params.push(cursor_value.to_string());
-        self.keyset_params.push(cursor_value.to_string());
-        self.keyset_params.push(cursor_id.to_string());
-        self
-    }
-
-    /// Строит COUNT запрос (без keyset, без limit)
+    /// COUNT query (filters only, no limit)
     pub fn build_count(&self) -> (String, Vec<String>) {
         let mut sql = format!("SELECT COUNT(*) FROM {}", self.table);
 
@@ -296,64 +166,10 @@ impl CtePaginationBuilder {
             sql.push_str(&self.conditions.join(" AND "));
         }
 
-        // Возвращаем только параметры для фильтров (без keyset)
         (sql, self.filter_params.clone())
     }
 
-    /// Строит основной запрос с CTE для Deferred Join
-    pub fn build_cte(&self, direction: &str, is_desc: bool) -> (String, Vec<String>) {
-        // Определяем порядок сортировки
-        let order_dir = if direction == "prev" {
-            if is_desc { "ASC" } else { "DESC" }
-        } else {
-            &self.sort_order
-        };
-
-        let secondary_order = if order_dir == "DESC" { "DESC" } else { "ASC" };
-
-        // Собираем WHERE
-        let mut where_parts = self.conditions.clone();
-        if let Some(ref keyset) = self.keyset_condition {
-            where_parts.push(keyset.clone());
-        }
-
-        let where_clause = if where_parts.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_parts.join(" AND "))
-        };
-
-        // CTE запрос
-        let sql = format!(r#"
-            WITH ids AS (
-                SELECT id, {sort_col}
-                FROM {table}
-                {where_clause}
-                ORDER BY {sort_col} {order_dir}, id {secondary_order}
-                LIMIT ?
-            )
-            SELECT {select_cols}
-            FROM {table} r
-            INNER JOIN ids ON r.id = ids.id
-            ORDER BY ids.{sort_col} {order_dir}, ids.id {secondary_order}
-        "#,
-                          sort_col = self.sort_column,
-                          table = self.table,
-                          where_clause = where_clause,
-                          order_dir = order_dir,
-                          secondary_order = secondary_order,
-                          select_cols = self.select_columns.replace("*", "r.*"),
-        );
-
-        // Собираем все параметры: filter + keyset + limit
-        let mut all_params = self.filter_params.clone();
-        all_params.extend(self.keyset_params.clone());
-        all_params.push((self.limit + 1).to_string()); // +1 для определения has_more
-
-        (sql.trim().to_string(), all_params)
-    }
-
-    /// Строит простой запрос без CTE (для offset-based)
+    /// Page query with LIMIT/OFFSET
     pub fn build_simple(&self, offset: i64) -> (String, Vec<String>) {
         let secondary_order = if self.sort_order == "DESC" { "DESC" } else { "ASC" };
 
@@ -391,7 +207,7 @@ impl CtePaginationBuilder {
 pub struct ReagentSortWhitelist;
 
 impl ReagentSortWhitelist {
-    /// Whitelist разрешённых полей сортировки: (api_field, sql_column)
+    /// Allowed sort fields: (api_field, sql_column)
     const ALLOWED: &'static [(&'static str, &'static str)] = &[
         ("name", "name"),
         ("formula", "formula"),
@@ -419,11 +235,6 @@ impl ReagentSortWhitelist {
             _ => "DESC",
         }
     }
-
-    /// Проверяет, поддерживает ли поле keyset pagination
-    pub fn supports_keyset(field: &str) -> bool {
-        matches!(field, "total_quantity" | "created_at" | "name" | "batches_count")
-    }
 }
 
 // ==================== TESTS ====================
@@ -433,34 +244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hex_encode_decode() {
-        let original = "hello world";
-        let hex = to_hex(original.as_bytes());
-        let decoded = from_hex(&hex).unwrap();
-        assert_eq!(String::from_utf8(decoded).unwrap(), original);
-    }
-
-    #[test]
-    fn test_cursor_encode_decode() {
-        let encoded = encode_cursor(123.45, "abc-123");
-        let (value, id) = decode_cursor(&encoded).unwrap();
-
-        assert!((value - 123.45).abs() < 0.001);
-        assert_eq!(id, "abc-123");
-    }
-
-    #[test]
-    fn test_cursor_datetime() {
-        let ts = 1704067200000000i64; // 2024-01-01
-        let encoded = encode_cursor_datetime(ts, "xyz-789");
-        let (decoded_ts, decoded_id) = decode_cursor_datetime(&encoded).unwrap();
-
-        assert_eq!(decoded_ts, ts);
-        assert_eq!(decoded_id, "xyz-789");
-    }
-
-    #[test]
-    fn test_cte_builder_simple() {
+    fn test_builder_simple() {
         let mut builder = CtePaginationBuilder::new("reagents")
             .sort("total_quantity", "DESC")
             .limit(50);
@@ -475,24 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cte_builder_with_keyset() {
-        let mut builder = CtePaginationBuilder::new("reagents")
-            .sort("total_quantity", "DESC")
-            .limit(50);
-
-        builder
-            .add_condition("status = ?", "active".to_string())
-            .keyset_after(100.5, "abc-123", true, "next");
-
-        let (sql, params) = builder.build_cte("next", true);
-
-        assert!(sql.contains("WITH ids AS"));
-        assert!(sql.contains("INNER JOIN ids"));
-        assert_eq!(params.len(), 5); // status + 3 keyset + limit
-    }
-
-    #[test]
-    fn test_cte_builder_with_search() {
+    fn test_builder_with_search() {
         let mut builder = CtePaginationBuilder::new("reagents")
             .sort("total_quantity", "DESC")
             .limit(50);
@@ -506,7 +273,7 @@ mod tests {
         assert!(count_sql.contains("name LIKE ?"));
         assert_eq!(count_params.len(), 2); // 2 search params
 
-        let (sql, params) = builder.build_simple(0);
+        let (_sql, params) = builder.build_simple(0);
         assert_eq!(params.len(), 4); // 2 search + limit + offset
     }
 
@@ -515,59 +282,28 @@ mod tests {
         assert_eq!(ReagentSortWhitelist::validate("total_quantity"), "total_quantity");
         assert_eq!(ReagentSortWhitelist::validate("name"), "name");
         assert_eq!(ReagentSortWhitelist::validate("invalid_field"), "total_quantity");
-
-        assert!(ReagentSortWhitelist::supports_keyset("total_quantity"));
-        assert!(ReagentSortWhitelist::supports_keyset("created_at"));
-        assert!(!ReagentSortWhitelist::supports_keyset("formula"));
+        assert_eq!(ReagentSortWhitelist::validate("name; DROP TABLE users"), "total_quantity");
+        assert_eq!(ReagentSortWhitelist::validate_order("asc"), "ASC");
+        assert_eq!(ReagentSortWhitelist::validate_order("DESC; --"), "DESC");
     }
 
     #[test]
     fn test_query_get_search() {
-        // Test with 'search' parameter
         let query = HybridPaginationQuery {
-            page: None,
-            per_page: None,
-            cursor: None,
-            direction: None,
             search: Some("acetone".to_string()),
-            q: None,
-            status: None,
-            manufacturer: None,
-            has_stock: None,
-            sort_by: None,
-            sort_order: None,
+            ..Default::default()
         };
         assert_eq!(query.get_search(), Some("acetone"));
 
-        // Test with 'q' parameter (frontend alias)
         let query2 = HybridPaginationQuery {
-            page: None,
-            per_page: None,
-            cursor: None,
-            direction: None,
-            search: None,
             q: Some("benzene".to_string()),
-            status: None,
-            manufacturer: None,
-            has_stock: None,
-            sort_by: None,
-            sort_order: None,
+            ..Default::default()
         };
         assert_eq!(query2.get_search(), Some("benzene"));
 
-        // Test with empty string
         let query3 = HybridPaginationQuery {
-            page: None,
-            per_page: None,
-            cursor: None,
-            direction: None,
             search: Some("   ".to_string()),
-            q: None,
-            status: None,
-            manufacturer: None,
-            has_stock: None,
-            sort_by: None,
-            sort_order: None,
+            ..Default::default()
         };
         assert_eq!(query3.get_search(), None);
     }

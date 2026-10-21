@@ -879,7 +879,8 @@ pub async fn cancel_experiment(
 pub async fn consume_experiment_reagent(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
-    _user_id: String,
+    user_id: String,
+    http_request: &actix_web::HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let (experiment_id, reagent_link_id) = path.into_inner();
 
@@ -939,12 +940,47 @@ pub async fn consume_experiment_reagent(
 
     tx.commit().await?;
 
+    // Audit: experiment consumption is a write-off too
+    let description = experiment_consumption_description(
+        &app_state.db_pool, &reagent.batch_id, qty, &experiment.title,
+    ).await;
+    crate::audit::audit(
+        &app_state.db_pool, &user_id, "use_reagent", "batch", &reagent.batch_id,
+        &description, http_request,
+    ).await;
+
     Ok(HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "message": "Reagent consumed successfully",
         "reagent_id": reagent_link_id,
         "quantity_consumed": qty
     }))))
 }
+/// Human-readable audit text for an experiment write-off
+async fn experiment_consumption_description(
+    pool: &sqlx::SqlitePool,
+    batch_id: &str,
+    qty: f64,
+    experiment_title: &str,
+) -> String {
+    let info: Option<(String, String, String, f64)> = sqlx::query_as(
+        "SELECT r.name, b.batch_number, b.unit, b.quantity \
+         FROM batches b JOIN reagents r ON r.id = b.reagent_id WHERE b.id = ?"
+    )
+        .bind(batch_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+
+    match info {
+        Some((name, batch_number, unit, remaining)) => format!(
+            "Used {} {} from reagent \"{}\" batch {} in experiment \"{}\" (remaining: {} {})",
+            qty, unit, name, batch_number, experiment_title, remaining, unit
+        ),
+        None => format!("Used {} from batch {} in experiment \"{}\"", qty, batch_id, experiment_title),
+    }
+}
+
 // ==================== AUTO UPDATE STATUSES ====================
 
 #[derive(Debug, Serialize, Clone)]
@@ -1013,6 +1049,8 @@ pub async fn run_auto_update_statuses(pool: &sqlx::SqlitePool) -> Result<AutoUpd
         .await?;
 
     let completed = to_complete.len() as i32;
+    // (experiment_id, batch_id, quantity) — audited after commit
+    let mut consumed: Vec<(String, String, f64)> = Vec::new();
 
     // 3. Для каждого завершаемого — списываем реагенты
     for exp_id in &to_complete {
@@ -1028,6 +1066,7 @@ pub async fn run_auto_update_statuses(pool: &sqlx::SqlitePool) -> Result<AutoUpd
         for reagent in reagents {
             let qty = reagent.planned_quantity.unwrap_or(0.0);
             if qty > 0.0 {
+                consumed.push((exp_id.clone(), reagent.batch_id.clone(), qty));
                 sqlx::query(r#"
                     UPDATE batches
                     SET quantity = MAX(0, quantity - ?),
@@ -1058,6 +1097,26 @@ pub async fn run_auto_update_statuses(pool: &sqlx::SqlitePool) -> Result<AutoUpd
     }
 
     tx.commit().await?;
+
+    // Audit automatic write-offs (system action: no user, no request)
+    for (exp_id, batch_id, qty) in &consumed {
+        let title: String = sqlx::query_scalar("SELECT title FROM experiments WHERE id = ?")
+            .bind(exp_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| exp_id.clone());
+        let description = format!(
+            "{} (auto-consumed on experiment completion)",
+            experiment_consumption_description(pool, batch_id, *qty, &title).await
+        );
+        if let Err(e) = crate::audit::log_system_activity(
+            pool, "use_reagent", "batch", batch_id, &description,
+        ).await {
+            log::error!("Failed to write audit log for auto-consumption: {}", e);
+        }
+    }
 
     let total_updated = started + completed;
     if total_updated > 0 {

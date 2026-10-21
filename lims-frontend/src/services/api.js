@@ -329,13 +329,6 @@ export const api = {
         });
     },
 
-    // Cursor-based пагинация
-    getReagentsCursor: async (params = {}) => {
-        const queryString = new URLSearchParams(params).toString();
-        const response = await apiCall(`${API_V1_BASE}/reagents/cursor?${queryString}`);
-        return response.data || response;
-    },
-
     importReagents: async (file) => {
         const isJson = file.name.toLowerCase().endsWith('.json');
         const endpoint = isJson

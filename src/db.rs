@@ -19,7 +19,7 @@ pub async fn ensure_performance_indexes(pool: &SqlitePool) -> Result<(), sqlx::E
         r#"CREATE INDEX IF NOT EXISTS idx_reagents_name ON reagents(name);"#,
         r#"CREATE INDEX IF NOT EXISTS idx_reagents_created_at ON reagents(created_at DESC, id ASC);"#,
 
-        // Critical index for keyset pagination by total_quantity
+        // Indexes for sorting the reagent list by total_quantity
         r#"CREATE INDEX IF NOT EXISTS idx_reagents_total_qty ON reagents(total_quantity DESC, id ASC);"#,
         r#"CREATE INDEX IF NOT EXISTS idx_reagents_total_qty_asc ON reagents(total_quantity ASC, id DESC);"#,
 
@@ -548,142 +548,48 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
 async fn create_batch_triggers(pool: &SqlitePool) -> Result<()> {
     info!("Creating batch triggers for reagent cache (unit-aware)...");
- 
+
     let drop_triggers = [
         "DROP TRIGGER IF EXISTS trg_batches_insert",
         "DROP TRIGGER IF EXISTS trg_batches_update",
         "DROP TRIGGER IF EXISTS trg_batches_delete",
     ];
- 
+
     for query in drop_triggers {
         let _ = sqlx::query(query).execute(pool).await;
     }
- 
-    // INSERT trigger — add converted quantity
-    sqlx::query(r#"
-        CREATE TRIGGER IF NOT EXISTS trg_batches_insert
-        AFTER INSERT ON batches
-        WHEN NEW.status = 'available' AND NEW.deleted_at IS NULL
-        BEGIN
-            UPDATE reagents SET
-                total_quantity = total_quantity + NEW.quantity * CASE LOWER(NEW.unit)
-                    WHEN 'kg' THEN 1000.0  WHEN 'g' THEN 1.0  WHEN 'mg' THEN 0.001
-                    WHEN 'μg' THEN 0.000001  WHEN 'ug' THEN 0.000001
-                    WHEN 'l' THEN 1000.0  WHEN 'ml' THEN 1.0
-                    WHEN 'μl' THEN 0.001  WHEN 'ul' THEN 0.001
-                    ELSE 1.0
-                END,
-                batches_count = batches_count + 1,
-                primary_unit = COALESCE(primary_unit,
-                    CASE
-                        WHEN LOWER(NEW.unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                        WHEN LOWER(NEW.unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                        ELSE NEW.unit
-                    END
-                ),
-                updated_at = datetime('now')
-            WHERE id = NEW.reagent_id;
-        END
-    "#)
+
+    // Every trigger does a full recompute for the affected reagent(s), using the
+    // same SQL as startup init and manual rebuild (see reagent_stock.rs), so the
+    // cache cannot drift between incremental and full calculations.
+    let new_set = crate::reagent_stock::cache_set_clause("NEW.reagent_id");
+    let old_set = crate::reagent_stock::cache_set_clause("OLD.reagent_id");
+
+    sqlx::query(&format!(
+        "CREATE TRIGGER IF NOT EXISTS trg_batches_insert AFTER INSERT ON batches \
+         BEGIN UPDATE reagents SET {new_set} WHERE id = NEW.reagent_id; END"
+    ))
         .execute(pool)
         .await?;
- 
-    // DELETE trigger — subtract converted quantity
-    sqlx::query(r#"
-        CREATE TRIGGER IF NOT EXISTS trg_batches_delete
-        AFTER DELETE ON batches
-        WHEN OLD.status = 'available' AND OLD.deleted_at IS NULL
-        BEGIN
-            UPDATE reagents SET
-                total_quantity = MAX(0, total_quantity - OLD.quantity * CASE LOWER(OLD.unit)
-                    WHEN 'kg' THEN 1000.0  WHEN 'g' THEN 1.0  WHEN 'mg' THEN 0.001
-                    WHEN 'μg' THEN 0.000001  WHEN 'ug' THEN 0.000001
-                    WHEN 'l' THEN 1000.0  WHEN 'ml' THEN 1.0
-                    WHEN 'μl' THEN 0.001  WHEN 'ul' THEN 0.001
-                    ELSE 1.0
-                END),
-                batches_count = MAX(0, batches_count - 1),
-                updated_at = datetime('now')
-            WHERE id = OLD.reagent_id;
-        END
-    "#)
+
+    sqlx::query(&format!(
+        "CREATE TRIGGER IF NOT EXISTS trg_batches_delete AFTER DELETE ON batches \
+         BEGIN UPDATE reagents SET {old_set} WHERE id = OLD.reagent_id; END"
+    ))
         .execute(pool)
         .await?;
- 
-    // UPDATE trigger — full recalculation with conversion
-    sqlx::query(r#"
-        CREATE TRIGGER IF NOT EXISTS trg_batches_update
-        AFTER UPDATE ON batches
-        BEGIN
-            UPDATE reagents SET
-                total_quantity = (
-                    SELECT COALESCE(SUM(
-                        quantity * CASE LOWER(unit)
-                            WHEN 'kg' THEN 1000.0  WHEN 'g' THEN 1.0  WHEN 'mg' THEN 0.001
-                            WHEN 'μg' THEN 0.000001  WHEN 'ug' THEN 0.000001
-                            WHEN 'l' THEN 1000.0  WHEN 'ml' THEN 1.0
-                            WHEN 'μl' THEN 0.001  WHEN 'ul' THEN 0.001
-                            ELSE 1.0
-                        END
-                    ), 0)
-                    FROM batches
-                    WHERE reagent_id = NEW.reagent_id AND status = 'available' AND deleted_at IS NULL
-                ),
-                batches_count = (
-                    SELECT COUNT(*)
-                    FROM batches
-                    WHERE reagent_id = NEW.reagent_id AND status = 'available' AND deleted_at IS NULL
-                ),
-                primary_unit = (
-                    SELECT CASE
-                        WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                        WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                        ELSE unit
-                    END
-                    FROM batches
-                    WHERE reagent_id = NEW.reagent_id AND status = 'available' AND deleted_at IS NULL
-                    LIMIT 1
-                ),
-                updated_at = datetime('now')
-            WHERE id = NEW.reagent_id;
- 
-            -- If reagent_id changed, update the old reagent as well
-            UPDATE reagents SET
-                total_quantity = (
-                    SELECT COALESCE(SUM(
-                        quantity * CASE LOWER(unit)
-                            WHEN 'kg' THEN 1000.0  WHEN 'g' THEN 1.0  WHEN 'mg' THEN 0.001
-                            WHEN 'μg' THEN 0.000001  WHEN 'ug' THEN 0.000001
-                            WHEN 'l' THEN 1000.0  WHEN 'ml' THEN 1.0
-                            WHEN 'μl' THEN 0.001  WHEN 'ul' THEN 0.001
-                            ELSE 1.0
-                        END
-                    ), 0)
-                    FROM batches
-                    WHERE reagent_id = OLD.reagent_id AND status = 'available' AND deleted_at IS NULL
-                ),
-                batches_count = (
-                    SELECT COUNT(*)
-                    FROM batches
-                    WHERE reagent_id = OLD.reagent_id AND status = 'available' AND deleted_at IS NULL
-                ),
-                primary_unit = (
-                    SELECT CASE
-                        WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                        WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                        ELSE unit
-                    END
-                    FROM batches
-                    WHERE reagent_id = OLD.reagent_id AND status = 'available' AND deleted_at IS NULL
-                    LIMIT 1
-                ),
-                updated_at = datetime('now')
-            WHERE id = OLD.reagent_id AND OLD.reagent_id != NEW.reagent_id;
-        END
-    "#)
+
+    // On update also refresh the old reagent if reagent_id changed
+    sqlx::query(&format!(
+        "CREATE TRIGGER IF NOT EXISTS trg_batches_update AFTER UPDATE ON batches \
+         BEGIN \
+            UPDATE reagents SET {new_set} WHERE id = NEW.reagent_id; \
+            UPDATE reagents SET {old_set} WHERE id = OLD.reagent_id AND OLD.reagent_id != NEW.reagent_id; \
+         END"
+    ))
         .execute(pool)
         .await?;
- 
+
     info!("Batch triggers created successfully (unit-aware).");
     Ok(())
 }
@@ -761,44 +667,16 @@ async fn create_fts_tables(pool: &SqlitePool) -> Result<()> {
 
 async fn initialize_reagent_cache(pool: &SqlitePool) -> Result<()> {
     info!("Initializing reagent cache fields (unit-aware)...");
- 
-    let result = sqlx::query(r#"
-        UPDATE reagents SET
-            total_quantity = (
-                SELECT COALESCE(SUM(
-                    quantity * CASE LOWER(unit)
-                        WHEN 'kg' THEN 1000.0  WHEN 'g' THEN 1.0  WHEN 'mg' THEN 0.001
-                        WHEN 'μg' THEN 0.000001  WHEN 'ug' THEN 0.000001
-                        WHEN 'l' THEN 1000.0  WHEN 'ml' THEN 1.0
-                        WHEN 'μl' THEN 0.001  WHEN 'ul' THEN 0.001
-                        ELSE 1.0
-                    END
-                ), 0)
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-            ),
-            batches_count = (
-                SELECT COUNT(*)
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-            ),
-            primary_unit = (
-                SELECT CASE
-                    WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                    WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                    ELSE unit
-                END
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-                LIMIT 1
-            )
-        WHERE EXISTS (SELECT 1 FROM batches WHERE reagent_id = reagents.id AND deleted_at IS NULL)
-           OR total_quantity != 0
-           OR batches_count != 0
-    "#)
-        .execute(pool)
-        .await?;
- 
+
+    let sql = format!(
+        "UPDATE reagents SET {} \
+         WHERE EXISTS (SELECT 1 FROM batches WHERE reagent_id = reagents.id AND deleted_at IS NULL) \
+            OR total_quantity != 0 \
+            OR batches_count != 0",
+        crate::reagent_stock::cache_set_clause("reagents.id")
+    );
+    let result = sqlx::query(&sql).execute(pool).await?;
+
     info!("Reagent cache initialized: {} rows updated", result.rows_affected());
     Ok(())
 }
@@ -991,41 +869,12 @@ pub async fn get_table_columns(pool: &SqlitePool, table: &str) -> Result<Vec<Str
 
 /// Rebuild reagent cache manually (for maintenance)
 pub async fn rebuild_reagent_cache(pool: &SqlitePool) -> Result<u64> {
-    let result = sqlx::query(r#"
-        UPDATE reagents SET
-            total_quantity = (
-                SELECT COALESCE(SUM(
-                    quantity * CASE LOWER(unit)
-                        WHEN 'kg' THEN 1000.0  WHEN 'g' THEN 1.0  WHEN 'mg' THEN 0.001
-                        WHEN 'μg' THEN 0.000001  WHEN 'ug' THEN 0.000001
-                        WHEN 'l' THEN 1000.0  WHEN 'ml' THEN 1.0
-                        WHEN 'μl' THEN 0.001  WHEN 'ul' THEN 0.001
-                        ELSE 1.0
-                    END
-                ), 0)
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-            ),
-            batches_count = (
-                SELECT COUNT(*)
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-            ),
-            primary_unit = (
-                SELECT CASE
-                    WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                    WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                    ELSE unit
-                END
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-                LIMIT 1
-            ),
-            updated_at = datetime('now')
-    "#)
-        .execute(pool)
-        .await?;
- 
+    let sql = format!(
+        "UPDATE reagents SET {}",
+        crate::reagent_stock::cache_set_clause("reagents.id")
+    );
+    let result = sqlx::query(&sql).execute(pool).await?;
+
     Ok(result.rows_affected())
 }
 

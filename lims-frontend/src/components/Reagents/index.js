@@ -66,8 +66,7 @@ const Reagents = ({ user }) => {
     refresh,
     actions
   } = useReagents(activeFilters, {
-    initialPerPage: 20,
-    useCursor: false
+    initialPerPage: 20
   });
 
   useEffect(() => {

@@ -931,8 +931,9 @@ pub async fn get_low_stock_batches(
         SELECT b.*, r.name as reagent_name
         FROM batches b
         JOIN reagents r ON b.reagent_id = r.id
-        WHERE b.status = 'available'
+        WHERE b.status IN ('available', 'low_stock', 'in_use')
           AND b.deleted_at IS NULL
+          AND r.deleted_at IS NULL
           AND b.original_quantity > 0
           AND (b.quantity / b.original_quantity * 100) <= ?
         ORDER BY (b.quantity / b.original_quantity) ASC
@@ -1265,7 +1266,7 @@ pub async fn dispense_units(
     let claims = get_current_user(&http_request)?;
     
     // Проверяем существование реагента
-    let _reagent: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
+    let reagent: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
         .bind(&reagent_id)
         .fetch_one(&app_state.db_pool)
         .await
@@ -1402,6 +1403,22 @@ pub async fn dispense_units(
 
     // Коммитим транзакцию
     tx.commit().await?;
+
+    // Audit: every write-off must be traceable
+    let mut cs = crate::audit::ChangeSet::new();
+    cs.add_f64("quantity", batch.quantity, new_quantity.max(0.0));
+    if batch.status != new_status {
+        cs.add("status", &batch.status, new_status);
+    }
+    crate::audit::audit_with_changes(
+        &app_state.db_pool, &claims.sub, "use_reagent", "batch", &batch_id,
+        &format!(
+            "Dispensed {} unit(s) ({} {}) from reagent \"{}\" batch {} (remaining: {} {})",
+            request.units_to_dispense, quantity_to_dispense, batch.unit, reagent.name,
+            batch.batch_number, new_quantity.max(0.0), batch.unit
+        ),
+        &cs, &http_request,
+    ).await;
 
     // Вычисляем оставшееся количество единиц
     let remaining_units = (new_quantity / pack_size).floor() as i64;

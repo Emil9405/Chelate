@@ -91,16 +91,6 @@ pub struct SortingInfo {
     pub sort_order: String,
 }
 
-/// Cursor-based пагинация для больших данных
-#[derive(Debug, Serialize)]
-pub struct CursorPaginatedResponse<T> {
-    pub data: Vec<T>,
-    pub next_cursor: Option<String>,
-    pub prev_cursor: Option<String>,
-    pub has_more: bool,
-    pub total: i64,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
     pub page: Option<i64>,
@@ -419,14 +409,26 @@ pub async fn get_dashboard_stats(
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let low_stock: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM batches WHERE quantity <= 10 AND status = 'available' AND deleted_at IS NULL AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)")
+    // Low stock = same 20% rule the batch status machine uses (not an absolute
+    // quantity, which would mix units: 10 kg and 10 mg are not comparable)
+    let low_stock: (i64,) = sqlx::query_as(&format!(
+        "SELECT COUNT(*) FROM batches \
+         WHERE status IN {st} AND deleted_at IS NULL \
+           AND (status = 'low_stock' OR (original_quantity > 0 AND quantity <= original_quantity * 0.2)) \
+           AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)",
+        st = crate::reagent_stock::STOCK_STATUSES_SQL
+    ))
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let expiring_soon: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM batches WHERE expiry_date IS NOT NULL AND expiry_date <= datetime('now', '+30 days') AND status = 'available' AND deleted_at IS NULL AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)"
-    )
+    let expiring_soon: (i64,) = sqlx::query_as(&format!(
+        "SELECT COUNT(*) FROM batches \
+         WHERE expiry_date IS NOT NULL \
+           AND datetime(expiry_date) <= datetime('now', '+30 days') \
+           AND status IN {st} AND deleted_at IS NULL \
+           AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)",
+        st = crate::reagent_stock::STOCK_STATUSES_SQL
+    ))
         .fetch_one(&app_state.db_pool)
         .await?;
 
@@ -564,7 +566,8 @@ pub async fn get_dashboard_trends(
         WHERE expiry_date IS NOT NULL
           AND expiry_date <= datetime('now', '+28 days')
           AND expiry_date > datetime('now')
-          AND status = 'available'
+          AND status IN ('available', 'low_stock', 'in_use')
+          AND deleted_at IS NULL
         GROUP BY week_label
         ORDER BY CASE week_label
             WHEN 'This week' THEN 1 WHEN 'Week 2' THEN 2

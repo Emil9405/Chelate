@@ -196,9 +196,6 @@ pub async fn log_activity(
     changes: Option<&str>,
     request: Option<&HttpRequest>,
 ) -> Result<(), sqlx::Error> {
-    let id = Uuid::new_v4().to_string();
-    let now = Utc::now();
-
     let ip_address = request.and_then(|req| {
         req.connection_info()
             .realip_remote_addr()
@@ -211,6 +208,42 @@ pub async fn log_activity(
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string())
     });
+
+    insert_audit_row(
+        pool, user_id, action, entity_type, entity_id, description, changes,
+        ip_address, user_agent,
+    ).await
+}
+
+/// Audit entry for background/system actions (no user, no HTTP request).
+/// Safe to call from `tokio::spawn`ed tasks: holds no `HttpRequest` across awaits.
+pub async fn log_system_activity(
+    pool: &SqlitePool,
+    action: &str,
+    entity_type: &str,
+    entity_id: &str,
+    description: &str,
+) -> Result<(), sqlx::Error> {
+    insert_audit_row(
+        pool, None, action, entity_type, Some(entity_id), Some(description), None,
+        None, None,
+    ).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_audit_row(
+    pool: &SqlitePool,
+    user_id: Option<&str>,
+    action: &str,
+    entity_type: &str,
+    entity_id: Option<&str>,
+    description: Option<&str>,
+    changes: Option<&str>,
+    ip_address: Option<String>,
+    user_agent: Option<String>,
+) -> Result<(), sqlx::Error> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now();
 
     sqlx::query(
         r#"INSERT INTO audit_logs 

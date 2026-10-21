@@ -357,6 +357,7 @@ mod tests {
             instructor: Some("Dr. Smith".to_string()),
             student_group: Some("Group 101".to_string()),
             location: Some("Lab 101".to_string()),
+            room_id: None,
             protocol: None,
             start_date: Some(Utc::now()),
             end_date: Some(Utc::now() + chrono::Duration::hours(2)),
@@ -376,6 +377,7 @@ mod tests {
             instructor: None,
             student_group: None,
             location: None,
+            room_id: None,
             protocol: None,
             start_date: Some(Utc::now()),
             end_date: None, // Missing!
@@ -385,4 +387,4 @@ mod tests {
         assert!(request.validate_educational().is_err());
     }
 
-}
+}
