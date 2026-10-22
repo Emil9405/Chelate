@@ -17,7 +17,7 @@ import Input from './Input';
 
 const ALLOWED_SORT_FIELDS = new Set([
   'id', 'reagent_id', 'reagent_name', 'batch_number', 'cat_number',
-  'quantity', 'original_quantity', 'reserved_quantity', 'unit',
+  'quantity', 'original_quantity', 'reserved_quantity', 'remaining_percent', 'unit',
   'expiry_date', 'supplier', 'manufacturer', 'received_date',
   'status', 'created_at', 'updated_at', 'days_until_expiry',
   'expiration_status',
@@ -80,7 +80,10 @@ const Reports = ({ user }) => {
   const [reportData, setReportData] = useState([]);
   const [reportMetadata, setReportMetadata] = useState(null);
 
-  const [threshold, setThreshold] = useState(10);
+  // Low-stock threshold: % of each batch's original quantity left (unit-free).
+  // Kept as text so the field can be cleared while typing; the server
+  // default (LOW_STOCK_PERCENT) is loaded from the presets endpoint.
+  const [threshold, setThreshold] = useState('20');
   const [expiringDays, setExpiringDays] = useState(30);
 
   const [page, setPage] = useState(1);
@@ -106,7 +109,7 @@ const Reports = ({ user }) => {
   const [newFilter, setNewFilter] = useState({ field: '', operator: '', value: '' });
 
   const reportPresets = [
-    { value: 'low_stock', label: '📉 Low Stock', description: 'Batches with quantity below threshold' },
+    { value: 'low_stock', label: '📉 Low Stock', description: 'Batches with at most N% of their original quantity left' },
     { value: 'expiring_soon', label: '⏰ Expiring Soon', description: 'Batches expiring within specified days' },
     { value: 'expired', label: '❌ Expired', description: 'Batches that have expired' },
     { value: 'all_batches', label: '📋 All Batches', description: 'Active batches (excludes depleted)' },
@@ -132,6 +135,7 @@ const Reports = ({ user }) => {
   const defaultFields = useMemo(() => [
     { field: 'status', label: 'Status', data_type: 'enum', operators: ['eq', 'ne', 'in'], values: BATCH_STATUSES },
     { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'remaining_percent', label: 'Remaining %', data_type: 'number', operators: ['gt', 'gte', 'lt', 'lte'], values: null },
     { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'], values: null },
     { field: 'location_summary', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null', 'is_not_null'], values: null },
     { field: 'room_names', label: 'Rooms', data_type: 'text', operators: ['like', 'is_null', 'is_not_null'], values: null },
@@ -149,6 +153,7 @@ const Reports = ({ user }) => {
     { field: 'reagent_name', label: 'Reagent', data_type: 'text', visible: true, sortable: true },
     { field: 'batch_number', label: 'Batch #', data_type: 'text', visible: true, sortable: true },
     { field: 'quantity', label: 'Quantity', data_type: 'number', visible: true, sortable: true },
+    { field: 'remaining_percent', label: 'Left %', data_type: 'number', visible: true, sortable: true },
     { field: 'unit', label: 'Unit', data_type: 'text', visible: false, sortable: false },
     { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', visible: true, sortable: true },
     { field: 'days_until_expiry', label: 'Days Left', data_type: 'number', visible: true, sortable: true },
@@ -170,6 +175,13 @@ const Reports = ({ user }) => {
 
   useEffect(() => {
     const loadMetadata = async () => {
+      try {
+        const presets = await api.getReportPresets();
+        const list = presets?.data || presets || [];
+        const low = Array.isArray(list) ? list.find(p => p.id === 'low_stock') : null;
+        const t = low?.default_params?.threshold;
+        if (typeof t === 'number' && t > 0) setThreshold(String(t));
+      } catch (_) { /* keep the local default */ }
       try {
         const fieldsResponse = await api.getReportFields();
         const fields = fieldsResponse?.data || fieldsResponse || [];
@@ -207,7 +219,10 @@ const Reports = ({ user }) => {
       setError('');
 
       const presetParams = {};
-      if (activeReport === 'low_stock') presetParams.threshold = threshold;
+      if (activeReport === 'low_stock') {
+        const t = parseFloat(threshold);
+        if (t > 0 && t <= 100) presetParams.threshold = t;
+      }
       else if (activeReport === 'expiring_soon') presetParams.days = expiringDays;
 
       const requestBody = {
@@ -328,7 +343,10 @@ const Reports = ({ user }) => {
     setExporting(true);
     try {
       const presetParams = {};
-      if (activeReport === 'low_stock') presetParams.threshold = threshold;
+      if (activeReport === 'low_stock') {
+        const t = parseFloat(threshold);
+        if (t > 0 && t <= 100) presetParams.threshold = t;
+      }
       if (activeReport === 'expiring_soon') presetParams.days = expiringDays;
 
       const body = {
@@ -403,14 +421,23 @@ const Reports = ({ user }) => {
 
     switch (field) {
       case 'quantity':
-        return (
-          <span style={{
-            color: value < 10 ? '#e53e3e' : value < 20 ? '#dd6b20' : 'inherit',
-            fontWeight: value < 10 ? 'bold' : 'normal'
-          }}>
-            {value} {item.unit || ''}
-          </span>
-        );
+      case 'remaining_percent': {
+        // Colour by share of the original package left, never by the raw
+        // number: 10 L and 10 mg are not comparable.
+        const pct = item.remaining_percent;
+        const lowPct = parseFloat(threshold) || 20;
+        const low = pct !== null && pct !== undefined && pct <= lowPct;
+        const warn = !low && pct !== null && pct !== undefined && pct <= lowPct * 2;
+        const style = {
+          color: low ? '#e53e3e' : warn ? '#dd6b20' : 'inherit',
+          fontWeight: low ? 'bold' : 'normal',
+          whiteSpace: 'nowrap',
+        };
+        if (field === 'remaining_percent') {
+          return <span style={style}>{pct === null || pct === undefined ? '—' : `${pct}%`}</span>;
+        }
+        return <span style={style}>{value} {item.unit || ''}</span>;
+      }
       case 'expiry_date': {
         if (!value) return <span style={{ color: '#a0aec0' }}>—</span>;
         const date = new Date(value);
@@ -491,7 +518,7 @@ const Reports = ({ user }) => {
       default:
         return value || '—';
     }
-  }, [getStatusVariant]);
+  }, [getStatusVariant, threshold]);
 
   const tableColumns = useMemo(() =>
     visibleColumns.map(field => {
@@ -738,10 +765,10 @@ const Reports = ({ user }) => {
 
         {activeReport === 'low_stock' && (
           <div style={{ width: '140px' }}>
-            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Threshold</label>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#718096', marginBottom: '0.25rem' }}>Left ≤ % of original</label>
             <Input
-              type="number" min="1" value={threshold}
-              onChange={(e) => setThreshold(parseInt(e.target.value) || 10)}
+              type="number" min="1" max="100" step="any" value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
             />
           </div>
         )}

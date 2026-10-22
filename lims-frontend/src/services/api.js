@@ -529,9 +529,11 @@ export const api = {
         api.triggerDownload(blob, `batches-${new Date().toISOString().split('T')[0]}.json`);
     },
 
-    getLowStockItems: async (threshold = 10) => {
+    // threshold = % of original quantity left; omitted -> server default
+    getLowStockItems: async (threshold) => {
         try {
-            const response = await apiCall(`${API_V1_BASE}/batches/low-stock?threshold=${threshold}`);
+            const qs = threshold ? `?threshold=${encodeURIComponent(threshold)}` : '';
+            const response = await apiCall(`${API_V1_BASE}/batches/low-stock${qs}`);
             return response.data || response || [];
         } catch (e) {
             return [];

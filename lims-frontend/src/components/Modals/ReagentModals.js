@@ -133,7 +133,7 @@ export const CreateReagentModal = ({ isOpen, onClose, onSave }) => {
               <FormGroup label="Molecular Weight (g/mol)">
                 <Input 
                   type="number" 
-                  step="0.01" 
+                  step="any" 
                   name="molecular_weight" 
                   value={reagentData.molecular_weight} 
                   onChange={handleReagentChange} 
@@ -196,7 +196,7 @@ export const CreateReagentModal = ({ isOpen, onClose, onSave }) => {
                 <FormGroup label="Quantity" required>
                   <Input 
                     type="number" 
-                    step="0.01" 
+                    step="any" 
                     name="quantity" 
                     value={batchData.quantity} 
                     onChange={handleBatchChange} 
@@ -337,7 +337,7 @@ export const EditReagentModal = ({ isOpen, onClose, reagent, onSave }) => {
               <Input 
                 name="molecular_weight" 
                 type="number" 
-                step="0.01" 
+                step="any" 
                 value={formData.molecular_weight} 
                 onChange={handleChange} 
               />

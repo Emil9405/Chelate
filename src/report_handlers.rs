@@ -19,7 +19,7 @@ use crate::query_builders::{
 
 const ALLOWED_SORT_FIELDS: &[&str] = &[
     "id", "reagent_id", "reagent_name", "batch_number", "cat_number",
-    "quantity", "original_quantity", "reserved_quantity", "unit",
+    "quantity", "original_quantity", "reserved_quantity", "remaining_percent", "unit",
     "expiry_date", "supplier", "manufacturer", "received_date",
     "status", "created_at", "updated_at", "days_until_expiry",
     "expiration_status",
@@ -60,6 +60,8 @@ pub struct BatchReportRow {
     pub quantity: f64,
     pub original_quantity: f64,
     pub reserved_quantity: f64,
+    /// quantity / original_quantity in %, unit-free (NULL when original is 0)
+    pub remaining_percent: Option<f64>,
     pub unit: String,
     pub expiry_date: Option<DateTime<Utc>>,
     pub supplier: Option<String>,
@@ -223,10 +225,12 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
 
     let mut config = match preset {
         "low_stock" => {
+            // Percent of each batch's original quantity (unit-free)
             let threshold = request.preset_params.as_ref()
                 .and_then(|p| p.get("threshold"))
                 .and_then(|v| v.as_f64())
-                .unwrap_or(10.0);
+                .filter(|t| t.is_finite() && *t > 0.0 && *t <= 100.0)
+                .unwrap_or_else(crate::consumption::low_stock_percent);
             ReportConfig::low_stock(threshold)
         },
         "expiring_soon" => {
@@ -303,7 +307,13 @@ const BASE_REPORT_QUERY: &str = r#"
     batch_data AS (
         SELECT
             b.id, b.reagent_id, r.name as reagent_name, b.batch_number, b.cat_number,
-            b.quantity, b.original_quantity, b.reserved_quantity, b.unit, b.expiry_date,
+            b.quantity, b.original_quantity, b.reserved_quantity,
+            -- CAST gives the column REAL affinity, so text-bound filter
+            -- params compare numerically
+            CAST(CASE WHEN b.original_quantity > 0
+                      THEN ROUND(b.quantity * 100.0 / b.original_quantity, 1)
+                 END AS REAL) as remaining_percent,
+            b.unit, b.expiry_date,
             b.supplier, b.manufacturer, b.received_date, b.status, b.notes,
             b.created_at, b.updated_at,
             COALESCE(cs.container_count, 0) as container_count,
@@ -344,8 +354,8 @@ pub async fn get_report_presets(
         AvailablePreset {
             id: "low_stock".to_string(),
             name: "Low Stock Items".to_string(),
-            description: "Batches with quantity below threshold".to_string(),
-            default_params: serde_json::json!({ "threshold": 10 }),
+            description: "Batches with at most N% of their original quantity left".to_string(),
+            default_params: serde_json::json!({ "threshold": crate::consumption::low_stock_percent() }),
         },
         AvailablePreset {
             id: "expiring_soon".to_string(),
@@ -398,6 +408,13 @@ pub async fn get_report_fields(
             label: "Quantity".to_string(),
             data_type: "number".to_string(),
             operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
+            values: None,
+        },
+        AvailableField {
+            field: "remaining_percent".to_string(),
+            label: "Remaining %".to_string(),
+            data_type: "number".to_string(),
+            operators: vec!["gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
             values: None,
         },
         AvailableField {
@@ -637,18 +654,19 @@ fn build_csv_response(config: &ReportConfig, data: &[BatchReportRow]) -> HttpRes
     let mut csv_content = String::new();
     csv_content.push('\u{FEFF}'); // BOM для Excel
     csv_content.push_str(
-        "ID,Reagent,Batch Number,Quantity,Unit,Expiry Date,Days Left,Status,\
+        "ID,Reagent,Batch Number,Quantity,Unit,Remaining %,Expiry Date,Days Left,Status,\
          Containers,Opened,Placed,Unplaced,Location,Rooms,Supplier,Manufacturer,Notes\r\n"
     );
 
     for row in data {
         csv_content.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
             escape_csv_field(&row.id),
             escape_csv_field(&row.reagent_name),
             escape_csv_field(&row.batch_number),
             row.quantity,
             escape_csv_field(&row.unit),
+            row.remaining_percent.map(|p| p.to_string()).unwrap_or_default(),
             row.expiry_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
             row.days_until_expiry.map(|d| d.to_string()).unwrap_or_default(),
             escape_csv_field(&row.status),
@@ -701,7 +719,7 @@ fn build_xlsx_response(
         .map_err(|e| ApiError::InternalServerError(format!("XLSX sheet name: {}", e)))?;
 
     let headers = [
-        "ID", "Reagent", "Batch Number", "Quantity", "Unit", "Expiry Date",
+        "ID", "Reagent", "Batch Number", "Quantity", "Unit", "Remaining %", "Expiry Date",
         "Days Left", "Status", "Containers", "Opened", "Placed", "Unplaced",
         "Location", "Rooms", "Supplier", "Manufacturer", "Notes",
     ];
@@ -719,6 +737,9 @@ fn build_xlsx_response(
         ws.write_string(r, 2, &row.batch_number).ok();
         ws.write_number(r, 3, row.quantity).ok();
         ws.write_string(r, 4, &row.unit).ok();
+        if let Some(p) = row.remaining_percent {
+            ws.write_number(r, 5, p).ok();
+        }
 
         // Expiry date — как настоящая дата-ячейка
         if let Some(d) = row.expiry_date {
@@ -728,24 +749,24 @@ fn build_xlsx_response(
                 nd.month() as u8,
                 nd.day() as u8,
             ) {
-                ws.write_datetime_with_format(r, 5, &edt, &date_fmt).ok();
+                ws.write_datetime_with_format(r, 6, &edt, &date_fmt).ok();
             }
         }
 
         if let Some(d) = row.days_until_expiry {
-            ws.write_number(r, 6, d as f64).ok();
+            ws.write_number(r, 7, d as f64).ok();
         }
 
-        ws.write_string(r, 7, &row.status).ok();
-        ws.write_number(r, 8, row.container_count as f64).ok();
-        ws.write_number(r, 9, row.opened_count as f64).ok();
-        ws.write_number(r, 10, row.placed_count as f64).ok();
-        ws.write_number(r, 11, row.unplaced_count as f64).ok();
-        ws.write_string(r, 12, row.location_summary.as_deref().unwrap_or("")).ok();
-        ws.write_string(r, 13, row.room_names.as_deref().unwrap_or("")).ok();
-        ws.write_string(r, 14, row.supplier.as_deref().unwrap_or("")).ok();
-        ws.write_string(r, 15, row.manufacturer.as_deref().unwrap_or("")).ok();
-        ws.write_string(r, 16, row.notes.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 8, &row.status).ok();
+        ws.write_number(r, 9, row.container_count as f64).ok();
+        ws.write_number(r, 10, row.opened_count as f64).ok();
+        ws.write_number(r, 11, row.placed_count as f64).ok();
+        ws.write_number(r, 12, row.unplaced_count as f64).ok();
+        ws.write_string(r, 13, row.location_summary.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 14, row.room_names.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 15, row.supplier.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 16, row.manufacturer.as_deref().unwrap_or("")).ok();
+        ws.write_string(r, 17, row.notes.as_deref().unwrap_or("")).ok();
     }
 
     // Закрепляем шапку и автоширина колонок
@@ -877,6 +898,37 @@ fn format_filter_value(v: &ReportFilterValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs a preset's WHERE clause against rows shaped like the report CTE
+    /// (computed columns, i.e. no type affinity) and returns matching ids.
+    async fn matching(config: &ReportConfig) -> Vec<String> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let (where_clause, params) = config.build_where_clause(&FieldWhitelist::for_reports());
+        let sql = format!(
+            "SELECT id FROM ( \
+                SELECT 'a' AS id, 'available' AS status, 4 - 1 AS unplaced_count, \
+                       CAST(5.0 AS REAL) AS remaining_percent \
+                UNION ALL SELECT 'b', 'available', 2 - 2, CAST(40.0 AS REAL) \
+                UNION ALL SELECT 'c', 'depleted', 1 - 0, CAST(0.0 AS REAL) \
+             ) WHERE {} ORDER BY id",
+            where_clause
+        );
+        let mut q = sqlx::query_scalar::<_, String>(&sql);
+        for p in &params { q = q.bind(p); }
+        q.fetch_all(&pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn unplaced_preset_filters_computed_count_numerically() {
+        // Used to compare `unplaced_count > '0'` (text): always false
+        assert_eq!(matching(&ReportConfig::unplaced()).await, vec!["a", "c"]);
+    }
+
+    #[tokio::test]
+    async fn low_stock_preset_is_percent_of_original_and_skips_depleted() {
+        assert_eq!(matching(&ReportConfig::low_stock(20.0)).await, vec!["a"]);
+        assert_eq!(matching(&ReportConfig::low_stock(50.0)).await, vec!["a", "b"]);
+    }
 
     #[test]
     fn test_validate_sort_field() {

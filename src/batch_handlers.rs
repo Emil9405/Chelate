@@ -924,7 +924,10 @@ pub async fn get_low_stock_batches(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<LowStockQuery>,
 ) -> ApiResult<HttpResponse> {
-    let threshold_percentage = query.threshold.unwrap_or(20.0);
+    // Percent of the batch's original quantity; defaults to the server-wide rule
+    let threshold_percentage = query.threshold
+        .filter(|t| t.is_finite() && *t > 0.0 && *t <= 100.0)
+        .unwrap_or_else(crate::consumption::low_stock_percent);
 
     // Для сложного условия используем raw SQL, но безопасно
     let batches: Vec<BatchWithReagent> = sqlx::query_as(r#"

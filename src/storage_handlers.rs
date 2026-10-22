@@ -225,11 +225,23 @@ pub async fn delete_storage_zone(
 //                  STORAGE POSITIONS CRUD
 // ============================================================
 
+/// `storage_positions.current_count` is a cache column nothing keeps up to
+/// date, so every response overwrites it with the live placement count
+/// (distinct active batches at the position).
+fn apply_live_counts(
+    positions: &mut [StoragePosition],
+    counts: &std::collections::HashMap<String, i64>,
+) {
+    for p in positions.iter_mut() {
+        p.current_count = counts.get(&p.id).copied().unwrap_or(0) as i32;
+    }
+}
+
 pub async fn get_storage_positions(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<HttpResponse> {
-    let positions = if let Some(zone_id) = query.get("zone_id") {
+    let mut positions = if let Some(zone_id) = query.get("zone_id") {
         sqlx::query_as::<_, StoragePosition>(
             "SELECT * FROM storage_positions WHERE zone_id = ? ORDER BY sort_order ASC, name ASC"
         ).bind(zone_id).fetch_all(&app_state.db_pool).await?
@@ -238,6 +250,8 @@ pub async fn get_storage_positions(
             "SELECT * FROM storage_positions ORDER BY zone_id, sort_order ASC, name ASC"
         ).fetch_all(&app_state.db_pool).await?
     };
+    let counts = crate::soft_delete::count_active_placements_by_position(&app_state.db_pool).await?;
+    apply_live_counts(&mut positions, &counts);
     Ok(HttpResponse::Ok().json(ApiResponse::success(positions)))
 }
 
@@ -250,7 +264,12 @@ pub async fn get_storage_position(
         .bind(&pos_id).fetch_optional(&app_state.db_pool).await?;
 
     match pos {
-        Some(p) => Ok(HttpResponse::Ok().json(ApiResponse::success(p))),
+        Some(mut p) => {
+            p.current_count = crate::soft_delete::count_active_placements_for_position(
+                &app_state.db_pool, &p.id
+            ).await? as i32;
+            Ok(HttpResponse::Ok().json(ApiResponse::success(p)))
+        }
         None => Err(ApiError::not_found("Storage position")),
     }
 }
@@ -374,12 +393,14 @@ pub async fn get_storage_hierarchy(
 ) -> ApiResult<HttpResponse> {
     let rooms: Vec<crate::models::Room> = sqlx::query_as("SELECT * FROM rooms ORDER BY name ASC").fetch_all(&app_state.db_pool).await?;
     let zones: Vec<StorageZone> = sqlx::query_as("SELECT * FROM storage_zones ORDER BY sort_order ASC, name ASC").fetch_all(&app_state.db_pool).await?;
-    let positions: Vec<StoragePosition> = sqlx::query_as("SELECT * FROM storage_positions ORDER BY sort_order ASC, name ASC").fetch_all(&app_state.db_pool).await?;
+    let mut positions: Vec<StoragePosition> = sqlx::query_as("SELECT * FROM storage_positions ORDER BY sort_order ASC, name ASC").fetch_all(&app_state.db_pool).await?;
 
-    // ИСПРАВЛЕНИЕ: COUNT(DISTINCT bc.batch_id) через JOIN
+    // Live counts: distinct active batches per position. Positions carry the
+    // number too (current_count), otherwise shelves/cabinets show 0.
     let count_map = crate::soft_delete::count_active_placements_by_position(
         &app_state.db_pool
     ).await?;
+    apply_live_counts(&mut positions, &count_map);
     let mut result: Vec<RoomWithStorage> = Vec::new();
 
     for room in rooms {

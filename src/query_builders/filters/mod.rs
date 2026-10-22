@@ -81,7 +81,9 @@ impl FieldWhitelist {
             "original_quantity", "reserved_quantity", "unit", "expiry_date",
             "supplier", "manufacturer", "received_date", "status", "location",
             "notes", "created_at", "updated_at", "days_until_expiry",
-            "reagent_name", "expiration_status",
+            "reagent_name", "expiration_status", "remaining_percent",
+            "container_count", "opened_count", "placed_count", "unplaced_count",
+            "location_summary", "room_names",
         ])
     }
 }
@@ -410,6 +412,7 @@ impl ReportConfig {
             ReportColumn::new("batch_number", "Batch #"),
             ReportColumn::new("quantity", "Quantity"),
             ReportColumn::new("unit", "Unit"),
+            ReportColumn::new("remaining_percent", "Remaining %"),
             ReportColumn::new("expiry_date", "Expiry Date"),
             ReportColumn::new("status", "Status"),
             ReportColumn::new("location_summary", "Location"),
@@ -431,12 +434,22 @@ impl ReportConfig {
         config
     }
     
-    pub fn low_stock(threshold: f64) -> Self {
+    /// Usable batches with at most `threshold_percent` % of their original
+    /// quantity left. A percentage, not an absolute amount: units differ
+    /// between batches (10 L of a 25 L drum is not "low").
+    pub fn low_stock(threshold_percent: f64) -> Self {
         let mut config = Self::new("low_stock");
         config.filters.push(ReportFilter {
-            field: "quantity".to_string(),
+            field: "status".to_string(),
+            operator: ComparisonOperator::In,
+            value: ReportFilterValue::List(vec![
+                "available".to_string(), "low_stock".to_string(), "in_use".to_string(),
+            ]),
+        });
+        config.filters.push(ReportFilter {
+            field: "remaining_percent".to_string(),
             operator: ComparisonOperator::Lte,
-            value: ReportFilterValue::Number(threshold),
+            value: ReportFilterValue::Number(threshold_percent),
         });
         config
     }
@@ -531,14 +544,18 @@ fn build_report_filter_condition(filter: &ReportFilter) -> (String, Vec<String>)
             format!("{} LIKE ?", filter.field)
         }
         _ => {
-            let val = match &filter.value {
-                ReportFilterValue::Exact(s) => s.clone(),
-                ReportFilterValue::Number(n) => n.to_string(),
-                ReportFilterValue::Contains(s) => s.clone(),
+            // Params are bound as text. Computed report columns (unplaced_count,
+            // container_count, ...) have no type affinity, and SQLite orders
+            // every number before any text, so `unplaced_count > '0'` was
+            // always false. CAST makes numeric filters compare numerically.
+            let (val, placeholder) = match &filter.value {
+                ReportFilterValue::Exact(s) => (s.clone(), "?"),
+                ReportFilterValue::Number(n) => (n.to_string(), "CAST(? AS REAL)"),
+                ReportFilterValue::Contains(s) => (s.clone(), "?"),
                 _ => return (String::new(), Vec::new()),
             };
             params.push(val);
-            format!("{} {} ?", filter.field, filter.operator.to_sql())
+            format!("{} {} {}", filter.field, filter.operator.to_sql(), placeholder)
         }
     };
     (condition, params)

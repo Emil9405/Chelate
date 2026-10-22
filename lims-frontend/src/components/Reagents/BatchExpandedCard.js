@@ -34,10 +34,20 @@ const getStatus = (c) => c.container_status ?? c.status ?? 'full';
 
 // ==================== DETAIL ROW ====================
 
-const DetailRow = ({ label, value, color }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f7fafc' }}>
-    <span style={{ color: '#718096', fontSize: '0.8rem' }}>{label}</span>
-    <span style={{ color: color || '#1a365d', fontSize: '0.8rem', fontWeight: '500', textAlign: 'right', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+// Desktop: one line, long values end with an ellipsis (full text on hover).
+// Phone (wrap): long values wrap instead, nothing is cut off.
+const DetailRow = ({ label, value, color, wrap = false }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '4px 0', borderBottom: '1px solid #f7fafc' }}>
+    <span style={{ color: '#718096', fontSize: '0.8rem', flexShrink: 0, whiteSpace: 'nowrap' }}>{label}</span>
+    <span
+      title={!wrap && typeof value === 'string' ? value : undefined}
+      style={{
+        color: color || '#1a365d', fontSize: '0.8rem', fontWeight: '500', textAlign: 'right', minWidth: 0,
+        ...(wrap
+          ? { overflowWrap: 'anywhere' }
+          : { maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }),
+      }}
+    >
       {value || '—'}
     </span>
   </div>
@@ -111,7 +121,7 @@ const GroupBadge = ({ status, isOpened }) => {
 
 // ==================== GROUPED CONTAINER LIST ====================
 
-const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, onPlaceContainer, onMoveContainer }) => {
+const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, onPlaceContainer, onMoveContainer, isMobile = false }) => {
   if (loading) {
     return <div style={{ fontSize: '0.8rem', color: '#a0aec0', padding: '8px 0' }}>Loading containers...</div>;
   }
@@ -149,6 +159,7 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
       {allUnplaced.length > 1 && onPlaceContainer && (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: '6px', flexWrap: 'wrap',
           padding: '6px 10px', borderRadius: '8px',
           background: '#fffff0', border: '1px solid #ecc94b',
           fontSize: '0.8rem',
@@ -176,7 +187,8 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
           <div
             key={g.key}
             style={{
-              display: 'flex', alignItems: 'center', gap: '8px',
+              display: 'flex', alignItems: 'center', gap: isMobile ? '6px 8px' : '8px',
+              flexWrap: isMobile ? 'wrap' : 'nowrap', minWidth: 0,
               padding: '6px 10px', borderRadius: '8px',
               background: g.status === 'empty' ? '#fafafa' : g.isOpened ? '#fffaf0' : '#f7fafc',
               border: g.isOpened ? '1px solid #fbd38d' : '1px solid #e2e8f0',
@@ -192,15 +204,18 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
             </span>
 
             {/* Total quantity */}
-            <span style={{ fontWeight: '500', minWidth: '70px', color: '#1a365d' }}>
+            <span style={{ fontWeight: '500', minWidth: isMobile ? 0 : '70px', color: '#1a365d', whiteSpace: 'nowrap' }}>
               {g.totalQty.toFixed(1)} {batch.unit}
             </span>
 
             {/* Status badge */}
             <GroupBadge status={g.status} isOpened={g.isOpened} />
 
-            {/* Location & Actions */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: 'auto' }}>
+            {/* Location & Actions — on phones a full-width second line */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0,
+              ...(isMobile ? { flexBasis: '100%' } : { marginLeft: 'auto' }),
+            }}>
               {g.positionId ? (
                 <>
                   <span 
@@ -209,21 +224,23 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
                       fontSize: '11px', color: '#4a5568', background: '#edf2f7',
                       padding: '2px 8px', borderRadius: '4px',
                       display: 'inline-flex', alignItems: 'center', gap: '4px',
-                      maxWidth: '300px', // Увеличили с 180px до 300px
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      minWidth: 0, maxWidth: isMobile ? '100%' : '300px',
+                      overflow: 'hidden',
                     }}
                   >
                     <span style={{
                       width: 7, height: 7, borderRadius: '50%',
                       background: g.roomColor || '#a0aec0', flexShrink: 0,
                     }} />
-                    {fullLocation}
+                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {fullLocation}
+                    </span>
                   </span>
                   {onMoveContainer && (
                     <Button
                       size="small" variant="ghost"
                       onClick={() => onMoveContainer(batch.id, g.containers)}
-                      style={{ fontSize: '10px', padding: '2px 6px', height: 'auto' }}
+                      style={{ fontSize: isMobile ? '12px' : '10px', padding: isMobile ? '4px 10px' : '2px 6px', height: 'auto', flexShrink: 0, whiteSpace: 'nowrap', marginLeft: isMobile ? 'auto' : undefined }}
                     >
                       Move {g.count > 1 ? `(${g.count})` : ''}
                     </Button>
@@ -231,14 +248,14 @@ const GroupedContainerList = ({ batch, containers, loading, onSplit, onRefresh, 
                 </>
               ) : (
                 <>
-                  <span style={{ fontSize: '11px', color: '#cbd5e0', fontStyle: 'italic' }}>
+                  <span style={{ fontSize: '11px', color: '#cbd5e0', fontStyle: 'italic', whiteSpace: 'nowrap' }}>
                     not placed
                   </span>
                   {onPlaceContainer && (
                     <Button
                       size="small" variant="secondary"
                       onClick={() => onPlaceContainer(batch.id, g.containers)}
-                      style={{ fontSize: '10px', padding: '2px 6px', height: 'auto' }}
+                      style={{ fontSize: isMobile ? '12px' : '10px', padding: isMobile ? '4px 10px' : '2px 6px', height: 'auto', flexShrink: 0, whiteSpace: 'nowrap', marginLeft: isMobile ? 'auto' : undefined }}
                     >
                       Place {g.count > 1 ? `(${g.count})` : ''}
                     </Button>
@@ -472,20 +489,21 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
               fontSize: '11px', color: '#4a5568', background: '#edf2f7',
               padding: '4px 8px', borderRadius: '6px', whiteSpace: 'nowrap',
               display: 'inline-flex', alignItems: 'center', gap: '5px',
+              maxWidth: '100%', overflow: 'hidden',
             }}>
               #{usableContainers[0].sequence_number}
               {usableContainers[0].room_name && (
                 <>
                   <span style={{
-                    width: 7, height: 7, borderRadius: '50%',
+                    width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
                     background: usableContainers[0].room_color || '#a0aec0',
                   }} />
-                  <span style={{ fontWeight: '500', color: '#2d3748' }}>
+                  <span style={{ fontWeight: '500', color: '#2d3748', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {getFullLocation(usableContainers[0])}
                   </span>
                 </>
               )}
-              <span style={{ color: '#718096' }}>
+              <span style={{ color: '#718096', flexShrink: 0 }}>
                 ({extractQty(usableContainers[0]).toFixed(1)} {batch.unit})
               </span>
             </span>
@@ -493,6 +511,8 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
         </div>
 
         {/* Группа: Степпер + Ввод + Кнопка */}
+        {/* Phone: one full-width row; if the pack stepper does not fit, it
+            wraps as a whole and the amount field stays with the Use button */}
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '4px', flexShrink: 0, ...(isMobile ? { width: '100%', flexWrap: 'wrap' } : {}) }}>
           
           {hasPackSize && (
@@ -505,13 +525,13 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 onClick={() => adjustQuantityByPack(batch.id, batch.pack_size, 'down', maxQty)}
                 disabled={isLoading || (parseFloat(input.quantity) || 0) <= 0}
                 style={{
-                  width: isMobile ? '40px' : '26px', height: '100%', border: 'none', background: '#edf2f7',
+                  width: isMobile ? '36px' : '26px', height: '100%', border: 'none', background: '#edf2f7',
                   cursor: 'pointer', fontSize: '14px', color: '#4a5568',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   borderRight: '1px solid #e2e8f0',
                 }}
               >−</button>
-              <span style={{ padding: '0 8px', fontSize: '12px', color: '#2d3748', fontWeight: '600', whiteSpace: 'nowrap' }}>
+              <span style={{ padding: isMobile ? '0 6px' : '0 8px', fontSize: '12px', color: '#2d3748', fontWeight: '600', whiteSpace: 'nowrap' }}>
                 {Math.floor((parseFloat(input.quantity) || 0) / batch.pack_size)} pcs
               </span>
               <button
@@ -519,7 +539,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 onClick={() => adjustQuantityByPack(batch.id, batch.pack_size, 'up', maxQty)}
                 disabled={isLoading || (parseFloat(input.quantity) || 0) >= maxQty}
                 style={{
-                  width: isMobile ? '40px' : '26px', height: '100%', border: 'none', background: '#edf2f7',
+                  width: isMobile ? '36px' : '26px', height: '100%', border: 'none', background: '#edf2f7',
                   cursor: 'pointer', fontSize: '14px', color: '#4a5568',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   borderLeft: '1px solid #e2e8f0',
@@ -528,13 +548,14 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
             </div>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', position: 'relative' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '3px', ...(isMobile ? { flex: '1 1 190px', minWidth: 0 } : {}) }}>
+            <div style={{ display: 'flex', alignItems: 'center', position: 'relative', ...(isMobile ? { flex: 1, minWidth: 0 } : {}) }}>
              <input
                 type="number"
-                // For countable units, force integer step regardless of pack_size.
-                step={isCountableUnit ? '1' : (hasPackSize ? batch.pack_size : '0.01')}
-                min={isCountableUnit ? '1' : '0.01'}
+                // Countable units take whole numbers; any other amount may be
+                // fractional (step="any", otherwise the browser rejects 0.005 g).
+                step={isCountableUnit ? '1' : 'any'}
+                min={isCountableUnit ? '1' : '0'}
                 value={input.quantity}
                 onChange={(e) => setUsageQuantity(batch.id, e.target.value)}
                 onBlur={(e) => {
@@ -557,7 +578,8 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 placeholder={`${Number(maxInSelectedUnit).toFixed(Number.isInteger(maxInSelectedUnit) ? 0 : 2)}`}
                 disabled={isLoading}
                 style={{
-                  width: isMobile ? '110px' : '95px', height: ctlH,
+                  width: isMobile ? '100%' : '95px', minWidth: isMobile ? '64px' : undefined, height: ctlH,
+                  boxSizing: 'border-box',
                   padding: hasUnitChoice ? '0 8px' : '0 24px 0 8px',
                   border: error ? '1px solid #e53e3e' : '1px solid #e2e8f0',
                   borderRadius: '6px', fontSize: '13px', textAlign: 'right', fontWeight: '500',
@@ -602,7 +624,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
               // server auto-distributes across containers (opened first).
               disabled={isLoading || !input.quantity || expiredReasonMissing}
               icon={<UseIcon size={14} />}
-              style={{ backgroundColor: expired ? '#dd6b20' : '#38a169', height: ctlH, padding: '0 12px' }}
+              style={{ backgroundColor: expired ? '#dd6b20' : '#38a169', height: ctlH, padding: '0 12px', flexShrink: 0 }}
               title={expiredReasonMissing
                 ? 'Enter a reason to use expired stock'
                 : (hasMultipleContainers && !selectedId
@@ -655,23 +677,25 @@ const BatchExpandedCard = ({
       borderRadius: '0 0 10px 10px', border: '1px solid #d0d8e4',
       borderTop: '2px solid #3182ce', animation: 'slideDown 0.15s ease-out',
     }}>
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '14px' : '20px', marginBottom: '16px' }}>
-        <div>
+      {/* minmax(0, 1fr): a long container row must not widen the column
+          past the screen (that clipped the Details values on phones) */}
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))', gap: isMobile ? '14px' : '20px', marginBottom: '16px' }}>
+        <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: '0.75rem', fontWeight: '700', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
             Details
           </div>
-          <DetailRow label="Supplier" value={batch.supplier} />
-          <DetailRow label="Manufacturer" value={batch.manufacturer || reagent.manufacturer} />
-          <DetailRow label="Catalog #" value={batch.cat_number} />
-          <DetailRow label="Pack Size" value={hasPackSize ? `${batch.pack_size} ${batch.unit}` : null} />
-          <DetailRow label="Containers" value={containerCount > 0 ? `${containerCount} (${openedCount} opened)` : null} />
-          <DetailRow label="Reserved" value={(batch.reserved_quantity || 0) > 0 ? `${batch.reserved_quantity} ${batch.unit}` : null} color={(batch.reserved_quantity || 0) > 0 ? '#dd6b20' : undefined} />
-          <DetailRow label="Available" value={`${available} ${batch.unit}`} color={available > 0 ? '#38a169' : '#e53e3e'} />
-          <DetailRow label="Received" value={batch.received_date ? new Date(batch.received_date).toLocaleDateString() : null} />
-          {batch.notes && <DetailRow label="Notes" value={batch.notes} />}
+          <DetailRow wrap={isMobile} label="Supplier" value={batch.supplier} />
+          <DetailRow wrap={isMobile} label="Manufacturer" value={batch.manufacturer || reagent.manufacturer} />
+          <DetailRow wrap={isMobile} label="Catalog #" value={batch.cat_number} />
+          <DetailRow wrap={isMobile} label="Pack Size" value={hasPackSize ? `${batch.pack_size} ${batch.unit}` : null} />
+          <DetailRow wrap={isMobile} label="Containers" value={containerCount > 0 ? `${containerCount} (${openedCount} opened)` : null} />
+          <DetailRow wrap={isMobile} label="Reserved" value={(batch.reserved_quantity || 0) > 0 ? `${batch.reserved_quantity} ${batch.unit}` : null} color={(batch.reserved_quantity || 0) > 0 ? '#dd6b20' : undefined} />
+          <DetailRow wrap={isMobile} label="Available" value={`${available} ${batch.unit}`} color={available > 0 ? '#38a169' : '#e53e3e'} />
+          <DetailRow wrap={isMobile} label="Received" value={batch.received_date ? new Date(batch.received_date).toLocaleDateString() : null} />
+          {batch.notes && <DetailRow wrap={isMobile} label="Notes" value={batch.notes} />}
         </div>
 
-        <div>
+        <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: '0.75rem', fontWeight: '700', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
             Containers
           </div>
@@ -679,6 +703,7 @@ const BatchExpandedCard = ({
             batch={batch} containers={batchContainers} loading={containersLoading}
             onSplit={splitBatch} onRefresh={onRefresh}
             onPlaceContainer={onPlaceContainer} onMoveContainer={onMoveContainer}
+            isMobile={isMobile}
           />
         </div>
       </div>

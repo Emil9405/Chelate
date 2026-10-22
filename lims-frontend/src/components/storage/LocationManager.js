@@ -42,6 +42,11 @@ const ROOM_TYPES = [
 
 const getZoneTypeInfo = (type_) => ZONE_TYPES.find(z => z.value === type_) || ZONE_TYPES[ZONE_TYPES.length - 1];
 
+// Edit/delete icons are revealed on hover on desktop. Touch screens have no
+// hover, so there they must always be visible (the tap target was there,
+// the icons were not).
+const TOUCH_QUERY = '(hover: none), (max-width: 767px)';
+
 // ==================== СТИЛИ ====================
 
 const S = {
@@ -62,6 +67,8 @@ const S = {
   roomColorBar: { width: '4px', height: '40px', borderRadius: '2px', flexShrink: 0 },
   roomName: { flex: 1, fontWeight: '600', fontSize: '16px', color: '#1f2937' },
   roomMeta: { display: 'flex', gap: '16px', fontSize: '12px', color: '#6b7280' },
+  roomMetaMobile: { flexWrap: 'wrap', gap: '4px 12px', marginTop: '6px' },
+  metaItem: { whiteSpace: 'nowrap' },
   roomBadge: { padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: '500' },
   chevron: { color: '#9ca3af', transition: 'transform 0.2s', fontSize: '14px' },
   
@@ -97,6 +104,7 @@ const S = {
   btnSecondary: { padding: '9px 20px', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '8px', cursor: 'pointer', fontWeight: '500', fontSize: '14px' },
   btnDanger: { padding: '6px 12px', backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' },
   btnSmall: { padding: '4px 10px', borderRadius: '6px', border: '1px solid #e5e7eb', backgroundColor: 'white', cursor: 'pointer', fontSize: '12px', color: '#374151', display: 'inline-flex', alignItems: 'center', gap: '4px' },
+  btnSmallTouch: { width: '34px', height: '34px', padding: 0, justifyContent: 'center' },
   
   // Add inline buttons
   addZoneBtn: { display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', backgroundColor: 'transparent', border: '1px dashed #d1d5db', borderRadius: '8px', color: '#6b7280', cursor: 'pointer', fontSize: '13px', margin: '12px 0 4px', width: '100%', justifyContent: 'center', transition: 'all 0.15s' },
@@ -111,6 +119,7 @@ const S = {
   // Context menu
   actionMenu: { position: 'absolute', right: '8px', top: '8px', display: 'flex', gap: '4px', opacity: 0, transition: 'opacity 0.15s' },
   actionBtn: { width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '11px', backgroundColor: 'white', color: '#6b7280', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' },
+  actionBtnTouch: { width: '32px', height: '32px', fontSize: '13px', border: '1px solid #e5e7eb', boxShadow: 'none' },
 
   // Items preview
   itemsPreview: { padding: '8px 16px 12px', borderTop: '1px solid #e5e7eb', backgroundColor: '#fefefe' },
@@ -321,6 +330,7 @@ const ZoneForm = ({ roomId, zone, onSave, onCancel }) => {
             <input
               style={S.formInput}
               type="number"
+              step="any"
               value={form.temperature_min}
               onChange={e => setForm(f => ({ ...f, temperature_min: e.target.value }))}
               placeholder="e.g., 2"
@@ -331,6 +341,7 @@ const ZoneForm = ({ roomId, zone, onSave, onCancel }) => {
             <input
               style={S.formInput}
               type="number"
+              step="any"
               value={form.temperature_max}
               onChange={e => setForm(f => ({ ...f, temperature_max: e.target.value }))}
               placeholder="e.g., 8"
@@ -682,6 +693,7 @@ const ZoneInventoryModal = ({ zone, onClose }) => {
 
 const PositionCard = ({ position, onEdit, onDelete }) => {
   const [hovered, setHovered] = useState(false);
+  const touch = useIsMobile(TOUCH_QUERY);
   const [expanded, setExpanded] = useState(false);
   const [items, setItems] = useState(null);
   const [loadingItems, setLoadingItems] = useState(false);
@@ -719,16 +731,16 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
       onClick={handleToggle}
     >
       {/* Action buttons */}
-      <div style={{ ...S.actionMenu, opacity: hovered ? 1 : 0 }}>
+      <div style={{ ...S.actionMenu, opacity: hovered || touch ? 1 : 0 }}>
         <button
-          style={S.actionBtn}
+          style={touch ? { ...S.actionBtn, ...S.actionBtnTouch } : S.actionBtn}
           onClick={(e) => { e.stopPropagation(); onEdit(position); }}
           title="Edit"
         >
           <i className="fas fa-pen" />
         </button>
         <button
-          style={{ ...S.actionBtn, color: '#dc2626' }}
+          style={{ ...S.actionBtn, ...(touch ? S.actionBtnTouch : null), color: '#dc2626' }}
           onClick={(e) => {
             e.stopPropagation();
             if (window.confirm(`Delete position "${position.name}"?`)) onDelete(position.id);
@@ -739,7 +751,7 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
         </button>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingRight: touch ? '76px' : 0 }}>
         <div style={S.positionName}>{position.name}</div>
         {position.current_count > 0 && (
           <i className={`fas fa-chevron-${expanded ? 'up' : 'down'}`} style={{ fontSize: '9px', color: '#9ca3af' }} />
@@ -783,6 +795,7 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
   const [showInventory, setShowInventory] = useState(false);
   const [editPosition, setEditPosition] = useState(null);
   const [hovered, setHovered] = useState(false);
+  const touch = useIsMobile(TOUCH_QUERY);
 
   const typeInfo = getZoneTypeInfo(zone.zone_type);
   const totalItems = positions.reduce((sum, p) => sum + p.current_count, 0);
@@ -817,31 +830,33 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
         <div style={{ ...S.zoneIcon, backgroundColor: typeInfo.color }}>
           <i className={`fas ${typeInfo.icon}`} />
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={S.zoneName}>
             {zone.name}
             <span style={S.zoneType}> — {typeInfo.label}</span>
           </div>
+          {/* Each segment stays on one line; segments wrap between each other */}
           <div style={S.zoneMeta}>
-            {positions.length} position{positions.length !== 1 ? 's' : ''} · {totalItems} item{totalItems !== 1 ? 's' : ''}
+            <span style={S.metaItem}>{positions.length} position{positions.length !== 1 ? 's' : ''}</span>
+            {' · '}<span style={S.metaItem}>{totalItems} item{totalItems !== 1 ? 's' : ''}</span>
             {zone.storage_condition && (
-              <> · {STORAGE_CONDITIONS.find(c => c.value === zone.storage_condition)?.label || zone.storage_condition}</>
+              <>{' · '}<span style={S.metaItem}>{STORAGE_CONDITIONS.find(c => c.value === zone.storage_condition)?.label || zone.storage_condition}</span></>
             )}
-            {zone.is_locked === 1 && <> · <i className="fas fa-lock" style={{ fontSize: '10px' }} /> Locked</>}
+            {zone.is_locked === 1 && <>{' · '}<span style={S.metaItem}><i className="fas fa-lock" style={{ fontSize: '10px' }} /> Locked</span></>}
           </div>
         </div>
         
         {/* Zone actions */}
-        <div style={{ display: 'flex', gap: '4px', opacity: hovered ? 1 : 0, transition: 'opacity 0.15s' }}
+        <div style={{ display: 'flex', gap: '4px', flexShrink: 0, opacity: hovered || touch ? 1 : 0, transition: 'opacity 0.15s' }}
              onClick={e => e.stopPropagation()}>
-          <button style={{ ...S.btnSmall, color: '#6366f1' }} onClick={() => setShowInventory(true)} title="View inventory">
-            <i className="fas fa-eye" style={{ fontSize: '10px' }} />
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6366f1' }} onClick={() => setShowInventory(true)} title="View inventory" aria-label="View inventory">
+            <i className="fas fa-eye" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
-          <button style={S.btnSmall} onClick={() => setShowZoneForm(true)} title="Edit zone">
-            <i className="fas fa-pen" style={{ fontSize: '10px' }} />
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowZoneForm(true)} title="Edit zone" aria-label="Edit zone">
+            <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
-          <button style={{ ...S.btnSmall, color: '#dc2626' }} onClick={handleDeleteZone} title="Delete zone">
-            <i className="fas fa-trash" style={{ fontSize: '10px' }} />
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#dc2626' }} onClick={handleDeleteZone} title="Delete zone" aria-label="Delete zone">
+            <i className="fas fa-trash" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
         </div>
 
@@ -911,6 +926,8 @@ const RoomSection = ({ room, onRefresh }) => {
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showRoomForm, setShowRoomForm] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const touch = useIsMobile(TOUCH_QUERY);
+  const isMobile = useIsMobile();
 
   const zoneCount = room.zones?.length || 0;
   const posCount = room.zones?.reduce((s, z) => s + (z.positions?.length || 0), 0) || 0;
@@ -925,50 +942,56 @@ const RoomSection = ({ room, onRefresh }) => {
     }
   };
 
+  const roomMeta = (
+    <div style={isMobile ? { ...S.roomMeta, ...S.roomMetaMobile } : S.roomMeta}>
+      {room.capacity && (
+        <span style={S.metaItem}>
+          <i className="fas fa-users" style={{ marginRight: '4px' }} />
+          {room.capacity}
+        </span>
+      )}
+      <span style={S.metaItem}>
+        <i className="fas fa-th-large" style={{ marginRight: '4px' }} />
+        {zoneCount} zone{zoneCount !== 1 ? 's' : ''}
+      </span>
+      <span style={S.metaItem}>
+        <i className="fas fa-bookmark" style={{ marginRight: '4px' }} />
+        {posCount} position{posCount !== 1 ? 's' : ''}
+      </span>
+      <span style={S.metaItem}>
+        <i className="fas fa-flask" style={{ marginRight: '4px' }} />
+        {room.total_items} item{room.total_items !== 1 ? 's' : ''}
+      </span>
+    </div>
+  );
+
   return (
     <div style={{ ...S.roomCard, boxShadow: hovered ? '0 4px 12px rgba(0,0,0,0.06)' : 'none' }}>
       <div
-        style={S.roomHeader}
+        style={isMobile ? { ...S.roomHeader, padding: '12px 12px', gap: '10px' } : S.roomHeader}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onClick={() => setExpanded(e => !e)}
       >
         <div style={{ ...S.roomColorBar, backgroundColor: room.color || '#667eea' }} />
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={S.roomName}>{room.name}</div>
           {room.description && (
             <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '2px' }}>{room.description}</div>
           )}
+          {/* Phones: counters go under the name, each kept on one line */}
+          {isMobile && roomMeta}
         </div>
-        <div style={S.roomMeta}>
-          {room.capacity && (
-            <span>
-              <i className="fas fa-users" style={{ marginRight: '4px' }} />
-              {room.capacity}
-            </span>
-          )}
-          <span>
-            <i className="fas fa-th-large" style={{ marginRight: '4px' }} />
-            {zoneCount} zone{zoneCount !== 1 ? 's' : ''}
-          </span>
-          <span>
-            <i className="fas fa-bookmark" style={{ marginRight: '4px' }} />
-            {posCount} position{posCount !== 1 ? 's' : ''}
-          </span>
-          <span>
-            <i className="fas fa-flask" style={{ marginRight: '4px' }} />
-            {room.total_items} item{room.total_items !== 1 ? 's' : ''}
-          </span>
-        </div>
+        {!isMobile && roomMeta}
 
         {/* Room actions */}
-        <div style={{ display: 'flex', gap: '4px', opacity: hovered ? 1 : 0, transition: 'opacity 0.15s' }}
+        <div style={{ display: 'flex', gap: '4px', flexShrink: 0, opacity: hovered || touch ? 1 : 0, transition: 'opacity 0.15s' }}
              onClick={e => e.stopPropagation()}>
-          <button style={S.btnSmall} onClick={() => setShowRoomForm(true)} title="Edit room">
-            <i className="fas fa-pen" style={{ fontSize: '10px' }} />
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowRoomForm(true)} title="Edit room" aria-label="Edit room">
+            <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
-          <button style={{ ...S.btnSmall, color: '#dc2626' }} onClick={handleDeleteRoom} title="Delete room">
-            <i className="fas fa-trash" style={{ fontSize: '10px' }} />
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#dc2626' }} onClick={handleDeleteRoom} title="Delete room" aria-label="Delete room">
+            <i className="fas fa-trash" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
         </div>
 
