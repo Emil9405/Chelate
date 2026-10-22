@@ -97,6 +97,7 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 - **Expiry Alerts** — Expiring and expired batches on the dashboard and in reports
 - **Hierarchical Storage** — Room → Cabinet (zone) → Shelf (position), with the contents of every level
 - **Bottle Labels** — A Data Matrix label for every bottle, printed on A4 (plain paper to cut, or sticker sheets); scan it with a phone to see the bottle, write off an amount or move it
+- **Location Labels** — A QR label for every room, cabinet and shelf; scan a shelf to see what is on it, scan bottles onto it ("put bottles here"), or scan a bottle and then its shelf to move it; in an inventory check a shelf QR picks the shelf
 - **Bottle History** — Every placement, move, draw, disposal and inventory sighting of a bottle is journaled with who, when, where from and where to; the journal is never pruned
 - **Inventory Checks** — Scan every bottle in a room, cabinet or shelf; Chelate lists what is misplaced, unrecorded or missing, lets you fix it on the spot and keeps a printable record
 - **Import / Export** — Reagents, batches and equipment via CSV, Excel or JSON
@@ -259,7 +260,7 @@ Tokens last `AUTH_TOKEN_EXPIRATION_HOURS` hours (default 24). There is no refres
 | Reagents | `GET/POST /reagents`, `GET /reagents/search?q=`, `GET/PUT/DELETE /reagents/{id}`, `GET /reagents/{id}/details`, `GET /reagents/export`, `POST /reagents/import` (also `/import/json`, `/import/excel`) |
 | Batches | `GET/POST /reagents/{id}/batches`, `GET/PUT/DELETE /reagents/{rid}/batches/{id}`, `POST …/use`, `GET …/usage`, `GET /batches/low-stock`, `GET /batches/expiring`, `POST /batches/filter` |
 | Bottles | `GET/POST /batches/{id}/containers`, `POST /containers/{id}/place`, `PUT /containers/{id}/move`, `DELETE /containers/{id}/unplace`, `POST /containers/{id}/use`, `GET /containers/{id}/history`, `POST /containers/place-bulk`, `move-bulk` |
-| Labels | `POST /labels/containers` (label data), `GET /labels/resolve?code=` (scan lookup) |
+| Labels | `POST /labels/containers` and `POST /labels/locations` (label data), `GET /labels/resolve?code=` (scan lookup for a bottle or a place) |
 | Inventory checks | `GET/POST /inventory/sessions`, `GET /inventory/sessions/{id}`, `POST …/scan`, `…/items/{id}/resolve`, `…/close`, `…/cancel` |
 | Storage | `/storage/zones`, `/storage/positions`, `/storage/hierarchy`, `/rooms` |
 | Equipment | `/equipment`, `/equipment/{id}/parts`, `…/maintenance`, `…/files` |
@@ -366,7 +367,7 @@ cd lims-frontend && npm test
 - [x] Bottle history journal
 - [x] Inventory checks by scanning
 - [x] Low-stock alerts as a percentage of the original quantity
-- [ ] Shelf labels (scan bottle, then scan shelf)
+- [x] Shelf labels (scan bottle, then scan shelf)
 - [ ] Direct instrument integration (Agilent, Shimadzu)
 - [ ] Electronic Lab Notebook (ELN) features
 - [ ] Chemical supplier API integration

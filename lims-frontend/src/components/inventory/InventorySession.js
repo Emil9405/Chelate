@@ -10,6 +10,7 @@ import CameraView from '../labels/CameraView';
 import BottleHistory from '../labels/BottleHistory';
 import useCameraScanner from '../labels/useCameraScanner';
 import { canActOnStock } from '../labels/permissions';
+import { looksLikeLocationCode } from '../labels/codes';
 import { buildInventoryReport } from './inventoryReport';
 
 const RESULT = {
@@ -112,6 +113,7 @@ const InventorySession = ({ id, user, onBack }) => {
   const [confirming, setConfirming] = useState(false);
   const [notes, setNotes] = useState('');
   const [showFound, setShowFound] = useState(false);
+  const [shelfNote, setShelfNote] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -127,12 +129,34 @@ const InventorySession = ({ id, user, onBack }) => {
 
   const open = detail?.session?.status === 'open';
 
+  // A shelf's QR label picks the shelf being checked (when it is part of this check)
+  const switchShelf = useCallback(async (code, positions) => {
+    const r = await api.resolveCode(code);
+    const loc = r.location;
+    if (!loc) throw new Error('Not a location label');
+    if (loc.kind !== 'position') {
+      throw new Error(`That is a ${loc.kind === 'zone' ? 'cabinet' : 'room'} label. Scan the label of the shelf you are at.`);
+    }
+    if (!positions.some(p => p.id === loc.id)) {
+      throw new Error(`${loc.path} is not part of this check.`);
+    }
+    setShelfId(loc.id);
+    setLast(null);
+    setShelfNote(loc.path);
+  }, []);
+
   const submitCode = useCallback(async (code) => {
     if (busyRef.current || !shelfId) return;
     busyRef.current = true;
     setBusy(true);
     setError('');
+    setShelfNote('');
     try {
+      if (looksLikeLocationCode(code)) {
+        await switchShelf(code, detail ? detail.positions : []);
+        if (navigator.vibrate) navigator.vibrate(60);
+        return;
+      }
       const r = await api.inventoryScan(id, code, shelfId);
       setLast(r);
       if (navigator.vibrate && r.result !== 'found') navigator.vibrate([60, 80, 60]);
@@ -144,7 +168,7 @@ const InventorySession = ({ id, user, onBack }) => {
       busyRef.current = false;
       setBusy(false);
     }
-  }, [id, shelfId, load]);
+  }, [id, shelfId, load, detail, switchShelf]);
 
   const scanner = useCameraScanner({ onCode: submitCode, continuous: true, cooldownMs: 3000 });
   const { liveSupported, start, stop, cameraOn } = scanner;
@@ -331,7 +355,7 @@ const InventorySession = ({ id, user, onBack }) => {
           <label htmlFor="inv-shelf" style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#4a5568', marginBottom: '4px' }}>
             Shelf you are checking
           </label>
-          <select id="inv-shelf" value={shelfId} onChange={e => { setShelfId(e.target.value); setLast(null); }}
+          <select id="inv-shelf" value={shelfId} onChange={e => { setShelfId(e.target.value); setLast(null); setShelfNote(''); }}
             disabled={detail.positions.length === 1}
             style={{ width: '100%', height: '44px', padding: '0 10px', border: '1px solid #e2e8f0', borderRadius: '10px', background: 'white' }}>
             {detail.positions.map(p => (
@@ -343,6 +367,12 @@ const InventorySession = ({ id, user, onBack }) => {
           {shelf && (
             <div style={{ fontSize: '0.78rem', color: '#718096', marginTop: '4px' }}>
               {scannedOnShelf} of {onShelf.length} recorded bottle{onShelf.length !== 1 ? 's' : ''} on this shelf scanned
+              {detail.positions.length > 1 && ' · scan a shelf QR label to switch shelf'}
+            </div>
+          )}
+          {shelfNote && (
+            <div role="status" style={{ marginTop: '6px', background: '#ebf8ff', border: '1px solid #bee3f8', color: '#2a4365', borderRadius: '8px', padding: '6px 10px', fontSize: '0.82rem', fontWeight: 600 }}>
+              Shelf: {shelfNote}
             </div>
           )}
         </div>

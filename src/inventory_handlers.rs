@@ -426,6 +426,13 @@ pub async fn scan(
         return Err(ApiError::bad_request("This shelf is not part of the inventory"));
     }
 
+    // A shelf, cabinet or room label is not a bottle: do not record it as an unknown code
+    if crate::location_labels::parse_location_code(&body.code).is_some() {
+        return Err(ApiError::bad_request(
+            "That is a location label, not a bottle. Pick the shelf in the list, or scan the bottle.",
+        ));
+    }
+
     let found = match label_handlers::parse_scan_code(&body.code) {
         None => Vec::new(),
         Some(q) => {

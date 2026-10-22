@@ -22,7 +22,7 @@ const STATUS = {
 const ghsList = (value) => (value || '')
   .split(',').map(c => c.trim().toUpperCase()).filter(c => /^GHS0[1-9]$/.test(c));
 
-const BottleCard = ({ c, canAct, onChanged, onMove, historyKey = 0 }) => {
+const BottleCard = ({ c, canAct, onChanged, onMove, onScanShelf, historyKey = 0 }) => {
   const [qty, setQty] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [reason, setReason] = useState('');
@@ -137,6 +137,11 @@ const BottleCard = ({ c, canAct, onChanged, onMove, historyKey = 0 }) => {
               Use
             </Button>
           </div>
+          {onScanShelf && (
+            <Button variant="secondary" onClick={onScanShelf} style={{ height: '44px' }}>
+              {c.position_id ? 'Move: scan the shelf label' : 'Place: scan the shelf label'}
+            </Button>
+          )}
           <Button variant="secondary" onClick={onMove} style={{ height: '44px' }}>
             {c.position_id ? 'Move to another shelf' : 'Place on a shelf'}
           </Button>

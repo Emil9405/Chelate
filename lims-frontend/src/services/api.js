@@ -465,6 +465,25 @@ export const api = {
         return response?.data?.matches || [];
     },
 
+    // Same lookup for any Chelate label: { matches } for a bottle, { location } for a room,
+    // cabinet or shelf (kind, path, bottle_count, children, bottles on a shelf)
+    resolveCode: async (code) => {
+        const response = await apiCall(`${API_V1_BASE}/labels/resolve?code=${encodeURIComponent(code)}`);
+        const d = response?.data || {};
+        return { matches: d.matches || [], location: d.location || null };
+    },
+
+    // ==================== LOCATION LABELS (QR) ====================
+
+    // selector: { room_id | zone_id | position_id, include_children }
+    getLocationLabels: async (selector) => {
+        const response = await apiCall(`${API_V1_BASE}/labels/locations`, {
+            method: 'POST',
+            body: JSON.stringify(selector),
+        });
+        return response?.data || [];
+    },
+
     // Bottle history (placements, moves, draws, inventory), newest first
     getContainerHistory: async (containerId) => {
         const response = await apiCall(`${API_V1_BASE}/containers/${containerId}/history`);

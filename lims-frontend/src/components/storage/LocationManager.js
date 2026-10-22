@@ -6,6 +6,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../services/api';
 import useIsMobile from '../hooks/useIsMobile';
 import LabelPrintModal from '../labels/LabelPrintModal';
+import LocationLabelPrintModal from '../labels/LocationLabelPrintModal';
 import InventoryPanel from '../inventory/InventoryPanel';
 import { DataMatrixIcon } from '../labels/LabelIcons';
 
@@ -700,6 +701,7 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
   const [expanded, setExpanded] = useState(false);
   const [items, setItems] = useState(null);
   const [loadingItems, setLoadingItems] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const pct = position.max_capacity 
     ? Math.min(100, (position.current_count / position.max_capacity) * 100) 
     : 0;
@@ -736,6 +738,14 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
       {/* Action buttons */}
       <div style={{ ...S.actionMenu, opacity: hovered || touch ? 1 : 0 }}>
         <button
+          style={{ ...S.actionBtn, ...(touch ? S.actionBtnTouch : null), color: '#2b6cb0' }}
+          onClick={(e) => { e.stopPropagation(); setShowQr(true); }}
+          title="Print the QR label of this shelf"
+          aria-label="Print shelf QR label"
+        >
+          <i className="fas fa-qrcode" />
+        </button>
+        <button
           style={touch ? { ...S.actionBtn, ...S.actionBtnTouch } : S.actionBtn}
           onClick={(e) => { e.stopPropagation(); onEdit(position); }}
           title="Edit"
@@ -754,7 +764,7 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
         </button>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingRight: touch ? '76px' : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingRight: touch ? '112px' : 0 }}>
         <div style={S.positionName}>{position.name}</div>
         {position.current_count > 0 && (
           <i className={`fas fa-chevron-${expanded ? 'up' : 'down'}`} style={{ fontSize: '9px', color: '#9ca3af' }} />
@@ -785,6 +795,18 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
           <PositionItemsList items={items || []} loading={loadingItems} />
         </div>
       )}
+
+      {showQr && (
+        <div onClick={e => e.stopPropagation()}>
+          <LocationLabelPrintModal
+            isOpen={showQr}
+            onClose={() => setShowQr(false)}
+            title={`QR ${position.name}`}
+            subtitle={`Shelf ${position.name}`}
+            selector={{ position_id: position.id }}
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -797,6 +819,7 @@ const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
   const [showPositionForm, setShowPositionForm] = useState(false);
   const [showInventory, setShowInventory] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const [editPosition, setEditPosition] = useState(null);
   const [hovered, setHovered] = useState(false);
   const touch = useIsMobile(TOUCH_QUERY);
@@ -864,6 +887,9 @@ const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
           )}
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6366f1' }} onClick={() => setShowInventory(true)} title="View inventory" aria-label="View inventory">
             <i className="fas fa-eye" style={{ fontSize: touch ? '13px' : '10px' }} />
+          </button>
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6b46c1' }} onClick={() => setShowQr(true)} title="Print QR labels for this zone and its shelves" aria-label="Print location QR labels">
+            <i className="fas fa-qrcode" style={{ fontSize: touch ? '14px' : '11px' }} />
           </button>
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#2b6cb0' }} onClick={() => setShowLabels(true)} title="Print labels for the bottles in this zone" aria-label="Print labels">
             <DataMatrixIcon size={touch ? 15 : 12} />
@@ -935,6 +961,17 @@ const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
         />
       )}
 
+      {/* QR labels for this cabinet and all its shelves */}
+      {showQr && (
+        <LocationLabelPrintModal
+          isOpen={showQr}
+          onClose={() => setShowQr(false)}
+          title={`QR ${zone.name}`}
+          subtitle={`${zone.name} and its shelves`}
+          selector={{ zone_id: zone.id, include_children: true }}
+        />
+      )}
+
       {/* Zone inventory modal */}
       {showInventory && (
         <ZoneInventoryModal
@@ -952,6 +989,7 @@ const RoomSection = ({ room, onRefresh, onInventory }) => {
   const [expanded, setExpanded] = useState(false);
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showRoomForm, setShowRoomForm] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const [hovered, setHovered] = useState(false);
   const touch = useIsMobile(TOUCH_QUERY);
   const isMobile = useIsMobile();
@@ -1020,6 +1058,9 @@ const RoomSection = ({ room, onRefresh, onInventory }) => {
               <i className="fas fa-clipboard-check" style={{ fontSize: touch ? '14px' : '11px' }} />
             </button>
           )}
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6b46c1' }} onClick={() => setShowQr(true)} title="Print QR labels for this room, its cabinets and shelves" aria-label="Print room QR labels">
+            <i className="fas fa-qrcode" style={{ fontSize: touch ? '14px' : '11px' }} />
+          </button>
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowRoomForm(true)} title="Edit room" aria-label="Edit room">
             <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
@@ -1077,6 +1118,16 @@ const RoomSection = ({ room, onRefresh, onInventory }) => {
           room={room}
           onSave={() => { setShowRoomForm(false); onRefresh(); }}
           onCancel={() => setShowRoomForm(false)}
+        />
+      )}
+
+      {showQr && (
+        <LocationLabelPrintModal
+          isOpen={showQr}
+          onClose={() => setShowQr(false)}
+          title={`QR ${room.name}`}
+          subtitle={`${room.name}, its cabinets and shelves`}
+          selector={{ room_id: room.id, include_children: true }}
         />
       )}
     </div>

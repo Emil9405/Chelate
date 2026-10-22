@@ -53,6 +53,7 @@ mod consumption;
 mod container_history;
 mod inventory_handlers;
 mod label_handlers;
+mod location_labels;
 mod reagent_stock;
 mod routes;
 pub mod soft_delete;
