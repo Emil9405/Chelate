@@ -6,6 +6,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../services/api';
 import useIsMobile from '../hooks/useIsMobile';
 import LabelPrintModal from '../labels/LabelPrintModal';
+import InventoryPanel from '../inventory/InventoryPanel';
 import { DataMatrixIcon } from '../labels/LabelIcons';
 
 // ==================== КОНСТАНТЫ ====================
@@ -790,7 +791,7 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
 
 // ==================== КАРТОЧКА ЗОНЫ ====================
 
-const ZoneSection = ({ zone, positions, onRefresh }) => {
+const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
   const [expanded, setExpanded] = useState(false);
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showPositionForm, setShowPositionForm] = useState(false);
@@ -825,7 +826,7 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
   return (
     <div style={S.zoneCard}>
       <div
-        style={{ ...S.zoneHeader, backgroundColor: hovered ? '#f3f4f6' : 'transparent' }}
+        style={{ ...S.zoneHeader, backgroundColor: hovered ? '#f3f4f6' : 'transparent', ...(touch ? { flexWrap: 'wrap' } : null) }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onClick={() => setExpanded(e => !e)}
@@ -849,9 +850,18 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
           </div>
         </div>
         
-        {/* Zone actions */}
-        <div style={{ display: 'flex', gap: '4px', flexShrink: 0, opacity: hovered || touch ? 1 : 0, transition: 'opacity 0.15s' }}
+        {/* Zone actions (touch screens: a row of their own under the name) */}
+        <div style={{
+          display: 'flex', gap: '4px', flexShrink: 0, opacity: hovered || touch ? 1 : 0, transition: 'opacity 0.15s',
+          ...(touch ? { order: 3, width: '100%', justifyContent: 'flex-end', paddingLeft: '42px' } : null),
+        }}
              onClick={e => e.stopPropagation()}>
+          {onInventory && (
+            <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#047857' }} onClick={() => onInventory('zone', zone.id)}
+              title="Inventory check: scan every bottle in this zone" aria-label="Inventory check">
+              <i className="fas fa-clipboard-check" style={{ fontSize: touch ? '14px' : '11px' }} />
+            </button>
+          )}
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6366f1' }} onClick={() => setShowInventory(true)} title="View inventory" aria-label="View inventory">
             <i className="fas fa-eye" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
@@ -938,7 +948,7 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
 
 // ==================== КАРТОЧКА КОМНАТЫ ====================
 
-const RoomSection = ({ room, onRefresh }) => {
+const RoomSection = ({ room, onRefresh, onInventory }) => {
   const [expanded, setExpanded] = useState(false);
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showRoomForm, setShowRoomForm] = useState(false);
@@ -1004,6 +1014,12 @@ const RoomSection = ({ room, onRefresh }) => {
         {/* Room actions */}
         <div style={{ display: 'flex', gap: '4px', flexShrink: 0, opacity: hovered || touch ? 1 : 0, transition: 'opacity 0.15s' }}
              onClick={e => e.stopPropagation()}>
+          {onInventory && (
+            <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#047857' }} onClick={() => onInventory('room', room.id)}
+              title="Inventory check: scan every bottle in this room" aria-label="Room inventory check">
+              <i className="fas fa-clipboard-check" style={{ fontSize: touch ? '14px' : '11px' }} />
+            </button>
+          )}
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowRoomForm(true)} title="Edit room" aria-label="Edit room">
             <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
@@ -1032,6 +1048,7 @@ const RoomSection = ({ room, onRefresh }) => {
               zone={zoneData}
               positions={zoneData.positions}
               onRefresh={onRefresh}
+              onInventory={onInventory}
             />
           ))}
 
@@ -1068,8 +1085,30 @@ const RoomSection = ({ room, onRefresh }) => {
 
 // ==================== ГЛАВНЫЙ КОМПОНЕНТ ====================
 
-const LocationManager = () => {
+const ACTIVE_CHECK_KEY = 'chelate.inventory.active';
+const readActiveCheck = () => { try { return localStorage.getItem(ACTIVE_CHECK_KEY) || null; } catch (_) { return null; } };
+
+const LocationManager = ({ user }) => {
   const isMobile = useIsMobile();
+  // "locations" | "checks"; an open inventory check is remembered across reloads
+  const [tab, setTab] = useState(() => (readActiveCheck() ? 'checks' : 'locations'));
+  const [activeCheck, setActiveCheckState] = useState(readActiveCheck);
+  const setActiveCheck = useCallback((id) => {
+    setActiveCheckState(id);
+    try {
+      if (id) localStorage.setItem(ACTIVE_CHECK_KEY, id); else localStorage.removeItem(ACTIVE_CHECK_KEY);
+    } catch (_) { /* private mode */ }
+  }, []);
+  const startCheck = useCallback(async (scopeType, scopeId) => {
+    try {
+      const r = await api.startInventory(scopeType, scopeId);
+      setActiveCheck(r.session.id);
+      setTab('checks');
+      window.scrollTo(0, 0);
+    } catch (err) {
+      alert(err.message || 'Could not start the inventory check');
+    }
+  }, [setActiveCheck]);
   const [hierarchy, setHierarchy] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -1142,7 +1181,7 @@ const LocationManager = () => {
             Manage rooms, cabinets, shelves, and track where every reagent is stored
           </div>
         </div>
-        <div style={S.toolbar}>
+        {tab === 'locations' && <div style={S.toolbar}>
           <input
             style={S.searchBox}
             placeholder="Search locations..."
@@ -1159,9 +1198,28 @@ const LocationManager = () => {
           >
             <i className="fas fa-plus" /> Add Room
           </button>
-        </div>
+        </div>}
       </div>
 
+      {/* Tabs */}
+      <div role="tablist" style={{ display: 'flex', gap: '6px', marginBottom: '16px', background: '#f3f4f6', padding: '4px', borderRadius: '10px', width: 'fit-content', maxWidth: '100%' }}>
+        {[['locations', 'Locations', 'fa-warehouse'], ['checks', 'Inventory checks', 'fa-clipboard-check']].map(([id, label, icon]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id}
+            onClick={() => { setTab(id); if (id === 'locations') loadData(); }}
+            style={{
+              border: 'none', borderRadius: '8px', padding: '8px 14px', cursor: 'pointer', fontWeight: 600, fontSize: '13px',
+              display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
+              background: tab === id ? 'white' : 'transparent', color: tab === id ? '#4f46e5' : '#6b7280',
+              boxShadow: tab === id ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+            }}>
+            <i className={`fas ${icon}`} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'checks' ? (
+        <InventoryPanel hierarchy={hierarchy} user={user} activeId={activeCheck} setActiveId={setActiveCheck} />
+      ) : (<>
       {/* Stats */}
       <div style={S.statsBar}>
         <div style={S.statItem}>
@@ -1209,9 +1267,11 @@ const LocationManager = () => {
             key={room.id}
             room={room}
             onRefresh={loadData}
+            onInventory={startCheck}
           />
         ))
       )}
+      </>)}
 
       {/* Room Form Modal */}
       {showRoomForm && (

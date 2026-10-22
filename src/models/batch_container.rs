@@ -106,11 +106,16 @@ pub struct PlaceContainerRequest {
 
     #[validate(length(max = 500, message = "Notes cannot exceed 500 characters"))]
     pub notes: Option<String>,
+
+    /// "scan" when done from the Scan page (bottle history), else web
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MoveContainerRequest {
     pub new_position_id: String,
+    /// "scan" when done from the Scan page (bottle history), else web
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -129,4 +134,7 @@ pub struct UseFromContainerRequest {
     /// Required when allow_expired is set
     #[validate(length(max = 500, message = "Reason cannot exceed 500 characters"))]
     pub expired_reason: Option<String>,
+
+    /// "scan" when done from the Scan page (bottle history), else web
+    pub source: Option<String>,
 }

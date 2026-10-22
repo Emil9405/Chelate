@@ -143,7 +143,7 @@ async fn get_container_stats(pool: &sqlx::SqlitePool, batch_id: &str) -> ApiResu
 // ==================== SYNC LEGACY LOCATION FIELD ====================
 
 /// Update batches.location from actual placements (room → zone → position)
-async fn sync_batch_location(pool: &sqlx::SqlitePool, batch_id: &str) -> ApiResult<()> {
+pub(crate) async fn sync_batch_location(pool: &sqlx::SqlitePool, batch_id: &str) -> ApiResult<()> {
     let result: Option<(String,)> = sqlx::query_as(
         r#"SELECT GROUP_CONCAT(DISTINCT r.name || ' / ' || sz.name || ' / ' || sp.name)
         FROM batch_containers bc
@@ -414,17 +414,17 @@ pub async fn place_container(
 ) -> ApiResult<HttpResponse> {
     let container_id = path.into_inner();
     let claims = get_current_user(&http_request)?;
-    let now = Utc::now();
 
     let container = get_container_or_404(&app_state.db_pool, &container_id).await?;
     let position = validate_position(&app_state.db_pool, &request.position_id).await?;
 
+    let mut tx = app_state.db_pool.begin().await?;
     // Check: container not already placed
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT id FROM batch_placements WHERE container_id = ?"
     )
     .bind(&container_id)
-    .fetch_optional(&app_state.db_pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if existing.is_some() {
@@ -433,19 +433,18 @@ pub async fn place_container(
         ));
     }
 
-    let placement_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"INSERT INTO batch_placements (id, container_id, position_id, placed_by, placed_at, notes)
-           VALUES (?, ?, ?, ?, ?, ?)"#
-    )
-    .bind(&placement_id)
-    .bind(&container_id)
-    .bind(&request.position_id)
-    .bind(&claims.sub)
-    .bind(&now)
-    .bind(&request.notes)
-    .execute(&app_state.db_pool)
-    .await?;
+    let source = crate::container_history::client_source(request.source.as_deref());
+    crate::container_history::change_placement(
+        &mut tx, &container_id, Some(&request.position_id), Some(&claims.sub),
+        source, None, request.notes.as_deref(),
+    ).await?;
+    tx.commit().await?;
+
+    crate::audit::audit(
+        &app_state.db_pool, &claims.sub, "place_container", "container", &container_id,
+        &format!("Container #{} placed at {}", container.sequence_number, position.name),
+        &http_request,
+    ).await;
 
     let sql = format!("{} WHERE bc.id = ?", CONTAINER_WITH_LOCATION_SELECT);
     let result: ContainerWithLocation = sqlx::query_as(&sql)
@@ -467,7 +466,7 @@ pub async fn place_containers_bulk(
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let claims = get_current_user(&http_request)?;
-    let now = Utc::now();
+    let position = validate_position(&app_state.db_pool, &request.position_id).await?;
     let mut tx = app_state.db_pool.begin().await?;
     let mut placed = 0i64;
 
@@ -479,18 +478,21 @@ pub async fn place_containers_bulk(
 
         if existing.is_some() { continue; }
 
-        let id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO batch_placements (id, container_id, position_id, placed_by, placed_at, notes) VALUES (?, ?, ?, ?, ?, NULL)"
-        )
-        .bind(&id).bind(cid).bind(&request.position_id)
-        .bind(&claims.sub).bind(&now)
-        .execute(&mut *tx).await?;
+        crate::container_history::change_placement(
+            &mut tx, cid, Some(&request.position_id), Some(&claims.sub),
+            crate::container_history::source::BULK, None, None,
+        ).await?;
         placed += 1;
     }
 
     tx.commit().await?;
     info!("📍 Bulk placed {} containers at position {}", placed, request.position_id);
+    if placed > 0 {
+        crate::audit::audit(
+            &app_state.db_pool, &claims.sub, "place_container", "container", &request.position_id,
+            &format!("{} containers placed at {}", placed, position.name), &http_request,
+        ).await;
+    }
 
     // Sync location for affected batches
     if let Some(cid) = request.container_ids.first() {
@@ -511,21 +513,32 @@ pub async fn move_containers_bulk(
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let claims = get_current_user(&http_request)?;
-    let now = Utc::now();
+    let position = validate_position(&app_state.db_pool, &request.new_position_id).await?;
     let mut tx = app_state.db_pool.begin().await?;
     let mut moved = 0i64;
 
     for cid in &request.container_ids {
-        let result = sqlx::query(
-            "UPDATE batch_placements SET position_id = ?, placed_by = ?, placed_at = ? WHERE container_id = ?"
-        )
-        .bind(&request.new_position_id).bind(&claims.sub).bind(&now).bind(cid)
-        .execute(&mut *tx).await?;
-        moved += result.rows_affected() as i64;
+        // Only placed containers move (unplaced ones need "place")
+        let placed: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM batch_placements WHERE container_id = ?"
+        ).bind(cid).fetch_optional(&mut *tx).await?;
+        if placed.is_none() { continue; }
+
+        let change = crate::container_history::change_placement(
+            &mut tx, cid, Some(&request.new_position_id), Some(&claims.sub),
+            crate::container_history::source::BULK, None, None,
+        ).await?;
+        if change.changed() { moved += 1; }
     }
 
     tx.commit().await?;
     info!("📍 Bulk moved {} containers to position {}", moved, request.new_position_id);
+    if moved > 0 {
+        crate::audit::audit(
+            &app_state.db_pool, &claims.sub, "move_container", "container", &request.new_position_id,
+            &format!("{} containers moved to {}", moved, position.name), &http_request,
+        ).await;
+    }
 
     // Sync location for affected batches
     if let Some(cid) = request.container_ids.first() {
@@ -550,30 +563,34 @@ pub async fn move_container(
 ) -> ApiResult<HttpResponse> {
     let container_id = path.into_inner();
     let claims = get_current_user(&http_request)?;
-    let now = Utc::now();
 
     let container = get_container_or_404(&app_state.db_pool, &container_id).await?;
     let new_position = validate_position(&app_state.db_pool, &request.new_position_id).await?;
 
+    let mut tx = app_state.db_pool.begin().await?;
     // Find existing placement
-    let placement: BatchPlacement = sqlx::query_as(
+    let _placement: BatchPlacement = sqlx::query_as(
         "SELECT * FROM batch_placements WHERE container_id = ?"
     )
     .bind(&container_id)
-    .fetch_one(&app_state.db_pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|_| ApiError::bad_request("Container is not placed anywhere. Use place first."))?;
 
-    // Just update position_id — no quantity logic needed
-    sqlx::query(
-        "UPDATE batch_placements SET position_id = ?, placed_by = ?, placed_at = ? WHERE id = ?"
-    )
-    .bind(&request.new_position_id)
-    .bind(&claims.sub)
-    .bind(&now)
-    .bind(&placement.id)
-    .execute(&app_state.db_pool)
-    .await?;
+    let source = crate::container_history::client_source(request.source.as_deref());
+    let change = crate::container_history::change_placement(
+        &mut tx, &container_id, Some(&request.new_position_id), Some(&claims.sub),
+        source, None, None,
+    ).await?;
+    tx.commit().await?;
+
+    if change.changed() {
+        crate::audit::audit(
+            &app_state.db_pool, &claims.sub, "move_container", "container", &container_id,
+            &format!("Container #{} moved to {}", container.sequence_number, new_position.name),
+            &http_request,
+        ).await;
+    }
 
     let sql = format!("{} WHERE bc.id = ?", CONTAINER_WITH_LOCATION_SELECT);
     let result: ContainerWithLocation = sqlx::query_as(&sql)
@@ -601,19 +618,25 @@ pub async fn unplace_container(
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let container_id = path.into_inner();
-    let _claims = get_current_user(&http_request)?;
+    let claims = get_current_user(&http_request)?;
 
     // Get batch_id before removing placement
     let container = get_container_or_404(&app_state.db_pool, &container_id).await?;
 
-    let result = sqlx::query("DELETE FROM batch_placements WHERE container_id = ?")
-        .bind(&container_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    if result.rows_affected() == 0 {
+    let mut tx = app_state.db_pool.begin().await?;
+    let change = crate::container_history::change_placement(
+        &mut tx, &container_id, None, Some(&claims.sub),
+        crate::container_history::source::WEB, None, None,
+    ).await?;
+    if !change.changed() {
         return Err(ApiError::bad_request("Container is not placed anywhere."));
     }
+    tx.commit().await?;
+    crate::audit::audit(
+        &app_state.db_pool, &claims.sub, "unplace_container", "container", &container_id,
+        &format!("Container #{} removed from its position", container.sequence_number),
+        &http_request,
+    ).await;
 
     info!("📍 Container {} unplaced", container_id);
     let _ = sync_batch_location(&app_state.db_pool, &container.batch_id).await;
@@ -622,6 +645,19 @@ pub async fn unplace_container(
         (),
         "Container removed from position".to_string(),
     )))
+}
+
+// ==================== BOTTLE HISTORY ====================
+
+/// GET /api/v1/containers/{id}/history — newest first
+pub async fn get_container_history(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let container_id = path.into_inner();
+    get_container_or_404(&app_state.db_pool, &container_id).await?;
+    let rows = crate::container_history::container_history(&app_state.db_pool, &container_id, 500).await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::success(rows)))
 }
 
 // ==================== USE FROM CONTAINER (DISPENSE) ====================
@@ -647,6 +683,7 @@ pub async fn use_from_container(
     req.notes = request.notes.as_deref();
     req.allow_expired = request.allow_expired.unwrap_or(false);
     req.expired_reason = request.expired_reason.as_deref();
+    req.source = crate::container_history::client_source(request.source.as_deref());
     let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
 
@@ -696,7 +733,7 @@ pub async fn dispose_container(
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let container_id = path.into_inner();
-    let _claims = get_current_user(&http_request)?;
+    let claims = get_current_user(&http_request)?;
     let now = Utc::now();
 
     let container = get_container_or_404(&app_state.db_pool, &container_id).await?;
@@ -713,11 +750,23 @@ pub async fn dispose_container(
     // leave the batch in an inconsistent state.
     let mut tx = app_state.db_pool.begin().await?;
 
-    // Remove placement if exists
+    // Remove placement if exists, and journal the disposal with its last place
+    let from: Option<String> = sqlx::query_scalar(
+        "SELECT position_id FROM batch_placements WHERE container_id = ?"
+    )
+    .bind(&container_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM batch_placements WHERE container_id = ?")
         .bind(&container_id)
         .execute(&mut *tx)
         .await?;
+    {
+        use crate::container_history::{event, record_event, source, NewEvent};
+        let mut ev = NewEvent::new(&container_id, event::DISPOSED, source::WEB, Some(&claims.sub));
+        ev.from_position = from.as_deref();
+        record_event(&mut tx, &ev).await?;
+    }
 
     // Mark as disposed
     sqlx::query("UPDATE batch_containers SET status = 'disposed', updated_at = ? WHERE id = ?")

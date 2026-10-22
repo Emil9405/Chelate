@@ -560,6 +560,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     log::error!("🧹 Orphan cleanup failed: {}", e);
     }
 
+    // ==================== BOTTLE HISTORY + INVENTORY ====================
+    crate::container_history::run_migrations(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("container history migration: {}", e))?;
+
     // ==================== PERFORMANCE INDEXES ====================
     ensure_performance_indexes(pool).await?;
 
@@ -868,6 +873,9 @@ pub async fn reset_database(pool: &SqlitePool) -> Result<()> {
         "DROP TABLE IF EXISTS equipment",
         "DROP TABLE IF EXISTS audit_logs",
         "DROP TABLE IF EXISTS batch_requalifications",
+        "DROP TABLE IF EXISTS container_events",
+        "DROP TABLE IF EXISTS inventory_items",
+        "DROP TABLE IF EXISTS inventory_sessions",
         "DROP TABLE IF EXISTS usage_logs",
         "DROP TABLE IF EXISTS user_permissions",
         "DROP TABLE IF EXISTS batches",

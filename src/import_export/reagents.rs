@@ -470,6 +470,12 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
         }
     }
     log::info!("📥 Placements complete: {}", processed_placements);
+    if processed_placements > 0 {
+        // Bottle history: imported placements start with a "placed" event
+        crate::container_history::record_unlogged_placements(
+            &mut tx, crate::container_history::source::IMPORT, "Imported",
+        ).await?;
+    }
     
     // =============================================
     // === SINGLE COMMIT AT THE END ===

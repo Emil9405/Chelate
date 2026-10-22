@@ -50,6 +50,8 @@ mod equipment_handlers;
 mod import_export;
 mod pagination;
 mod consumption;
+mod container_history;
+mod inventory_handlers;
 mod label_handlers;
 mod reagent_stock;
 mod routes;

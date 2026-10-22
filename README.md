@@ -96,6 +96,8 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 - **Expiry Alerts** — Automated notifications for expiring chemicals
 - **Hierarchical Storage** — Location tracking (Building → Room → Cabinet → Shelf)
 - **Bottle Labels** — A Data Matrix label for every bottle, printed on A4 (plain paper to cut, or sticker sheets); scan it with a phone to see the bottle, write off an amount or move it
+- **Bottle History** — Every placement, move, draw, disposal and inventory sighting of a bottle is journaled with who, when, where from and where to
+- **Inventory Checks** — Scan every bottle in a room, cabinet or shelf; Chelate lists what is misplaced, unrecorded or missing, lets you fix it on the spot and keeps a printable record
 - **Bulk Operations** — Import/export thousands of records via CSV/Excel
 
 ### Equipment & Assets

@@ -85,6 +85,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/{container_id}/move", web::put().to(move_container_protected))
             .route("/{container_id}/unplace", web::delete().to(unplace_container_protected))
             .route("/{container_id}/use", web::post().to(use_from_container_protected))
+            .route("/{container_id}/history", web::get().to(container_handlers::get_container_history))
             .route("/{container_id}", web::delete().to(dispose_container_protected))
     );
 }
