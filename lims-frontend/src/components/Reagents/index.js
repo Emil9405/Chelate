@@ -8,6 +8,7 @@ import Button from '../Button';
 import Input from '../Input';
 import Select from '../Select';
 import ReagentAccordionItem from './ReagentAccordionItem';
+import useIsMobile from '../hooks/useIsMobile';
 import { COLUMN_WIDTHS } from './styles';
 import LocationPicker from '../storage/LocationPicker'; // <-- ИМПОРТ LOCATION PICKER
 
@@ -30,6 +31,9 @@ import {
 } from '../Icons';
 
 const Reagents = ({ user }) => {
+  const isMobile = useIsMobile();
+  // The 6-column reagent grid needs ~1024px; below that rows switch to cards
+  const isCardList = useIsMobile('(max-width: 1023px)');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [manufacturerFilter, setManufacturerFilter] = useState('');
@@ -201,13 +205,15 @@ const Reagents = ({ user }) => {
   if (error) return <ErrorMessage message={error} onRetry={refresh} />;
 
   return (
-    <div style={{ padding: '20px', paddingTop: '90px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: '1.75rem', fontWeight: '800', color: '#1a365d' }}>Reagents</h1>
-          <p style={{ margin: '4px 0 0 0', color: '#718096', fontSize: '0.875rem' }}>Manage your laboratory reagents and batches</p>
+    <div style={isMobile ? { padding: '12px', paddingTop: '68px' } : { padding: '20px', paddingTop: '90px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isMobile ? '16px' : '24px', gap: '12px', flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ margin: 0, fontSize: isMobile ? '1.5rem' : '1.75rem', fontWeight: '800', color: '#1a365d' }}>Reagents</h1>
+          {!isMobile && (
+            <p style={{ margin: '4px 0 0 0', color: '#718096', fontSize: '0.875rem' }}>Manage your laboratory reagents and batches</p>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
           {hasPermission('import_data') && (
             <Button variant="secondary" onClick={() => setShowImportModal(true)} icon={<UploadIcon size={16} />}>Import</Button>
           )}
@@ -219,14 +225,14 @@ const Reagents = ({ user }) => {
 
       <div style={{ marginBottom: '20px' }}>
         {/* Панель поиска и фильтров */}
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
-          <div style={{ flex: 1, position: 'relative' }}>
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '10px', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+          <div style={{ flex: isMobile ? '1 1 100%' : 1, position: 'relative', minWidth: 0 }}>
             <div style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
               <SearchIcon size={18} color="#a0aec0" />
             </div>
             <Input
               type="text"
-              placeholder="Search reagents by name, CAS, formula..."
+              placeholder={isMobile ? 'Search name, CAS, formula…' : 'Search reagents by name, CAS, formula...'}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               style={{ paddingLeft: '44px' }}
@@ -320,6 +326,7 @@ const Reagents = ({ user }) => {
       </div>
 
       <div className="reagents-content">
+        {!isCardList && (
         <div style={{ display: 'flex', padding: '14px 18px', background: 'linear-gradient(135deg, rgba(49, 130, 206, 0.08) 0%, rgba(56, 161, 105, 0.08) 100%)', borderRadius: '12px 12px 0 0', fontWeight: '700', fontSize: '0.7rem', color: '#1a365d', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '2px', gap: '14px' }}>
           <div style={{ width: COLUMN_WIDTHS.expandIcon, flexShrink: 0 }}></div>
           <div style={{ flex: 1, display: 'grid', gridTemplateColumns: COLUMN_WIDTHS.gridColumns, gap: '12px' }}>
@@ -327,6 +334,7 @@ const Reagents = ({ user }) => {
           </div>
           <div style={{ width: COLUMN_WIDTHS.actions, flexShrink: 0 }}>Actions</div>
         </div>
+        )}
 
         {reagents.length === 0 && !loading ? (
           <div style={{ textAlign: 'center', padding: '60px 40px', color: '#718096', backgroundColor: '#fff', borderRadius: '0 0 12px 12px', border: '1px solid #e2e8f0', borderTop: 'none' }}>
@@ -352,6 +360,7 @@ const Reagents = ({ user }) => {
               canEdit={canEditReagents()}
               canDelete={canDeleteReagents()}
               canDeleteBatch={canDeleteBatches()}
+              isMobile={isCardList}
             />
           ))
         )}
@@ -359,7 +368,7 @@ const Reagents = ({ user }) => {
         {loading && <div style={{ padding: '20px', textAlign: 'center' }}><Loading /></div>}
 
         {!loading && reagents.length > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', marginTop: '20px', background: 'white', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isMobile ? '12px' : '16px', marginTop: '20px', background: 'white', borderRadius: '8px', border: '1px solid #e2e8f0', flexWrap: 'wrap', gap: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
               <div style={{ fontSize: '0.9rem', color: '#4a5568' }}>
                 Page <b>{pagination.page}</b> of <b>{pagination.totalPages}</b>
@@ -377,7 +386,7 @@ const Reagents = ({ user }) => {
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', ...(isMobile ? { flex: '1 1 100%', justifyContent: 'space-between' } : {}) }}>
               <Button variant="outline" onClick={pagination.goPrev} disabled={pagination.page <= 1} icon={<ChevronLeftIcon />}>
                 Previous
               </Button>

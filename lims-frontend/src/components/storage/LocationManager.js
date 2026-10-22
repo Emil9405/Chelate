@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../services/api';
+import useIsMobile from '../hooks/useIsMobile';
 
 // ==================== КОНСТАНТЫ ====================
 
@@ -46,13 +47,13 @@ const getZoneTypeInfo = (type_) => ZONE_TYPES.find(z => z.value === type_) || ZO
 const S = {
   // Layout
   container: { padding: '100px 24px 24px', maxWidth: '1200px', margin: '0 auto' },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' },
   title: { fontSize: '22px', fontWeight: '600', color: '#1f2937', display: 'flex', alignItems: 'center', gap: '10px' },
   subtitle: { fontSize: '13px', color: '#6b7280', fontWeight: '400', marginTop: '2px' },
   
   // Toolbar
   toolbar: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' },
-  searchBox: { padding: '8px 14px', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', width: '250px', outline: 'none', transition: 'border-color 0.15s, box-shadow 0.15s' },
+  searchBox: { padding: '8px 14px', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', width: '250px', maxWidth: '100%', flex: '1 1 200px', outline: 'none', transition: 'border-color 0.15s, box-shadow 0.15s' },
   addBtn: { padding: '8px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: '500', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', transition: 'all 0.15s', color: 'white', backgroundColor: '#6366f1' },
   
   // Room Card
@@ -116,7 +117,7 @@ const S = {
   itemRow: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '12px', color: '#6b7280' },
 
   // Stats bar
-  statsBar: { display: 'flex', gap: '24px', padding: '12px 20px', backgroundColor: '#f9fafb', borderRadius: '8px', marginBottom: '20px', fontSize: '13px', color: '#6b7280' },
+  statsBar: { display: 'flex', flexWrap: 'wrap', gap: '8px 24px', padding: '12px 20px', backgroundColor: '#f9fafb', borderRadius: '8px', marginBottom: '20px', fontSize: '13px', color: '#6b7280' },
   statItem: { display: 'flex', alignItems: 'center', gap: '6px' },
   statValue: { fontWeight: '600', color: '#1f2937', fontSize: '16px' },
 
@@ -1028,6 +1029,7 @@ const RoomSection = ({ room, onRefresh }) => {
 // ==================== ГЛАВНЫЙ КОМПОНЕНТ ====================
 
 const LocationManager = () => {
+  const isMobile = useIsMobile();
   const [hierarchy, setHierarchy] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -1088,7 +1090,7 @@ const LocationManager = () => {
   }
 
   return (
-    <div style={S.container}>
+    <div style={isMobile ? { ...S.container, padding: '68px 12px 16px' } : S.container}>
       {/* Header */}
       <div style={S.header}>
         <div>

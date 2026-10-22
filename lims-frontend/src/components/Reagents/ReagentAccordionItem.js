@@ -163,12 +163,39 @@ const CompactRooms = ({ batch, rooms }) => {
 
 // ==================== COMPACT BATCH ROW ====================
 
-const CompactBatchRow = ({ batch, isActive, onClick, rooms }) => {
+const CompactBatchRow = ({ batch, isActive, onClick, rooms, isMobile }) => {
   const [isHovered, setIsHovered] = useState(false);
   const expiryStatus = getExpiryStatus(batch.expiry_date);
   
   // Защита от объекта quantity
   const displayQuantity = getSafeValue(batch.quantity);
+
+  if (isMobile) {
+    // Phone: two-line card instead of an 8-column grid row
+    return (
+      <div
+        onClick={onClick}
+        style={{
+          ...accordionStyles.batchRow,
+          ...(isActive ? accordionStyles.batchRowActive : {}),
+          display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '6px',
+          padding: '12px', minHeight: '56px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <span style={{ ...accordionStyles.batchValue, fontWeight: 700, flex: 1, minWidth: 0 }}>{batch.batch_number}</span>
+          {getStatusBadge(batch.status)}
+          <span style={{ ...accordionStyles.batchChevron, transform: isActive ? 'rotate(180deg)' : 'rotate(0deg)', width: '20px' }}>▼</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', fontSize: '0.8rem' }}>
+          <span style={{ ...accordionStyles.batchValue, fontWeight: 600 }}>{displayQuantity} {batch.unit}</span>
+          <CompactContainers batch={batch} />
+          <span style={{ ...expiryStatus.style, marginLeft: 'auto' }}>{expiryStatus.text}</span>
+        </div>
+        {batch.location_summary && <CompactRooms batch={batch} rooms={rooms} />}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -232,6 +259,7 @@ const ReagentAccordionItem = ({
   canEdit,
   canDelete,
   canDeleteBatch,
+  isMobile = false,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [expandedBatchId, setExpandedBatchId] = useState(null);
@@ -251,9 +279,48 @@ const ReagentAccordionItem = ({
     logic.setShowPrintModal(true);
   };
 
+  const stockText = reagent.total_display || formatQuantity(reagent.total_quantity, reagent.primary_unit) || '—';
+  const stockColor = reagent.total_display === 'No stock' ? '#e53e3e' : '#38a169';
+
+  // Phone: card with name + stock on top, formula/CAS/status below, icon actions
+  const iconAction = { minWidth: '40px', height: '40px', padding: '0 10px', justifyContent: 'center' };
+  const mobileHeader = (
+    <div onClick={onToggle} style={{ padding: '12px', cursor: 'pointer', userSelect: 'none' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+        <div style={{
+          ...accordionStyles.expandIcon, width: '32px', height: '32px', marginTop: '1px',
+          transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)'
+        }}>
+          <ChevronRightIcon size={16} color="#3182ce" />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+            <div style={{ fontWeight: 700, color: '#1a365d', fontSize: '1rem', flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+              {reagent.name}
+            </div>
+            <div style={{ fontWeight: 700, color: stockColor, fontSize: '0.9rem', whiteSpace: 'nowrap' }}>{stockText}</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '4px', fontSize: '0.8rem', color: '#718096' }}>
+            {reagent.formula && <span>{reagent.formula}</span>}
+            {reagent.cas_number && <span>CAS {reagent.cas_number}</span>}
+            <Badge variant={reagent.status === 'active' ? 'success' : 'warning'}>{reagent.status || 'Unknown'}</Badge>
+            {reagent.visibility === 'hidden' && <span style={{ fontSize: '10px', fontWeight: 700, color: '#4a5568' }}>HIDDEN</span>}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: '6px', marginTop: '10px', paddingLeft: '42px', flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+        <Button size="small" variant="ghost" onClick={() => onAction('view', reagent)} icon={<EyeIcon size={16} />} style={iconAction}>View</Button>
+        <Button size="small" variant="secondary" onClick={handlePrintClick} icon={<PrinterIcon size={16} />} style={iconAction} title="Print Stickers" aria-label="Print Stickers" />
+        {canEdit && <Button size="small" variant="primary" onClick={() => onAction('edit', reagent)} icon={<EditIcon size={16} />} style={iconAction} title="Edit" aria-label="Edit" />}
+        {canDelete && <Button size="small" variant="danger" onClick={() => onAction('delete', reagent)} icon={<TrashIcon size={16} />} style={iconAction} title="Delete" aria-label="Delete" />}
+      </div>
+    </div>
+  );
+
   return (
     <div style={accordionStyles.container}>
       {/* ===== Reagent Header ===== */}
+      {isMobile ? mobileHeader : (
       <div
         style={{ ...accordionStyles.header, ...(isHovered ? accordionStyles.headerHover : {}) }}
         onClick={onToggle}
@@ -307,11 +374,12 @@ const ReagentAccordionItem = ({
           {canDelete && <Button size="small" variant="danger" onClick={() => onAction('delete', reagent)} icon={<TrashIcon size={14} />}>Delete</Button>}
         </div>
       </div>
+      )}
 
       {/* ===== Batches Section ===== */}
       {isExpanded && (
-        <div style={accordionStyles.batchesContainer}>
-          <div style={accordionStyles.batchesHeader}>
+        <div style={{ ...accordionStyles.batchesContainer, ...(isMobile ? { padding: '10px' } : {}) }}>
+          <div style={{ ...accordionStyles.batchesHeader, flexWrap: 'wrap', gap: '8px' }}>
             <span style={accordionStyles.batchesTitle}>
               <DatabaseIcon size={16} color="#3182ce" /> Batches ({logic.batches.length})
             </span>
@@ -333,6 +401,7 @@ const ReagentAccordionItem = ({
           ) : (
             <div>
               {/* Column headers */}
+              {!isMobile && (
               <div style={accordionStyles.batchRowHeader}>
                 <div>Batch #</div>
                 <div>Qty</div>
@@ -343,6 +412,7 @@ const ReagentAccordionItem = ({
                 <div>Expiry</div>
                 <div></div>
               </div>
+              )}
 
               {/* Batch rows */}
               {logic.batches.map(batch => (
@@ -352,6 +422,7 @@ const ReagentAccordionItem = ({
                     isActive={expandedBatchId === batch.id}
                     onClick={() => toggleBatch(batch.id)}
                     rooms={rooms}
+                    isMobile={isMobile}
                   />
 
                   {/* Expanded card */}
@@ -390,6 +461,7 @@ const ReagentAccordionItem = ({
                       onHistory={(b) => { logic.setSelectedBatch(b); logic.setShowUsageHistory(true); }}
                       onRequalify={(b) => { logic.setSelectedBatch(b); logic.setShowRequalify(true); }}
                       onRefresh={logic.loadBatches}
+                      isMobile={isMobile}
                     />
                   )}
                 </React.Fragment>

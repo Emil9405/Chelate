@@ -280,7 +280,10 @@ const UsageBar = ({
   // Selected dispense unit (defaults to batch.unit, can be a compatible alternative)
   getUsageUnit,
   setUsageUnit,
+  isMobile = false,
 }) => {
+  // Phone: 40px controls (finger-sized), full-width rows
+  const ctlH = isMobile ? '40px' : '30px';
   const available = batch.quantity - (batch.reserved_quantity || 0);
   const hasPackSize = batch.pack_size && batch.pack_size > 0;
   const input = getUsageInput(batch.id);
@@ -393,7 +396,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
   return (
     // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Убрали width: 100%, добавили flex: 1
     // Теперь UsageBar делит строку с кнопками Action, прижимая их вправо
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '300px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? '8px' : '4px', flex: 1, minWidth: isMobile ? 0 : '300px', width: isMobile ? '100%' : undefined }}>
       
       {/* Expired batch: explicit reason required, recorded in usage log and audit */}
       {expired && (
@@ -410,7 +413,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
             maxLength={500}
             value={expiredReason}
             onChange={(e) => setExpiredReason(e.target.value)}
-            placeholder="Reason for using expired stock (required)"
+            placeholder={isMobile ? 'Reason (required)' : 'Reason for using expired stock (required)'}
             style={{
               flex: 1, minWidth: '220px', height: '28px', padding: '0 8px', fontSize: '12px',
               border: '1px solid #fbd38d', borderRadius: '6px', background: 'white',
@@ -426,13 +429,13 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
       }}>
         
         {/* Выбор контейнера */}
-        <div style={{ width: '320px', maxWidth: '100%', flexShrink: 1 }}>
+        <div style={{ width: isMobile ? '100%' : '320px', maxWidth: '100%', flexShrink: 1 }}>
           {hasMultipleContainers && (
             <select
               value={selectedId || ''}
               onChange={(e) => setUsageContainer(prev => ({ ...prev, [batch.id]: e.target.value || null }))}
               style={{
-                height: '30px', fontSize: '12px', padding: '0 6px',
+                height: ctlH, fontSize: '12px', padding: '0 6px',
                 border: '1px solid #e2e8f0', borderRadius: '6px',
                 background: 'white', color: '#2d3748', textOverflow: 'ellipsis',
                 width: '100%',
@@ -490,19 +493,19 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
         </div>
 
         {/* Группа: Степпер + Ввод + Кнопка */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '4px', flexShrink: 0, ...(isMobile ? { width: '100%', flexWrap: 'wrap' } : {}) }}>
           
           {hasPackSize && (
             <div style={{
               display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0',
-              borderRadius: '6px', overflow: 'hidden', height: '30px', background: 'white',
+              borderRadius: '6px', overflow: 'hidden', height: ctlH, background: 'white',
             }}>
               <button
                 type="button"
                 onClick={() => adjustQuantityByPack(batch.id, batch.pack_size, 'down', maxQty)}
                 disabled={isLoading || (parseFloat(input.quantity) || 0) <= 0}
                 style={{
-                  width: '26px', height: '100%', border: 'none', background: '#edf2f7',
+                  width: isMobile ? '40px' : '26px', height: '100%', border: 'none', background: '#edf2f7',
                   cursor: 'pointer', fontSize: '14px', color: '#4a5568',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   borderRight: '1px solid #e2e8f0',
@@ -516,7 +519,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 onClick={() => adjustQuantityByPack(batch.id, batch.pack_size, 'up', maxQty)}
                 disabled={isLoading || (parseFloat(input.quantity) || 0) >= maxQty}
                 style={{
-                  width: '26px', height: '100%', border: 'none', background: '#edf2f7',
+                  width: isMobile ? '40px' : '26px', height: '100%', border: 'none', background: '#edf2f7',
                   cursor: 'pointer', fontSize: '14px', color: '#4a5568',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   borderLeft: '1px solid #e2e8f0',
@@ -554,7 +557,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 placeholder={`${Number(maxInSelectedUnit).toFixed(Number.isInteger(maxInSelectedUnit) ? 0 : 2)}`}
                 disabled={isLoading}
                 style={{
-                  width: '95px', height: '30px',
+                  width: isMobile ? '110px' : '95px', height: ctlH,
                   padding: hasUnitChoice ? '0 8px' : '0 24px 0 8px',
                   border: error ? '1px solid #e53e3e' : '1px solid #e2e8f0',
                   borderRadius: '6px', fontSize: '13px', textAlign: 'right', fontWeight: '500',
@@ -578,7 +581,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 disabled={isLoading}
                 title="Dispense unit"
                 style={{
-                  height: '30px', padding: '0 4px', fontSize: '12px',
+                  height: ctlH, padding: '0 4px', fontSize: '12px',
                   border: '1px solid #e2e8f0', borderRadius: '6px',
                   background: 'white', color: '#4a5568',
                   cursor: isLoading ? 'not-allowed' : 'pointer',
@@ -599,7 +602,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
               // server auto-distributes across containers (opened first).
               disabled={isLoading || !input.quantity || expiredReasonMissing}
               icon={<UseIcon size={14} />}
-              style={{ backgroundColor: expired ? '#dd6b20' : '#38a169', height: '30px', padding: '0 12px' }}
+              style={{ backgroundColor: expired ? '#dd6b20' : '#38a169', height: ctlH, padding: '0 12px' }}
               title={expiredReasonMissing
                 ? 'Enter a reason to use expired stock'
                 : (hasMultipleContainers && !selectedId
@@ -633,6 +636,7 @@ const BatchExpandedCard = ({
   usageLoading, usageSuccess, usageError, usageContainer, setUsageContainer,
   getUsageUnit, setUsageUnit,
   onEdit, onDelete, onHistory, onRefresh, onRequalify,
+  isMobile = false,
 }) => {
   const available = batch.quantity - (batch.reserved_quantity || 0);
   const hasPackSize = batch.pack_size && batch.pack_size > 0;
@@ -647,11 +651,11 @@ const BatchExpandedCard = ({
 
   return (
     <div style={{
-      margin: '0 0 8px 0', padding: '16px', backgroundColor: '#fff',
+      margin: '0 0 8px 0', padding: isMobile ? '12px' : '16px', backgroundColor: '#fff',
       borderRadius: '0 0 10px 10px', border: '1px solid #d0d8e4',
       borderTop: '2px solid #3182ce', animation: 'slideDown 0.15s ease-out',
     }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '14px' : '20px', marginBottom: '16px' }}>
         <div>
           <div style={{ fontSize: '0.75rem', fontWeight: '700', color: '#718096', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
             Details
@@ -691,8 +695,9 @@ const BatchExpandedCard = ({
           usageLoading={usageLoading} usageSuccess={usageSuccess} usageError={usageError}
           usageContainer={usageContainer} setUsageContainer={setUsageContainer}
           getUsageUnit={getUsageUnit} setUsageUnit={setUsageUnit}
+          isMobile={isMobile}
         />
-        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, flexWrap: 'wrap', ...(isMobile ? { width: '100%' } : {}) }}>
           <Button size="small" variant="ghost" onClick={() => onHistory(batch)} icon={<ClockIcon size={14} />}>History</Button>
           {canEdit && onRequalify && batch.status !== 'depleted' && (isBatchExpired(batch) || isBatchExpiringSoon(batch)) && (
             <Button
