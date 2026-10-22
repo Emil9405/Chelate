@@ -49,6 +49,8 @@ mod batch_handlers;
 mod equipment_handlers;
 mod import_export;
 mod pagination;
+mod consumption;
+mod reagent_stock;
 mod routes;
 pub mod soft_delete;
 pub mod archive_handlers;

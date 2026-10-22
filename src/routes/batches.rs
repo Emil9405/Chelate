@@ -137,6 +137,16 @@ async fn create_container_protected(
     container_handlers::create_container(app_state, path, request, http_request).await
 }
 
+async fn requalify_batch_protected(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+    request: web::Json<batch_handlers::RequalifyBatchRequest>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_batch_permission_async(&http_request, auth_handlers::BatchAction::Edit, &app_state.db_pool).await?;
+    batch_handlers::requalify_batch(app_state, path, request, http_request).await
+}
+
 // ==================== ROUTES ====================
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
@@ -155,5 +165,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/{batch_id}/containers", web::post().to(create_container_protected))
             .route("/{batch_id}/containers/split", web::post().to(split_batch_protected))
             .route("/{batch_id}/placements", web::get().to(placement_handlers::get_batch_placements))
+            .route("/{batch_id}/requalify", web::post().to(requalify_batch_protected))
+            .route("/{batch_id}/requalifications", web::get().to(batch_handlers::get_batch_requalifications))
     );
 }

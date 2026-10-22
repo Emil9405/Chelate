@@ -250,8 +250,9 @@ async fn update_batch_statuses(pool: SqlitePool) {
             // 1. Ищем ID просроченных (по 1000)
             let batch_ids: Vec<String> = match sqlx::query_scalar(
                 r#"SELECT id FROM batches 
-                   WHERE expiry_date < datetime('now') 
-                   AND status = 'available' 
+                   WHERE datetime(expiry_date) < datetime('now')
+                   AND status IN ('available', 'low_stock', 'in_use')
+                   AND deleted_at IS NULL
                    LIMIT 1000"#
             )
             .fetch_all(&pool)
@@ -289,4 +290,4 @@ async fn update_batch_statuses(pool: SqlitePool) {
             log::info!("Updated {} expired batches in chunks", total_updated);
         }
     }
-}
+}

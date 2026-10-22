@@ -6,6 +6,11 @@
 /* ---------- CSS Variables (CHELATE Design System) ---------- */
 
 :root {
+  /* The UI is light-only: components use hard-coded light backgrounds.
+     Pin the scheme so a dark OS/browser theme does not switch native
+     controls (inputs, date pickers, dropdowns, scrollbars) to dark. */
+  color-scheme: light;
+
   /* === CHELATE Brand Colors === */
   
   /* Primary Navy (главный цвет текста/заголовков) */
@@ -122,18 +127,9 @@
   --z-toast: 2000;
 }
 
-/* === Dark Mode (опционально) === */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #0f172a;
-    --color-bg-alt: #1e293b;
-    --color-bg-elevated: #334155;
-    --color-text: #f1f5f9;
-    --color-text-muted: #94a3b8;
-    --color-border: #334155;
-    --color-border-strong: #475569;
-  }
-}
+/* Dark mode is intentionally not supported yet. A partial override here
+   (light text variables + white inline backgrounds) made typed text
+   invisible in inputs when the browser used a dark theme. */
 
 /* ---------- Global Reset ---------- */
 

@@ -1,7 +1,7 @@
 // components/Reagents/BatchExpandedCard.js
 // Expanded batch card: Details | Grouped Containers | Usage bar
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import Button from '../Button';
 import { UseIcon } from './icons';
 import { getCompatibleUnits, convertQuantity } from '../../utils/units';
@@ -9,7 +9,18 @@ import {
   EditIcon,
   TrashIcon,
   ClockIcon,
+  CalendarIcon,
 } from '../Icons';
+
+/** Expired by status, or expiry date already passed (status is refreshed hourly) */
+export const isBatchExpired = (batch) =>
+  batch.status === 'expired' ||
+  (!!batch.expiry_date && new Date(batch.expiry_date) <= new Date());
+
+/** Within `days` of expiry (and not yet expired) */
+const isBatchExpiringSoon = (batch, days = 30) =>
+  !!batch.expiry_date && !isBatchExpired(batch) &&
+  new Date(batch.expiry_date) <= new Date(Date.now() + days * 86400000);
 
 // ==================== HELPERS ====================
 
@@ -273,6 +284,13 @@ const UsageBar = ({
   const available = batch.quantity - (batch.reserved_quantity || 0);
   const hasPackSize = batch.pack_size && batch.pack_size > 0;
   const input = getUsageInput(batch.id);
+  const expired = isBatchExpired(batch);
+  const [expiredReason, setExpiredReason] = useState('');
+  const expiredReasonMissing = expired && expiredReason.trim().length === 0;
+  const submitUse = () => {
+    if (expiredReasonMissing) return;
+    handleQuantityUse(batch, expired ? { expired_reason: expiredReason.trim() } : null);
+  };
 
   // Countable units (pcs / шт / units …) only allow integer dispensing.
   // Avoids "2.01" when the unit is whole items.
@@ -331,10 +349,10 @@ const UsageBar = ({
       .join(' / ');
   };
 
-// Allow dispensing from 'available' AND 'low_stock' batches.
-  // Only fully blocked if status is 'depleted'/'expired'/'reserved' OR no quantity left.
+  // Expired stock may still be fit for use: allowed with a mandatory reason.
+  // Blocked only when depleted or nothing is left.
   const canDispense =
-    (batch.status === 'available' || batch.status === 'low_stock') && available > 0;
+    ['available', 'low_stock', 'in_use', 'expired'].includes(batch.status) && available > 0;
 
   if (!canDispense) {
     return (
@@ -377,6 +395,30 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
     // Теперь UsageBar делит строку с кнопками Action, прижимая их вправо
     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '300px' }}>
       
+      {/* Expired batch: explicit reason required, recorded in usage log and audit */}
+      {expired && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+          padding: '6px 8px', borderRadius: '6px',
+          background: '#fffaf0', border: '1px solid #fbd38d',
+        }}>
+          <span style={{ fontSize: '12px', color: '#c05621', fontWeight: 600, whiteSpace: 'nowrap' }}>
+            ⚠ Expired{batch.expiry_date ? ` ${new Date(batch.expiry_date).toLocaleDateString()}` : ''}
+          </span>
+          <input
+            type="text"
+            maxLength={500}
+            value={expiredReason}
+            onChange={(e) => setExpiredReason(e.target.value)}
+            placeholder="Reason for using expired stock (required)"
+            style={{
+              flex: 1, minWidth: '220px', height: '28px', padding: '0 8px', fontSize: '12px',
+              border: '1px solid #fbd38d', borderRadius: '6px', background: 'white',
+            }}
+          />
+        </div>
+      )}
+
       {/* Строка с элементами управления */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'flex-start', // Прижали всё влево
@@ -507,7 +549,7 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                   }
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); handleQuantityUse(batch); }
+                  if (e.key === 'Enter') { e.preventDefault(); submitUse(); }
                 }}
                 placeholder={`${Number(maxInSelectedUnit).toFixed(Number.isInteger(maxInSelectedUnit) ? 0 : 2)}`}
                 disabled={isLoading}
@@ -551,16 +593,18 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
            <Button
               size="small"
               variant="primary"
-              onClick={() => handleQuantityUse(batch)}
-              // Enabled whenever a positive quantity is entered.
-              // If no container is selected, handleQuantityUse auto-distributes
-              // across containers (opened first, then by sequence).
-              disabled={isLoading || !input.quantity}
+              onClick={submitUse}
+              // Enabled whenever a positive quantity is entered (and, for an
+              // expired batch, a reason is given). With no container selected the
+              // server auto-distributes across containers (opened first).
+              disabled={isLoading || !input.quantity || expiredReasonMissing}
               icon={<UseIcon size={14} />}
-              style={{ backgroundColor: '#38a169', height: '30px', padding: '0 12px' }}
-              title={hasMultipleContainers && !selectedId
-                ? 'No container selected — will auto-distribute across containers'
-                : undefined}
+              style={{ backgroundColor: expired ? '#dd6b20' : '#38a169', height: '30px', padding: '0 12px' }}
+              title={expiredReasonMissing
+                ? 'Enter a reason to use expired stock'
+                : (hasMultipleContainers && !selectedId
+                  ? 'No container selected — will auto-distribute across containers'
+                  : undefined)}
             >
               {isLoading ? '...' : 'Use'}
             </Button> 
@@ -588,7 +632,7 @@ const BatchExpandedCard = ({
   getUsageInput, setUsageQuantity, handleQuantityUse, adjustQuantityByPack,
   usageLoading, usageSuccess, usageError, usageContainer, setUsageContainer,
   getUsageUnit, setUsageUnit,
-  onEdit, onDelete, onHistory, onRefresh,
+  onEdit, onDelete, onHistory, onRefresh, onRequalify,
 }) => {
   const available = batch.quantity - (batch.reserved_quantity || 0);
   const hasPackSize = batch.pack_size && batch.pack_size > 0;
@@ -650,6 +694,17 @@ const BatchExpandedCard = ({
         />
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
           <Button size="small" variant="ghost" onClick={() => onHistory(batch)} icon={<ClockIcon size={14} />}>History</Button>
+          {canEdit && onRequalify && batch.status !== 'depleted' && (isBatchExpired(batch) || isBatchExpiringSoon(batch)) && (
+            <Button
+              size="small"
+              variant="secondary"
+              onClick={() => onRequalify(batch)}
+              icon={<CalendarIcon size={14} />}
+              title="Batch was checked and is fit for use: set a new expiry/retest date"
+            >
+              Extend expiry
+            </Button>
+          )}
           {canEdit && <Button size="small" variant="secondary" onClick={() => onEdit(batch)} icon={<EditIcon size={14} />}>Edit</Button>}
           {canDeleteBatch && <Button size="small" variant="danger" onClick={() => onDelete(batch)} icon={<TrashIcon size={14} />}>Delete</Button>}
         </div>

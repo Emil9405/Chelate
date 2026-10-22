@@ -53,7 +53,7 @@ async fn update_experiment_protected(
         format!("Experiment {} updated", experiment_id)
     };
 
-    let response = experiment_handlers::update_experiment(app_state.clone(), web::Path::from(experiment_id.clone()), update_data, claims.sub).await?;
+    let response = experiment_handlers::update_experiment(app_state.clone(), web::Path::from(experiment_id.clone()), update_data, claims.sub, &http_request).await?;
     audit::audit_with_changes(&app_state.db_pool, &user_id, "edit", "experiment", &experiment_id, &desc, &cs, &http_request).await;
     Ok(response)
 }
@@ -119,7 +119,7 @@ async fn complete_experiment_protected(
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_experiment_permission(&http_request, auth_handlers::ExperimentAction::Edit, &app_state.db_pool).await?;
     let claims = auth::get_current_user(&http_request)?;
-    experiment_handlers::complete_experiment(app_state, path, claims.sub).await
+    experiment_handlers::complete_experiment(app_state, path, claims.sub, &http_request).await
 }
 
 async fn cancel_experiment_protected(
@@ -139,7 +139,7 @@ async fn consume_experiment_reagent_protected(
 ) -> ApiResult<HttpResponse> {
     auth_handlers::check_experiment_permission(&http_request, auth_handlers::ExperimentAction::Edit, &app_state.db_pool).await?;
     let claims = auth::get_current_user(&http_request)?;
-    experiment_handlers::consume_experiment_reagent(app_state, path, claims.sub).await
+    experiment_handlers::consume_experiment_reagent(app_state, path, claims.sub, &http_request).await
 }
 
 // ==================== ROUTES ====================

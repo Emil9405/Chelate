@@ -1,6 +1,5 @@
 // src/handlers.rs
 use actix_web::{web, HttpResponse, HttpRequest};
-use uuid::Uuid;
 use validator::Validate;
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
@@ -10,7 +9,6 @@ use crate::AppState;
 use crate::models::{Reagent, Batch};
 use crate::error::{ApiError, ApiResult, validate_quantity};
 use crate::auth::get_current_user;
-use crate::audit::ChangeSet;
 use std::env;
 
 // ==================== COMMON STRUCTURES ====================
@@ -91,16 +89,6 @@ pub struct SortingInfo {
     pub sort_order: String,
 }
 
-/// Cursor-based пагинация для больших данных
-#[derive(Debug, Serialize)]
-pub struct CursorPaginatedResponse<T> {
-    pub data: Vec<T>,
-    pub next_cursor: Option<String>,
-    pub prev_cursor: Option<String>,
-    pub has_more: bool,
-    pub total: i64,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
     pub page: Option<i64>,
@@ -169,8 +157,14 @@ pub struct UseReagentRequest {
     pub purpose: Option<String>,
     #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
     pub notes: Option<String>,
-    /// Optional: placement_id to deduct from specific room location
-    pub placement_id: Option<String>,
+    /// Optional: limit auto-distribution to these containers (selected group)
+    pub container_ids: Option<Vec<String>>,
+
+    /// Explicit confirmation to use an expired batch
+    pub allow_expired: Option<bool>,
+    /// Required when allow_expired is set
+    #[validate(length(max = 500, message = "Reason cannot exceed 500 characters"))]
+    pub expired_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -187,6 +181,8 @@ pub struct UsageLog {
     pub created_at: DateTime<Utc>,
 }
 
+/// Batch-level write-off. If the batch has containers, the quantity is drawn
+/// across them on the server (opened first, then sealed) in one transaction.
 pub async fn use_reagent(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
@@ -199,133 +195,43 @@ pub async fn use_reagent(
     let claims = get_current_user(&http_request)?;
     validate_quantity(request.quantity_used)?;
 
-    let reagent: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ? AND deleted_at IS NULL")
-        .bind(&reagent_id)
-        .fetch_one(&app_state.db_pool)
-        .await
-        .map_err(|_| ApiError::reagent_not_found(&reagent_id))?;
-
-    let batch: Batch = sqlx::query_as("SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL")
-        .bind(&batch_id)
-        .bind(&reagent_id)
-        .fetch_one(&app_state.db_pool)
-        .await
-        .map_err(|_| ApiError::batch_not_found(&batch_id))?;
-
-    // Allow dispensing from both 'available' and 'low_stock' batches.
-    // Only 'depleted' / 'expired' / 'reserved' are blocked.
-    if batch.status != "available" && batch.status != "low_stock" {
-        return Err(ApiError::BadRequest(format!(
-            "Batch is not available for use. Current status: '{}'",
-            batch.status
-        )));
-    }
-
-    if request.quantity_used > batch.quantity {
-        return Err(ApiError::insufficient_quantity(batch.quantity, request.quantity_used));
-    }
-
-    let now = Utc::now();
-    let usage_id = Uuid::new_v4().to_string();
-    let mut tx = app_state.db_pool.begin().await?;
-
-    sqlx::query(
-        r#"INSERT INTO usage_logs (id, reagent_id, batch_id, user_id, quantity_used, unit, purpose, notes, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+    let belongs: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL"
     )
-        .bind(&usage_id)
+        .bind(&batch_id)
         .bind(&reagent_id)
-        .bind(&batch_id)
-        .bind(&claims.sub)
-        .bind(request.quantity_used)
-        .bind(&batch.unit)
-        .bind(&request.purpose)
-        .bind(&request.notes)
-        .bind(&now)
-        .execute(&mut *tx)
+        .fetch_optional(&app_state.db_pool)
         .await?;
-
-let new_quantity = batch.quantity - request.quantity_used;
-    // Mirror the same threshold logic used by container_handlers::use_from_container.
-    // Use 0.001 tolerance (same as `compute_container_status` empty threshold) to
-    // handle floating-point residue after multi-step auto-distribute — without it,
-    // a batch can end at e.g. 1e-15 and incorrectly stay in 'low_stock'.
-    let low_stock_threshold = batch.original_quantity * 0.2;
-    let new_status = if new_quantity <= 0.001 {
-        "depleted"
-    } else if new_quantity <= low_stock_threshold {
-        "low_stock"
-    } else {
-        "available"
-    };
-
-    sqlx::query("UPDATE batches SET quantity = ?, status = ?, updated_at = ? WHERE id = ?")
-        .bind(new_quantity.max(0.0))
-        .bind(new_status)
-        .bind(&now)
-        .bind(&batch_id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Deduct from specific placement if placement_id is provided
-    if let Some(ref placement_id) = request.placement_id {
-        let placement: Option<(String, f64)> = sqlx::query_as(
-            "SELECT id, quantity FROM batch_placements WHERE id = ? AND batch_id = ?"
-        )
-        .bind(placement_id)
-        .bind(&batch_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some((_pid, p_qty)) = placement {
-            let new_p_qty = p_qty - request.quantity_used;
-            if new_p_qty <= 0.001 {
-                // Remove empty placement
-                sqlx::query("DELETE FROM batch_placements WHERE id = ?")
-                    .bind(placement_id)
-                    .execute(&mut *tx)
-                    .await?;
-            } else {
-                sqlx::query("UPDATE batch_placements SET quantity = ?, updated_at = ? WHERE id = ?")
-                    .bind(new_p_qty.max(0.0))
-                    .bind(&now)
-                    .bind(placement_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-        }
-        // If placement not found, still proceed (backward compat — batch total was already decremented)
+    if belongs.is_none() {
+        return Err(ApiError::batch_not_found(&batch_id));
     }
 
+    let mut tx = app_state.db_pool.begin().await?;
+    let mut req = crate::consumption::ConsumeRequest::new(
+        &batch_id, request.quantity_used, Some(&claims.sub),
+    );
+    req.purpose = request.purpose.as_deref();
+    req.notes = request.notes.as_deref();
+    req.container_ids = request.container_ids.as_deref();
+    req.allow_expired = request.allow_expired.unwrap_or(false);
+    req.expired_reason = request.expired_reason.as_deref();
+    let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
-
-    // Detailed audit with reagent name, batch number, and quantity change
-    let mut cs = ChangeSet::new();
-    cs.add_f64("quantity", batch.quantity, new_quantity.max(0.0));
-    if batch.status != new_status {
-        cs.add("status", &batch.status, new_status);
-    }
 
     crate::audit::audit_with_changes(
         &app_state.db_pool, &claims.sub, "use_reagent", "batch", &batch_id,
-        &format!(
-            "Used {} {} from reagent \"{}\" batch {} (remaining: {} {})",
-            request.quantity_used, batch.unit, reagent.name, batch.batch_number,
-            new_quantity.max(0.0), batch.unit
-        ),
-        &cs, &http_request,
+        &result.describe(None), &result.audit_changes(), &http_request,
     ).await;
 
-    log::info!(
-        "User {} used {} {} from reagent \"{}\" batch {} (reagent_id: {}, batch_id: {})",
-        claims.username, request.quantity_used, batch.unit, reagent.name, batch.batch_number, reagent_id, batch_id
-    );
+    log::info!("User {}: {}", claims.username, result.describe(None));
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         serde_json::json!({
-            "usage_id": usage_id,
-            "remaining_quantity": new_quantity.max(0.0),
-            "status": new_status
+            "usage_id": result.usage_id,
+            "remaining_quantity": result.batch_quantity_after,
+            "status": result.status_after,
+            "containers_used": result.containers.len(),
+            "containers": result.containers,
         }),
         "Reagent usage recorded successfully".to_string(),
     )))
@@ -419,14 +325,26 @@ pub async fn get_dashboard_stats(
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let low_stock: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM batches WHERE quantity <= 10 AND status = 'available' AND deleted_at IS NULL AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)")
+    // Low stock = same 20% rule the batch status machine uses (not an absolute
+    // quantity, which would mix units: 10 kg and 10 mg are not comparable)
+    let low_stock: (i64,) = sqlx::query_as(&format!(
+        "SELECT COUNT(*) FROM batches \
+         WHERE status IN {st} AND deleted_at IS NULL \
+           AND (status = 'low_stock' OR (original_quantity > 0 AND quantity <= original_quantity * 0.2)) \
+           AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)",
+        st = crate::reagent_stock::STOCK_STATUSES_SQL
+    ))
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    let expiring_soon: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM batches WHERE expiry_date IS NOT NULL AND expiry_date <= datetime('now', '+30 days') AND status = 'available' AND deleted_at IS NULL AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)"
-    )
+    let expiring_soon: (i64,) = sqlx::query_as(&format!(
+        "SELECT COUNT(*) FROM batches \
+         WHERE expiry_date IS NOT NULL \
+           AND datetime(expiry_date) <= datetime('now', '+30 days') \
+           AND status IN {st} AND deleted_at IS NULL \
+           AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)",
+        st = crate::reagent_stock::STOCK_STATUSES_SQL
+    ))
         .fetch_one(&app_state.db_pool)
         .await?;
 
@@ -564,7 +482,8 @@ pub async fn get_dashboard_trends(
         WHERE expiry_date IS NOT NULL
           AND expiry_date <= datetime('now', '+28 days')
           AND expiry_date > datetime('now')
-          AND status = 'available'
+          AND status IN ('available', 'low_stock', 'in_use')
+          AND deleted_at IS NULL
         GROUP BY week_label
         ORDER BY CASE week_label
             WHEN 'This week' THEN 1 WHEN 'Week 2' THEN 2

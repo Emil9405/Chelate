@@ -314,23 +314,4 @@
   font-size: var(--font-size-xs);
 }
 
-/* ---------- Dark Mode Support ---------- */
-
-@media (prefers-color-scheme: dark) {
-  .toast {
-    background: var(--color-bg-elevated);
-    border-color: var(--color-border);
-  }
-  
-  .toast::after {
-    background: rgba(255, 255, 255, 0.1);
-  }
-  
-  .toast-close:hover {
-    background: var(--color-bg);
-  }
-  
-  .toast-action-btn {
-    background: var(--color-bg);
-  }
-}
+/* Dark mode: not supported yet (see index.css) */

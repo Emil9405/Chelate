@@ -13,7 +13,6 @@ use crate::validator::FieldValidator;
 use crate::pagination::{
     HybridPaginationQuery, HybridPaginatedResponse, HybridPaginationInfo, SortingInfo,
     CtePaginationBuilder, ReagentSortWhitelist,
-    encode_cursor, decode_cursor,
 };
 use uuid::Uuid;
 use validator::Validate;
@@ -154,14 +153,10 @@ struct StockAggregation {
 
 // ==================== MAIN GET REAGENTS ====================
 
-/// Получение списка реагентов с гибридной пагинацией
+/// Reagent list with page-based pagination.
 ///
-/// Поддерживает:
-/// - Page-based: ?page=1&per_page=50
-/// - Cursor-based: ?cursor=xxx&direction=next
-/// - FTS поиск: ?search=acetone (или ?q=acetone)
-///
-/// Сортировка по total_quantity использует индекс напрямую (O(log n))
+/// - Paging: ?page=1&per_page=50
+/// - FTS search: ?search=acetone (or ?q=acetone)
 pub async fn get_reagents(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<HybridPaginationQuery>,
@@ -171,8 +166,6 @@ pub async fn get_reagents(
     let (page, per_page, offset) = query.normalize();
     let sort_by = ReagentSortWhitelist::validate(query.sort_by());
     let sort_order = ReagentSortWhitelist::validate_order(query.sort_order());
-    let is_desc = sort_order == "DESC";
-    let direction = query.direction();
 
     // ===== ПРОВЕРКА FTS =====
     // Проверяем доступность FTS таблицы один раз
@@ -263,67 +256,15 @@ pub async fn get_reagents(
     let total: i64 = count_query.fetch_one(pool).await?;
 
     // ===== FETCH DATA =====
-    let use_cursor = query.is_cursor_mode() && ReagentSortWhitelist::supports_keyset(sort_by);
+    let (sql, params) = builder.build_simple(offset);
 
-    let mut reagents: Vec<ReagentListItem> = if use_cursor {
-        // Cursor-based (keyset) pagination
-        if let Some(ref cursor) = query.cursor {
-            if let Some((cursor_value, cursor_id)) = decode_cursor(cursor) {
-                builder.keyset_after(cursor_value, &cursor_id, is_desc, direction);
-            }
-        }
+    let mut db_query = sqlx::query_as::<_, ReagentListItem>(&sql);
+    for p in &params {
+        db_query = db_query.bind(p);
+    }
+    let reagents: Vec<ReagentListItem> = db_query.fetch_all(pool).await?;
 
-        let (sql, params) = builder.build_cte(direction, is_desc);
-
-        let mut db_query = sqlx::query_as::<_, ReagentListItem>(&sql);
-        for p in &params {
-            db_query = db_query.bind(p);
-        }
-
-        db_query.fetch_all(pool).await?
-    } else {
-        // Page-based (offset) pagination
-        let (sql, params) = builder.build_simple(offset);
-
-        let mut db_query = sqlx::query_as::<_, ReagentListItem>(&sql);
-        for p in &params {
-            db_query = db_query.bind(p);
-        }
-
-        db_query.fetch_all(pool).await?
-    };
-
-    // ===== PAGINATION STATE =====
-    let pagination = if use_cursor {
-        let has_more = reagents.len() > per_page as usize;
-        if has_more {
-            reagents.pop();
-        }
-
-        // Reverse if going backwards
-        if direction == "prev" {
-            reagents.reverse();
-        }
-
-        let has_next = if direction == "prev" { query.cursor.is_some() } else { has_more };
-        let has_prev = if direction == "prev" { has_more } else { query.cursor.is_some() };
-
-        let next_cursor = if has_next {
-            reagents.last().map(|r| encode_cursor(r.total_quantity, &r.id))
-        } else {
-            None
-        };
-
-        let prev_cursor = if has_prev {
-            reagents.first().map(|r| encode_cursor(r.total_quantity, &r.id))
-        } else {
-            None
-        };
-
-        HybridPaginationInfo::from_cursor(total, per_page, has_next, has_prev, next_cursor, prev_cursor)
-    } else {
-        HybridPaginationInfo::from_page(total, page, per_page)
-    };
+    let pagination = HybridPaginationInfo::from_page(total, page, per_page);
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(HybridPaginatedResponse {
         data: reagents,
@@ -420,63 +361,27 @@ pub async fn get_reagent_by_id(
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| ApiError::not_found("Reagent"))?;
-        let stock: StockAggregation = sqlx::query_as(r#"
-        SELECT
-            COALESCE(SUM(
-                CASE WHEN status = 'available' THEN quantity * CASE LOWER(unit)
-                    WHEN 'kg'  THEN 1000.0
-                    WHEN 'g'   THEN 1.0
-                    WHEN 'mg'  THEN 0.001
-                    WHEN 'μg'  THEN 0.000001
-                    WHEN 'ug'  THEN 0.000001
-                    WHEN 'l'   THEN 1000.0
-                    WHEN 'ml'  THEN 1.0
-                    WHEN 'μl'  THEN 0.001
-                    WHEN 'ul'  THEN 0.001
-                    ELSE 1.0
-                END ELSE 0 END
-            ), 0) as total_quantity,
-            COALESCE(SUM(
-                CASE WHEN status = 'reserved' THEN quantity * CASE LOWER(unit)
-                    WHEN 'kg'  THEN 1000.0
-                    WHEN 'g'   THEN 1.0
-                    WHEN 'mg'  THEN 0.001
-                    WHEN 'μg'  THEN 0.000001
-                    WHEN 'ug'  THEN 0.000001
-                    WHEN 'l'   THEN 1000.0
-                    WHEN 'ml'  THEN 1.0
-                    WHEN 'μl'  THEN 0.001
-                    WHEN 'ul'  THEN 0.001
-                    ELSE 1.0
-                END ELSE 0 END
-            ), 0) as reserved_quantity,
-            COALESCE(SUM(
-                original_quantity * CASE LOWER(unit)
-                    WHEN 'kg'  THEN 1000.0
-                    WHEN 'g'   THEN 1.0
-                    WHEN 'mg'  THEN 0.001
-                    WHEN 'μg'  THEN 0.000001
-                    WHEN 'ug'  THEN 0.000001
-                    WHEN 'l'   THEN 1000.0
-                    WHEN 'ml'  THEN 1.0
-                    WHEN 'μl'  THEN 0.001
-                    WHEN 'ul'  THEN 0.001
-                    ELSE 1.0
-                END
-            ), 0) as original_quantity,
-            COUNT(*) as batches_count,
-            COUNT(CASE WHEN status = 'available' THEN 1 END) as available_batches,
-            COUNT(CASE WHEN expiry_date IS NOT NULL AND expiry_date <= date('now', '+30 days') AND expiry_date > date('now') THEN 1 END) as expiring_soon_count,
-            COUNT(CASE WHEN expiry_date IS NOT NULL AND expiry_date <= date('now') THEN 1 END) as expired_count,
-            (SELECT CASE
-                WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                ELSE unit
-             END
-             FROM batches WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL LIMIT 1
-            ) as primary_unit
-        FROM batches WHERE reagent_id = ? AND deleted_at IS NULL
-    "#)
+    // Same status filter and unit conversion as the cached list totals
+    let stock_sql = format!(
+        "SELECT \
+            COALESCE(SUM(CASE WHEN status IN {st} THEN quantity * {f} ELSE 0 END), 0) AS total_quantity, \
+            COALESCE(SUM(CASE WHEN status IN {st} THEN COALESCE(reserved_quantity, 0) * {f} ELSE 0 END), 0) AS reserved_quantity, \
+            COALESCE(SUM(CASE WHEN status IN {st} THEN COALESCE(original_quantity, quantity) * {f} ELSE 0 END), 0) AS original_quantity, \
+            COUNT(*) AS batches_count, \
+            COUNT(CASE WHEN status IN {st} THEN 1 END) AS available_batches, \
+            COUNT(CASE WHEN status IN {st} AND expiry_date IS NOT NULL \
+                        AND datetime(expiry_date) > datetime('now') \
+                        AND datetime(expiry_date) <= datetime('now', '+30 days') THEN 1 END) AS expiring_soon_count, \
+            COUNT(CASE WHEN status != 'depleted' AND (status = 'expired' OR (expiry_date IS NOT NULL \
+                        AND datetime(expiry_date) <= datetime('now'))) THEN 1 END) AS expired_count, \
+            (SELECT {base} FROM batches WHERE reagent_id = ? AND status IN {st} AND deleted_at IS NULL \
+             ORDER BY created_at ASC LIMIT 1) AS primary_unit \
+         FROM batches WHERE reagent_id = ? AND deleted_at IS NULL",
+        st = crate::reagent_stock::STOCK_STATUSES_SQL,
+        f = crate::reagent_stock::UNIT_FACTOR_SQL,
+        base = crate::reagent_stock::BASE_UNIT_SQL,
+    );
+    let stock: StockAggregation = sqlx::query_as(&stock_sql)
         .bind(&id)
         .bind(&id)
         .fetch_one(pool)
@@ -514,7 +419,9 @@ pub async fn get_reagent_by_id(
         available_batches: stock.available_batches,
         reserved_quantity: reserved_qty,
         available_quantity: total_qty - reserved_qty,
-        low_stock: total_qty < 10.0 && total_qty > 0.0,
+        // Same 20% rule the batch status machine uses
+        low_stock: total_qty > 0.0
+            && total_qty <= stock.original_quantity.unwrap_or(0.0) * 0.2,
         expiring_soon_count: stock.expiring_soon_count,
         expired_count: stock.expired_count,
         batches,
@@ -721,110 +628,41 @@ pub async fn delete_reagent(
 
 // ==================== CACHE MANAGEMENT ====================
 
-/// Пересчитать кэш для конкретного реагента
+/// Recompute cached stock for one reagent
 pub async fn refresh_reagent_cache(pool: &sqlx::SqlitePool, reagent_id: &str) -> ApiResult<()> {
-    sqlx::query(r#"
-        UPDATE reagents SET
-            total_quantity = (
-                SELECT COALESCE(SUM(
-                    quantity * CASE LOWER(unit)
-                        WHEN 'kg'  THEN 1000.0
-                        WHEN 'g'   THEN 1.0
-                        WHEN 'mg'  THEN 0.001
-                        WHEN 'μg'  THEN 0.000001
-                        WHEN 'ug'  THEN 0.000001
-                        WHEN 'l'   THEN 1000.0
-                        WHEN 'ml'  THEN 1.0
-                        WHEN 'μl'  THEN 0.001
-                        WHEN 'ul'  THEN 0.001
-                        ELSE 1.0
-                    END
-                ), 0)
-                FROM batches
-                WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
-            ),
-            batches_count = (
-                SELECT COUNT(*)
-                FROM batches
-                WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
-            ),
-            primary_unit = (
-                SELECT CASE
-                    WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                    WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                    ELSE unit
-                END
-                FROM batches
-                WHERE reagent_id = ? AND status = 'available' AND deleted_at IS NULL
-                LIMIT 1
-            ),
-            updated_at = datetime('now')
-        WHERE id = ?
-    "#)
+    let sql = format!(
+        "UPDATE reagents SET {} WHERE id = ?",
+        crate::reagent_stock::cache_set_clause("?")
+    );
+    sqlx::query(&sql)
         .bind(reagent_id)
         .bind(reagent_id)
         .bind(reagent_id)
         .bind(reagent_id)
         .execute(pool)
         .await?;
- 
+
     Ok(())
 }
 
-/// Полная перестройка кэша (для maintenance)
+/// Full cache rebuild (maintenance)
 pub async fn rebuild_cache(
     app_state: web::Data<Arc<AppState>>,
 ) -> ApiResult<HttpResponse> {
     let start = std::time::Instant::now();
- 
-    let result = sqlx::query(r#"
-        UPDATE reagents SET
-            total_quantity = (
-                SELECT COALESCE(SUM(
-                    quantity * CASE LOWER(unit)
-                        WHEN 'kg'  THEN 1000.0
-                        WHEN 'g'   THEN 1.0
-                        WHEN 'mg'  THEN 0.001
-                        WHEN 'μg'  THEN 0.000001
-                        WHEN 'ug'  THEN 0.000001
-                        WHEN 'l'   THEN 1000.0
-                        WHEN 'ml'  THEN 1.0
-                        WHEN 'μl'  THEN 0.001
-                        WHEN 'ul'  THEN 0.001
-                        ELSE 1.0
-                    END
-                ), 0)
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-            ),
-            batches_count = (
-                SELECT COUNT(*)
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-            ),
-            primary_unit = (
-                SELECT CASE
-                    WHEN LOWER(unit) IN ('kg','g','mg','μg','ug') THEN 'g'
-                    WHEN LOWER(unit) IN ('l','ml','μl','ul')       THEN 'mL'
-                    ELSE unit
-                END
-                FROM batches
-                WHERE reagent_id = reagents.id AND status = 'available' AND deleted_at IS NULL
-                LIMIT 1
-            ),
-            updated_at = datetime('now')
-    "#)
-        .execute(&app_state.db_pool)
-        .await?;
- 
+
+    let rows = crate::db::rebuild_reagent_cache(&app_state.db_pool)
+        .await
+        .map_err(|e| ApiError::InternalServerError(format!("Cache rebuild failed: {}", e)))?;
+
     let elapsed = start.elapsed();
- 
+
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         serde_json::json!({
-            "rows_updated": result.rows_affected(),
+            "rows_updated": rows,
             "duration_ms": elapsed.as_millis()
         }),
-        format!("Cache rebuilt: {} reagents in {:?}", result.rows_affected(), elapsed),
+        format!("Cache rebuilt: {} reagents in {:?}", rows, elapsed),
     )))
 }
 // ==================== GET REAGENT WITH BATCHES (legacy compatibility) ====================

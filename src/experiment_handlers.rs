@@ -196,6 +196,7 @@ pub async fn update_experiment(
     path: web::Path<String>,
     update: web::Json<UpdateExperimentRequest>,
     user_id: String,
+    http_request: &actix_web::HttpRequest,
 ) -> ApiResult<HttpResponse> {
     update.validate()?;
     let experiment_id = path.into_inner();
@@ -230,39 +231,13 @@ pub async fn update_experiment(
     // === ЖЕЛЕЗОБЕТОННОЕ АВТО-СПИСАНИЕ (в единой транзакции с обновлением) ===
     let mut tx = app_state.db_pool.begin().await?;
 
+    let mut consumed: Vec<crate::consumption::ConsumeResult> = Vec::new();
     if status == "completed" && existing.status != "completed" {
-        let reagents: Vec<ExperimentReagent> = sqlx::query_as(r#"
-            SELECT id, experiment_id, batch_id, planned_quantity, is_consumed, notes, created_at
-            FROM experiment_reagents 
-            WHERE experiment_id = ?
-        "#)
-            .bind(&experiment_id)
-            .fetch_all(&mut *tx)
-            .await?;
-
-        for reagent in reagents {
-            if !reagent.is_consumed {
-                let qty = reagent.planned_quantity.unwrap_or(0.0);
-                if qty > 0.0 {
-                    sqlx::query(r#"
-                        UPDATE batches 
-                        SET quantity = MAX(0, quantity - ?),
-                            reserved_quantity = MAX(0, reserved_quantity - ?)
-                        WHERE id = ?
-                    "#)
-                        .bind(qty)
-                        .bind(qty)
-                        .bind(&reagent.batch_id)
-                        .execute(&mut *tx)
-                        .await?;
-                }
-
-                sqlx::query("UPDATE experiment_reagents SET is_consumed = 1 WHERE id = ?")
-                    .bind(&reagent.id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-        }
+        // Write off all pending reagents through the shared consumption path.
+        // Any failure (e.g. not enough stock) aborts the whole update.
+        consumed = crate::consumption::consume_experiment(
+            &mut *tx, &experiment_id, title, Some(&user_id),
+        ).await?;
     } else if status == "cancelled" && existing.status != "cancelled" {
         let reagents: Vec<ExperimentReagent> = sqlx::query_as(r#"
             SELECT id, experiment_id, batch_id, planned_quantity, is_consumed, notes, created_at
@@ -320,6 +295,8 @@ pub async fn update_experiment(
         .await?;
 
     tx.commit().await?;
+
+    audit_experiment_consumption(&app_state.db_pool, &user_id, &consumed, title, http_request).await;
 
     let updated: Experiment = sqlx::query_as("SELECT * FROM experiments WHERE id = ?")
         .bind(&experiment_id)
@@ -701,6 +678,7 @@ pub async fn complete_experiment(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
     user_id: String,
+    http_request: &actix_web::HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let experiment_id = path.into_inner();
     let now = Utc::now();
@@ -720,62 +698,31 @@ pub async fn complete_experiment(
 
     let mut tx = app_state.db_pool.begin().await?;
 
-    // Явно указываем колонки, чтобы избежать ошибок маппинга
-    let reagents: Vec<ExperimentReagent> = sqlx::query_as(r#"
-        SELECT id, experiment_id, batch_id, planned_quantity, is_consumed, notes, created_at
-        FROM experiment_reagents 
-        WHERE experiment_id = ?
-    "#)
-        .bind(&experiment_id)
-        .fetch_all(&mut *tx)
-        .await?;
-
-    let mut consumed_count = 0;
-
-    // Проверяем статус is_consumed на стороне Rust (самый надежный способ)
-    for reagent in reagents {
-        if !reagent.is_consumed {
-            let qty = reagent.planned_quantity.unwrap_or(0.0);
-            
-            if qty > 0.0 {
-                // Списываем количество из батча
-                sqlx::query(r#"
-                    UPDATE batches 
-                    SET quantity = MAX(0, quantity - ?),
-                        reserved_quantity = MAX(0, reserved_quantity - ?)
-                    WHERE id = ?
-                "#)
-                    .bind(qty)
-                    .bind(qty)
-                    .bind(&reagent.batch_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-
-            // Помечаем как consumed
-            sqlx::query("UPDATE experiment_reagents SET is_consumed = 1 WHERE id = ?")
-                .bind(&reagent.id)
-                .execute(&mut *tx)
-                .await?;
-                
-            consumed_count += 1;
-        }
-    }
-
-    // Обновляем статус эксперимента
-    sqlx::query(r#"
+    // Status change first: it is the first write (takes the lock) and the
+    // condition makes a concurrent second "complete" fail instead of double-consuming.
+    let changed = sqlx::query(r#"
         UPDATE experiments 
         SET status = 'completed', end_date = COALESCE(end_date, ?), updated_by = ?, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'in_progress'
     "#)
         .bind(&now)
         .bind(&user_id)
         .bind(&now)
         .bind(&experiment_id)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+    if changed == 0 {
+        return Err(ApiError::bad_request("Experiment is no longer in progress"));
+    }
+
+    let consumed = crate::consumption::consume_experiment(
+        &mut *tx, &experiment_id, &existing.title, Some(&user_id),
+    ).await?;
 
     tx.commit().await?;
+
+    audit_experiment_consumption(&app_state.db_pool, &user_id, &consumed, &existing.title, http_request).await;
 
     let updated: Experiment = sqlx::query_as("SELECT * FROM experiments WHERE id = ?")
         .bind(&experiment_id)
@@ -783,12 +730,29 @@ pub async fn complete_experiment(
         .await?;
 
     info!("User {} completed experiment: {} (consumed {} reagents)", 
-          user_id, experiment_id, consumed_count);
+          user_id, experiment_id, consumed.len());
     
     Ok(HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "experiment": updated,
-        "reagents_consumed": consumed_count
+        "reagents_consumed": consumed.len()
     }))))
+}
+
+/// Audit entries for experiment write-offs (after commit)
+async fn audit_experiment_consumption(
+    pool: &sqlx::SqlitePool,
+    user_id: &str,
+    consumed: &[crate::consumption::ConsumeResult],
+    experiment_title: &str,
+    http_request: &actix_web::HttpRequest,
+) {
+    let context = format!("in experiment \"{}\"", experiment_title);
+    for r in consumed {
+        crate::audit::audit_with_changes(
+            pool, user_id, "use_reagent", "batch", &r.batch_id,
+            &r.describe(Some(&context)), &r.audit_changes(), http_request,
+        ).await;
+    }
 }
 
 /// Отменить эксперимент (planned|in_progress -> cancelled) и вернуть реагенты
@@ -879,7 +843,8 @@ pub async fn cancel_experiment(
 pub async fn consume_experiment_reagent(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
-    _user_id: String,
+    user_id: String,
+    http_request: &actix_web::HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let (experiment_id, reagent_link_id) = path.into_inner();
 
@@ -895,7 +860,7 @@ pub async fn consume_experiment_reagent(
         ));
     }
 
-    let reagent: ExperimentReagent = sqlx::query_as(r#"
+    let link: ExperimentReagent = sqlx::query_as(r#"
         SELECT id, experiment_id, batch_id, planned_quantity, is_consumed, notes, created_at
         FROM experiment_reagents 
         WHERE id = ? AND experiment_id = ?
@@ -906,45 +871,35 @@ pub async fn consume_experiment_reagent(
         .await
         .map_err(|_| ApiError::not_found("Experiment reagent"))?;
 
-    if reagent.is_consumed {
-        return Err(ApiError::bad_request("Reagent is already consumed"));
-    }
-
-    let qty = reagent.planned_quantity.unwrap_or(0.0);
-    
-    if qty <= 0.0 {
+    if link.planned_quantity.unwrap_or(0.0) <= 0.0 {
         return Err(ApiError::bad_request("Reagent has no quantity to consume"));
     }
-    
+
     let mut tx = app_state.db_pool.begin().await?;
-
-    // Списываем из батча
-    sqlx::query(r#"
-        UPDATE batches 
-        SET quantity = MAX(0, quantity - ?),
-            reserved_quantity = MAX(0, reserved_quantity - ?)
-        WHERE id = ?
-    "#)
-        .bind(qty)
-        .bind(qty)
-        .bind(&reagent.batch_id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Помечаем как consumed
-    sqlx::query("UPDATE experiment_reagents SET is_consumed = 1 WHERE id = ?")
-        .bind(&reagent_link_id)
-        .execute(&mut *tx)
-        .await?;
-
+    let result = crate::consumption::consume_experiment_link(
+        &mut *tx, &link.id, &link.batch_id, link.planned_quantity,
+        &experiment_id, &experiment.title, Some(&user_id),
+    ).await?;
+    let result = match result {
+        Some(r) => r,
+        None => return Err(ApiError::bad_request("Reagent is already consumed")),
+    };
     tx.commit().await?;
+
+    audit_experiment_consumption(
+        &app_state.db_pool, &user_id, std::slice::from_ref(&result), &experiment.title, http_request,
+    ).await;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "message": "Reagent consumed successfully",
         "reagent_id": reagent_link_id,
-        "quantity_consumed": qty
+        "quantity_consumed": result.quantity_used,
+        "remaining_quantity": result.batch_quantity_after,
+        "batch_status": result.status_after,
+        "containers": result.containers,
     }))))
 }
+
 // ==================== AUTO UPDATE STATUSES ====================
 
 #[derive(Debug, Serialize, Clone)]
@@ -1014,36 +969,51 @@ pub async fn run_auto_update_statuses(pool: &sqlx::SqlitePool) -> Result<AutoUpd
 
     let completed = to_complete.len() as i32;
 
-    // 3. Для каждого завершаемого — списываем реагенты
-    for exp_id in &to_complete {
-        let reagents: Vec<ExperimentReagent> = sqlx::query_as(r#"
-            SELECT id, experiment_id, batch_id, planned_quantity, is_consumed, notes, created_at
-            FROM experiment_reagents
-            WHERE experiment_id = ? AND is_consumed = 0
-        "#)
-            .bind(exp_id)
-            .fetch_all(&mut *tx)
-            .await?;
+    // Audit lines written after commit: Ok = write-off, Err = skipped write-off
+    let mut outcomes: Vec<Result<String, String>> = Vec::new();
 
-        for reagent in reagents {
-            let qty = reagent.planned_quantity.unwrap_or(0.0);
-            if qty > 0.0 {
-                sqlx::query(r#"
-                    UPDATE batches
-                    SET quantity = MAX(0, quantity - ?),
-                        reserved_quantity = MAX(0, reserved_quantity - ?)
-                    WHERE id = ?
-                "#)
-                    .bind(qty)
-                    .bind(qty)
-                    .bind(&reagent.batch_id)
-                    .execute(&mut *tx)
-                    .await?;
+    // 3. Для каждого завершаемого — списываем реагенты через общий путь списания.
+    //    Background completion must never get stuck, so each reagent runs in its
+    //    own savepoint: a failed write-off is rolled back, its reservation is
+    //    released, it stays unconsumed and the failure is audited.
+    for exp_id in &to_complete {
+        let title: String = sqlx::query_scalar("SELECT title FROM experiments WHERE id = ?")
+            .bind(exp_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let context = format!("in experiment \"{}\" (auto-consumed on completion)", title);
+
+        let links = crate::consumption::pending_experiment_links(&mut *tx, exp_id)
+            .await
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+
+        for link in links {
+            let mut sp = sqlx::Connection::begin(&mut *tx).await?;
+            match crate::consumption::consume_experiment_link(
+                &mut *sp, &link.id, &link.batch_id, link.planned_quantity, exp_id, &title, None,
+            ).await {
+                Ok(Some(r)) => {
+                    sp.commit().await?;
+                    outcomes.push(Ok(format!("{}|{}", r.batch_id, r.describe(Some(&context)))));
+                }
+                Ok(None) => sp.commit().await?,
+                Err(e) => {
+                    sp.rollback().await?;
+                    let qty = link.planned_quantity.unwrap_or(0.0);
+                    sqlx::query(
+                        "UPDATE batches SET reserved_quantity = MAX(0, COALESCE(reserved_quantity, 0) - ?) WHERE id = ?"
+                    )
+                        .bind(qty)
+                        .bind(&link.batch_id)
+                        .execute(&mut *tx)
+                        .await?;
+                    log::warn!("Auto-consumption skipped for experiment {}: {}", exp_id, e);
+                    outcomes.push(Err(format!(
+                        "{}|Auto-consumption of {} from batch skipped for experiment \"{}\": {}. Reservation released.",
+                        link.batch_id, qty, title, e
+                    )));
+                }
             }
-            sqlx::query("UPDATE experiment_reagents SET is_consumed = 1 WHERE id = ?")
-                .bind(&reagent.id)
-                .execute(&mut *tx)
-                .await?;
         }
 
         sqlx::query(r#"
@@ -1058,6 +1028,20 @@ pub async fn run_auto_update_statuses(pool: &sqlx::SqlitePool) -> Result<AutoUpd
     }
 
     tx.commit().await?;
+
+    // Audit automatic write-offs (system action: no user, no request)
+    for outcome in &outcomes {
+        let (action, line) = match outcome {
+            Ok(l) => ("use_reagent", l),
+            Err(l) => ("use_reagent_failed", l),
+        };
+        let mut parts = line.splitn(2, '|');
+        let batch_id = parts.next().unwrap_or_default();
+        let description = parts.next().unwrap_or_default();
+        if let Err(e) = crate::audit::log_system_activity(pool, action, "batch", batch_id, description).await {
+            log::error!("Failed to write audit log for auto-consumption: {}", e);
+        }
+    }
 
     let total_updated = started + completed;
     if total_updated > 0 {

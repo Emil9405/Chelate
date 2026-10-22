@@ -3,13 +3,12 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { api } from '../../services/api';
 
 /**
- * Hook for managing reagents loading.
- * Supports both classic pagination (page/perPage) and cursor-based.
+ * Hook for managing reagents loading (page-based pagination).
  *
  * FIXED: Now properly syncs with external filters
  */
 export default function useReagents(externalFilters = {}, options = {}) {
-  const { useCursor = false, initialPerPage = 20 } = options;
+  const { initialPerPage = 20 } = options;
 
   // Data state
   const [data, setData] = useState([]);
@@ -24,7 +23,6 @@ export default function useReagents(externalFilters = {}, options = {}) {
     totalPages: 1,
     hasNext: false,
     hasPrev: false,
-    nextCursor: null,
   });
 
   // Sorting state
@@ -88,8 +86,8 @@ export default function useReagents(externalFilters = {}, options = {}) {
         ...paramsOverride
       };
 
-      // If no explicit page/cursor passed, use current from state
-      if (!queryParams.page && !queryParams.cursor && !useCursor) {
+      // If no explicit page passed, use current from state
+      if (!queryParams.page) {
         queryParams.page = pagination.page;
       }
 
@@ -107,12 +105,7 @@ export default function useReagents(externalFilters = {}, options = {}) {
         meta = response.meta || response.pagination || {};
       }
 
-      // Update data
-      if (useCursor && queryParams.cursor) {
-        setData(prev => [...prev, ...items]);
-      } else {
-        setData(items);
-      }
+      setData(items);
 
       // Update pagination metadata
       setPagination(prev => ({
@@ -120,9 +113,8 @@ export default function useReagents(externalFilters = {}, options = {}) {
         page: meta.current_page || meta.page || queryParams.page || 1,
         total: meta.total_records || meta.total_count || meta.total || 0,
         totalPages: meta.total_pages || 1,
-        hasNext: !!meta.next_cursor || (meta.current_page < meta.total_pages) || meta.has_next || false,
+        hasNext: (meta.current_page < meta.total_pages) || meta.has_next || false,
         hasPrev: meta.has_prev || (meta.current_page > 1) || false,
-        nextCursor: meta.next_cursor || null,
       }));
 
     } catch (err) {
@@ -135,23 +127,21 @@ export default function useReagents(externalFilters = {}, options = {}) {
         setLoading(false);
       }
     }
-  }, [sorting, pagination.page, pagination.perPage, useCursor]);
+  }, [sorting, pagination.page, pagination.perPage]);
 
   // === PAGINATION ACTIONS ===
 
   const goNext = useCallback(() => {
-    if (useCursor && pagination.nextCursor) {
-      fetchData({ cursor: pagination.nextCursor });
-    } else if (!useCursor && pagination.page < pagination.totalPages) {
+    if (pagination.page < pagination.totalPages) {
       setPagination(prev => ({ ...prev, page: prev.page + 1 }));
     }
-  }, [pagination, useCursor, fetchData]);
+  }, [pagination]);
 
   const goPrev = useCallback(() => {
-    if (!useCursor && pagination.page > 1) {
+    if (pagination.page > 1) {
       setPagination(prev => ({ ...prev, page: prev.page - 1 }));
     }
-  }, [pagination, useCursor]);
+  }, [pagination]);
 
   const setPerPage = useCallback((count) => {
     const newPerPage = parseInt(count, 10);
@@ -163,10 +153,10 @@ export default function useReagents(externalFilters = {}, options = {}) {
   }, []);
 
   const goToPage = useCallback((page) => {
-    if (!useCursor && page >= 1 && page <= pagination.totalPages) {
+    if (page >= 1 && page <= pagination.totalPages) {
       setPagination(prev => ({ ...prev, page }));
     }
-  }, [pagination.totalPages, useCursor]);
+  }, [pagination.totalPages]);
 
   // === SORTING ACTIONS ===
 
@@ -177,36 +167,36 @@ export default function useReagents(externalFilters = {}, options = {}) {
       }
       return { sortBy: field, sortOrder: 'desc' };
     });
-    setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   }, []);
 
   const setSortOrder = useCallback((order) => {
     const normalizedOrder = order.toLowerCase() === 'asc' ? 'asc' : 'desc';
     setSorting(prev => ({ ...prev, sortOrder: normalizedOrder }));
-    setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   }, []);
 
   const setSortFull = useCallback((field, order) => {
     const normalizedOrder = (order || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
     setSorting({ sortBy: field, sortOrder: normalizedOrder });
-    setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   }, []);
 
   // === FILTER ACTIONS ===
 
   const updateFilter = useCallback((key, value) => {
     setInternalFilters(prev => ({ ...prev, [key]: value }));
-    setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   }, []);
 
   const setFiltersAll = useCallback((newFilters) => {
     setInternalFilters(newFilters);
-    setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   }, []);
 
   const clearFilters = useCallback(() => {
     setInternalFilters({});
-    setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+    setPagination(prev => ({ ...prev, page: 1 }));
   }, []);
 
   // === DATA ACTIONS ===
@@ -226,14 +216,12 @@ export default function useReagents(externalFilters = {}, options = {}) {
   useEffect(() => {
     if (prevFiltersKey.current !== filtersKey) {
       prevFiltersKey.current = filtersKey;
-      setPagination(prev => ({ ...prev, page: 1, nextCursor: null }));
+      setPagination(prev => ({ ...prev, page: 1 }));
     }
   }, [filtersKey]);
 
   useEffect(() => {
-    if (!useCursor || (useCursor && data.length === 0)) {
-      fetchData();
-    }
+    fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page, pagination.perPage, sorting.sortBy, sorting.sortOrder, filtersKey]);
 

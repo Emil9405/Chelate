@@ -931,8 +931,9 @@ pub async fn get_low_stock_batches(
         SELECT b.*, r.name as reagent_name
         FROM batches b
         JOIN reagents r ON b.reagent_id = r.id
-        WHERE b.status = 'available'
+        WHERE b.status IN ('available', 'low_stock', 'in_use')
           AND b.deleted_at IS NULL
+          AND r.deleted_at IS NULL
           AND b.original_quantity > 0
           AND (b.quantity / b.original_quantity * 100) <= ?
         ORDER BY (b.quantity / b.original_quantity) ASC
@@ -1221,8 +1222,11 @@ pub struct DispenseUnitsRequest {
     #[validate(length(max = 1000, message = "Notes cannot exceed 1000 characters"))]
     pub notes: Option<String>,
 
-    /// Optional: placement_id to deduct from specific room location
-    pub placement_id: Option<String>,
+    /// Explicit confirmation to use an expired batch
+    pub allow_expired: Option<bool>,
+    /// Required when allow_expired is set
+    #[validate(length(max = 500, message = "Reason cannot exceed 500 characters"))]
+    pub expired_reason: Option<String>,
 }
 
 /// Ответ на штучное списание
@@ -1257,21 +1261,9 @@ pub async fn dispense_units(
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let (reagent_id, batch_id) = path.into_inner();
-    
-    // Валидация запроса
     request.validate().map_err(|e| ApiError::ValidationError(e.to_string()))?;
-    
-    // Получаем текущего пользователя
     let claims = get_current_user(&http_request)?;
-    
-    // Проверяем существование реагента
-    let _reagent: Reagent = sqlx::query_as("SELECT * FROM reagents WHERE id = ?")
-        .bind(&reagent_id)
-        .fetch_one(&app_state.db_pool)
-        .await
-        .map_err(|_| ApiError::reagent_not_found(&reagent_id))?;
 
-    // Получаем батч
     let batch: Batch = sqlx::query_as(
         "SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL"
     )
@@ -1281,159 +1273,57 @@ pub async fn dispense_units(
         .await
         .map_err(|_| ApiError::batch_not_found(&batch_id))?;
 
-    // Проверяем статус батча
-    // Проверяем статус батча — разрешаем списание из 'available' и 'low_stock'.
-    // Без этого батч в low_stock застревает и никогда не доходит до 'depleted'.
-    if batch.status != "available" && batch.status != "low_stock" {
-        return Err(ApiError::BadRequest(format!(
-            "Batch is not available for dispensing. Current status: '{}'",
-            batch.status
-        )));
-    }
-
-    // Проверяем что pack_size установлен
-    let pack_size = batch.pack_size.ok_or_else(|| {
-        ApiError::BadRequest(
+    let pack_size = match batch.pack_size {
+        Some(ps) if ps > 0.0 => ps,
+        Some(_) => return Err(ApiError::BadRequest(
+            "Invalid pack_size: must be greater than 0".to_string()
+        )),
+        None => return Err(ApiError::BadRequest(
             "Cannot dispense by units: pack_size is not set for this batch. \
              Use regular quantity-based dispensing (/use endpoint) instead.".to_string()
-        )
-    })?;
-
-    if pack_size <= 0.0 {
-        return Err(ApiError::BadRequest(
-            "Invalid pack_size: must be greater than 0".to_string()
-        ));
-    }
-
-    // Вычисляем количество для списания
-    let quantity_to_dispense = request.units_to_dispense as f64 * pack_size;
-    
-    // Проверяем доступное количество
-    let available_quantity = batch.quantity - batch.reserved_quantity;
-    if quantity_to_dispense > available_quantity {
-        let available_units = (available_quantity / pack_size).floor() as i64;
-        return Err(ApiError::BadRequest(format!(
-            "Insufficient quantity. Requested {} units ({:.2} {}), \
-             but only {} units ({:.2} {}) available.",
-            request.units_to_dispense,
-            quantity_to_dispense,
-            batch.unit,
-            available_units,
-            available_quantity,
-            batch.unit
-        )));
-    }
-
-    // Начинаем транзакцию
-    let now = Utc::now();
-    let usage_id = Uuid::new_v4().to_string();
-    let mut tx = app_state.db_pool.begin().await?;
-
-    // Создаем запись в usage_logs
-    sqlx::query(
-        r#"INSERT INTO usage_logs (
-            id, reagent_id, batch_id, user_id, quantity_used, unit, 
-            purpose, notes, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
-    )
-    .bind(&usage_id)
-    .bind(&reagent_id)
-    .bind(&batch_id)
-    .bind(&claims.sub)
-    .bind(quantity_to_dispense)
-    .bind(&batch.unit)
-    .bind(&request.purpose)
-    .bind(&request.notes)
-    .bind(&now)
-    .execute(&mut *tx)
-    .await?;
-
-// Вычисляем новое количество и статус.
-    // Допуск 0.001 — для согласованности с container_handlers и обработки
-    // float-остатков после многошагового списания.
-    let new_quantity = batch.quantity - quantity_to_dispense;
-    let new_status = if new_quantity <= 0.001 {
-        "depleted"
-    } else if new_quantity <= pack_size {
-        "low_stock"  // Осталась последняя единица или меньше
-    } else {
-        "available"
+        )),
     };
 
-    // Обновляем батч
-    sqlx::query(
-        "UPDATE batches SET quantity = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?"
-    )
-    .bind(new_quantity.max(0.0))
-    .bind(new_status)
-    .bind(&now)
-    .bind(&claims.sub)
-    .bind(&batch_id)
-    .execute(&mut *tx)
-    .await?;
+    let quantity_to_dispense = request.units_to_dispense as f64 * pack_size;
 
-    // Deduct from specific placement if placement_id is provided
-    if let Some(ref placement_id) = request.placement_id {
-        let placement: Option<(String, f64)> = sqlx::query_as(
-            "SELECT id, quantity FROM batch_placements WHERE id = ? AND batch_id = ?"
-        )
-        .bind(placement_id)
-        .bind(&batch_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if let Some((_pid, p_qty)) = placement {
-            let new_p_qty = p_qty - quantity_to_dispense;
-            if new_p_qty <= 0.001 {
-                sqlx::query("DELETE FROM batch_placements WHERE id = ?")
-                    .bind(placement_id)
-                    .execute(&mut *tx)
-                    .await?;
-            } else {
-                sqlx::query("UPDATE batch_placements SET quantity = ?, updated_at = ? WHERE id = ?")
-                    .bind(new_p_qty.max(0.0))
-                    .bind(&now)
-                    .bind(placement_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-        }
-    }
-
-    // Коммитим транзакцию
+    let mut tx = app_state.db_pool.begin().await?;
+    let mut req = crate::consumption::ConsumeRequest::new(
+        &batch_id, quantity_to_dispense, Some(&claims.sub),
+    );
+    req.purpose = request.purpose.as_deref();
+    req.notes = request.notes.as_deref();
+    req.allow_expired = request.allow_expired.unwrap_or(false);
+    req.expired_reason = request.expired_reason.as_deref();
+    let result = crate::consumption::consume_from_batch(&mut *tx, req).await?;
     tx.commit().await?;
 
-    // Вычисляем оставшееся количество единиц
-    let remaining_units = (new_quantity / pack_size).floor() as i64;
+    let context = format!("({} unit(s) of {} {})", request.units_to_dispense, pack_size, result.unit);
+    crate::audit::audit_with_changes(
+        &app_state.db_pool, &claims.sub, "use_reagent", "batch", &batch_id,
+        &result.describe(Some(&context)), &result.audit_changes(), &http_request,
+    ).await;
 
-    log::info!(
-        "User {} dispensed {} units ({:.2} {}) from batch {} (reagent {}). \
-         Remaining: {} units ({:.2} {})",
-        claims.username,
-        request.units_to_dispense,
-        quantity_to_dispense,
-        batch.unit,
-        batch_id,
-        reagent_id,
-        remaining_units,
-        new_quantity,
-        batch.unit
-    );
+    log::info!("User {}: {}", claims.username, result.describe(Some(&context)));
 
     let response = DispenseUnitsResponse {
-        usage_id,
+        usage_id: result.usage_id.clone(),
         units_dispensed: request.units_to_dispense,
         quantity_dispensed: quantity_to_dispense,
-        unit: batch.unit,
-        remaining_quantity: new_quantity.max(0.0),
-        remaining_units,
-        status: new_status.to_string(),
+        unit: result.unit.clone(),
+        remaining_quantity: result.batch_quantity_after,
+        remaining_units: whole_units(result.batch_quantity_after, pack_size),
+        status: result.status_after.clone(),
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         response,
         format!("Successfully dispensed {} unit(s)", request.units_to_dispense),
     )))
+}
+
+/// Whole packs in `quantity`, robust to float noise (0.3 / 0.1 = 2.999... -> 3)
+fn whole_units(quantity: f64, pack_size: f64) -> i64 {
+    ((quantity / pack_size) + 1e-9).floor().max(0.0) as i64
 }
 
 /// Получить информацию о доступных единицах в батче
@@ -1480,8 +1370,8 @@ pub async fn get_batch_units_info(
     
     let (total_units, available_units, can_dispense) = match batch.pack_size {
         Some(ps) if ps > 0.0 => (
-            Some((batch.quantity / ps).floor() as i64),
-            Some((available_quantity / ps).floor() as i64),
+            Some(whole_units(batch.quantity, ps)),
+            Some(whole_units(available_quantity, ps)),
             true,
         ),
         _ => (None, None, false),
@@ -1501,4 +1391,186 @@ pub async fn get_batch_units_info(
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(info)))
+}
+
+// ==================== REQUALIFICATION (EXTEND SHELF LIFE) ====================
+
+#[derive(Debug, serde::Deserialize, Validate)]
+pub struct RequalifyBatchRequest {
+    /// New expiry / retest date; must be in the future
+    pub new_expiry_date: DateTime<Utc>,
+    /// Basis for the extension, e.g. "assay by titration 99.2%, meets spec"
+    #[validate(length(min = 1, max = 500, message = "Reason must be 1-500 characters"))]
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BatchRequalification {
+    pub id: String,
+    pub batch_id: String,
+    pub old_expiry_date: Option<DateTime<Utc>>,
+    pub new_expiry_date: DateTime<Utc>,
+    pub old_status: String,
+    pub new_status: String,
+    pub reason: String,
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// POST /api/v1/batches/{batch_id}/requalify
+/// Extends the expiry (retest) date after the batch was checked and found fit
+/// for use. Recomputes the status (expired -> available/low_stock) and keeps a
+/// durable record of who extended it, from/to which date and why.
+pub async fn requalify_batch(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+    request: web::Json<RequalifyBatchRequest>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    request.validate()?;
+    let claims = get_current_user(&http_request)?;
+    let batch_id = path.into_inner();
+    let reason = request.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(ApiError::bad_request("A reason is required to extend the expiry date"));
+    }
+    let now = Utc::now();
+    if request.new_expiry_date <= now {
+        return Err(ApiError::bad_request("New expiry date must be in the future"));
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        batch_number: String,
+        reagent_name: String,
+        quantity: f64,
+        original_quantity: f64,
+        status: String,
+        expiry_date: Option<DateTime<Utc>>,
+    }
+
+    let mut tx = app_state.db_pool.begin().await?;
+
+    // First statement is a write: take the lock before reading
+    let touched = sqlx::query(
+        "UPDATE batches SET updated_at = updated_at WHERE id = ? AND deleted_at IS NULL"
+    )
+        .bind(&batch_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if touched == 0 {
+        return Err(ApiError::batch_not_found(&batch_id));
+    }
+
+    let b: Row = sqlx::query_as(
+        "SELECT b.batch_number, r.name AS reagent_name, b.quantity, \
+                COALESCE(b.original_quantity, b.quantity) AS original_quantity, b.status, b.expiry_date \
+         FROM batches b JOIN reagents r ON r.id = b.reagent_id WHERE b.id = ?"
+    )
+        .bind(&batch_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    if b.status == "depleted" {
+        return Err(ApiError::bad_request("Batch is depleted; nothing to requalify"));
+    }
+
+    let (total_containers, active_containers): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status NOT IN ('empty','disposed') THEN 1 ELSE 0 END), 0) \
+         FROM batch_containers WHERE batch_id = ?"
+    )
+        .bind(&batch_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // Status as if never expired: same rules as every write-off
+    let new_status = crate::consumption::compute_batch_status(
+        b.quantity, b.original_quantity, total_containers > 0, active_containers, "available",
+    );
+
+    sqlx::query(
+        "UPDATE batches SET expiry_date = ?, status = ?, updated_by = ?, updated_at = ? WHERE id = ?"
+    )
+        .bind(request.new_expiry_date)
+        .bind(new_status)
+        .bind(&claims.sub)
+        .bind(now)
+        .bind(&batch_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let record_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO batch_requalifications \
+         (id, batch_id, old_expiry_date, new_expiry_date, old_status, new_status, reason, user_id, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+        .bind(&record_id)
+        .bind(&batch_id)
+        .bind(b.expiry_date)
+        .bind(request.new_expiry_date)
+        .bind(&b.status)
+        .bind(new_status)
+        .bind(&reason)
+        .bind(&claims.sub)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    let fmt = |d: Option<DateTime<Utc>>| d.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "none".into());
+    let mut cs = crate::audit::ChangeSet::new();
+    cs.add("expiry_date", &fmt(b.expiry_date), &fmt(Some(request.new_expiry_date)));
+    if b.status != new_status {
+        cs.add("status", &b.status, new_status);
+    }
+    cs.created("requalification_reason", &reason);
+    crate::audit::audit_with_changes(
+        &app_state.db_pool, &claims.sub, "requalify", "batch", &batch_id,
+        &format!(
+            "Shelf life of reagent \"{}\" batch {} extended: {} -> {} (reason: {})",
+            b.reagent_name, b.batch_number, fmt(b.expiry_date), fmt(Some(request.new_expiry_date)), reason
+        ),
+        &cs, &http_request,
+    ).await;
+
+    log::info!(
+        "User {} requalified batch {} ({}): expiry {} -> {}, status {} -> {}",
+        claims.username, b.batch_number, batch_id, fmt(b.expiry_date),
+        fmt(Some(request.new_expiry_date)), b.status, new_status
+    );
+
+    Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
+        serde_json::json!({
+            "id": record_id,
+            "batch_id": batch_id,
+            "old_expiry_date": b.expiry_date,
+            "new_expiry_date": request.new_expiry_date,
+            "old_status": b.status,
+            "new_status": new_status,
+            "reason": reason,
+        }),
+        "Expiry date extended".to_string(),
+    )))
+}
+
+/// GET /api/v1/batches/{batch_id}/requalifications — newest first
+pub async fn get_batch_requalifications(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let batch_id = path.into_inner();
+    let rows: Vec<BatchRequalification> = sqlx::query_as(
+        "SELECT q.id, q.batch_id, q.old_expiry_date, q.new_expiry_date, q.old_status, q.new_status, \
+                q.reason, q.user_id, u.username, q.created_at \
+         FROM batch_requalifications q LEFT JOIN users u ON u.id = q.user_id \
+         WHERE q.batch_id = ? ORDER BY q.created_at DESC"
+    )
+        .bind(&batch_id)
+        .fetch_all(&app_state.db_pool)
+        .await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::success(rows)))
 }
