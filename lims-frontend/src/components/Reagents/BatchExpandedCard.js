@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 import Button from '../Button';
 import { UseIcon } from './icons';
 import { getCompatibleUnits, convertQuantity } from '../../utils/units';
+import { DataMatrixIcon } from '../labels/LabelIcons';
 import {
   EditIcon,
   TrashIcon,
@@ -657,7 +658,7 @@ const BatchExpandedCard = ({
   getUsageInput, setUsageQuantity, handleQuantityUse, adjustQuantityByPack,
   usageLoading, usageSuccess, usageError, usageContainer, setUsageContainer,
   getUsageUnit, setUsageUnit,
-  onEdit, onDelete, onHistory, onRefresh, onRequalify,
+  onEdit, onDelete, onHistory, onRefresh, onRequalify, onLabels,
   isMobile = false,
 }) => {
   const available = batch.quantity - (batch.reserved_quantity || 0);
@@ -724,6 +725,12 @@ const BatchExpandedCard = ({
         />
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0, flexWrap: 'wrap', ...(isMobile ? { width: '100%' } : {}) }}>
           <Button size="small" variant="ghost" onClick={() => onHistory(batch)} icon={<ClockIcon size={14} />}>History</Button>
+          {onLabels && batch.status !== 'depleted' && (
+            <Button size="small" variant="secondary" onClick={() => onLabels(batch)} icon={<DataMatrixIcon size={14} />}
+              title="Print Data Matrix labels for the bottles of this batch">
+              Labels
+            </Button>
+          )}
           {canEdit && onRequalify && batch.status !== 'depleted' && (isBatchExpired(batch) || isBatchExpiringSoon(batch)) && (
             <Button
               size="small"

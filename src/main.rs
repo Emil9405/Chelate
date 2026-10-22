@@ -50,6 +50,7 @@ mod equipment_handlers;
 mod import_export;
 mod pagination;
 mod consumption;
+mod label_handlers;
 mod reagent_stock;
 mod routes;
 pub mod soft_delete;

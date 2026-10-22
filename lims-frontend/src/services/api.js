@@ -447,6 +447,23 @@ export const api = {
         });
     },
 
+    // ==================== BOTTLE LABELS ====================
+
+    // selector: { batch_ids } | { zone_id } | { container_ids }, plus include_empty
+    getContainerLabels: async (selector) => {
+        const response = await apiCall(`${API_V1_BASE}/labels/containers`, {
+            method: 'POST',
+            body: JSON.stringify(selector),
+        });
+        return response?.data || [];
+    },
+
+    // Scanned payload, bare id or typed short code -> list of matching bottles
+    resolveLabel: async (code) => {
+        const response = await apiCall(`${API_V1_BASE}/labels/resolve?code=${encodeURIComponent(code)}`);
+        return response?.data?.matches || [];
+    },
+
     useFromContainer: async (containerId, data) => {
         return await apiCall(`${API_V1_BASE}/containers/${containerId}/use`, {
             method: 'POST',

@@ -135,7 +135,7 @@ const AssignmentRow = ({
 
   return (
     <div style={{
-      display: 'flex', alignItems: 'flex-start', gap: '12px',
+      display: 'flex', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap',
       padding: '12px 14px', borderRadius: '10px',
       background: '#f7fafc', border: '1px solid #e2e8f0',
       transition: 'box-shadow 0.15s',
@@ -151,7 +151,8 @@ const AssignmentRow = ({
       />
 
       {/* Location Picker */}
-      <div style={{ flex: 1, minWidth: '200px' }}>
+      {/* Narrow screens: wraps under the stepper instead of overflowing */}
+      <div style={{ flex: '1 1 200px', minWidth: 0 }}>
         <span style={{ fontSize: '12px', fontWeight: '500', color: '#4a5568', display: 'block', marginBottom: '4px' }}>
           Destination
         </span>

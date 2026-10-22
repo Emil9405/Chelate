@@ -16,6 +16,7 @@ import {
 } from './Icons';
 import ChelateLogo from './ChelateLogo';
 import useIsMobile from './hooks/useIsMobile';
+import { ScanIcon } from './labels/LabelIcons';
 
 // Phone layout: these sections get their own tab, the rest go under "More"
 const MOBILE_TABS = ['dashboard', 'reagents', 'experiments', 'storage'];
@@ -31,9 +32,9 @@ const Header = ({ user, onLogout, currentPage, setCurrentPage }) => {
   const [scrolled, setScrolled] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const isMobile = useIsMobile();
-  // Full labels need ~1340px; below that the nav shows icons only (with tooltips),
+  // Full labels need ~1400px; below that the nav shows icons only (with tooltips),
   // and below 1024px the logo text and user name are hidden too.
-  const compactNav = useIsMobile('(max-width: 1365px)');
+  const compactNav = useIsMobile('(max-width: 1439px)');
   const narrowHeader = useIsMobile('(max-width: 1023px)');
 
   // Reserve space under the content for the bottom tab bar
@@ -111,6 +112,20 @@ const Header = ({ user, onLogout, currentPage, setCurrentPage }) => {
             <ChelateLogo src={`/logo.png?v=${process.env.REACT_APP_BUILD_ID || Date.now()}`} size={34} showText={false} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {/* Scan a bottle label: the main phone action in the lab */}
+            <button
+              onClick={() => setCurrentPage('scan')}
+              style={{
+                ...iconButton, width: 'auto', padding: '0 12px', gap: '6px', border: 'none',
+                background: currentPage === 'scan' ? '#2c5282' : 'linear-gradient(135deg, #3182ce 0%, #38b2ac 100%)',
+                color: 'white', fontWeight: 700, fontSize: '0.85rem',
+              }}
+              title="Scan label"
+              aria-label="Scan label"
+            >
+              <ScanIcon size={18} color="white" />
+              Scan
+            </button>
             <div
               title={`${user?.username || ''} (${user?.role || ''})`}
               style={{
@@ -356,6 +371,28 @@ const Header = ({ user, onLogout, currentPage, setCurrentPage }) => {
             <ChevronDownIcon size={16} color="#718096" />
           </div>
           
+          {/* Scan label (camera, USB scanner or typed code) */}
+          <button
+            onClick={() => setCurrentPage('scan')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '38px',
+              height: '38px',
+              background: currentPage === 'scan' ? 'rgba(49, 130, 206, 0.12)' : 'white',
+              border: currentPage === 'scan' ? '2px solid #3182ce' : '2px solid #e2e8f0',
+              borderRadius: '10px',
+              color: currentPage === 'scan' ? '#3182ce' : '#718096',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            title="Scan label"
+            aria-label="Scan label"
+          >
+            <ScanIcon size={18} />
+          </button>
+
           {/* Archive (admin only) */}
           {isAdmin && (
             <button 
