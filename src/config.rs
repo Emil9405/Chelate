@@ -329,6 +329,9 @@ fn override_with_env(config: &mut Config) -> Result<()> {
             config.auth.lockout_duration_minutes = lockout;
         }
     }
+    if let Ok(v) = env::var("AUTH_ALLOW_SELF_REGISTRATION") {
+        config.auth.allow_self_registration = matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes");
+    }
     if let Ok(url) = env::var("DATABASE_URL") {
         config.database.url = url;
 		

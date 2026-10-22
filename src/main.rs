@@ -333,6 +333,7 @@ async fn create_default_admin_if_needed(pool: &SqlitePool, auth_service: &AuthSe
     if user_count.0 == 0 {
         use crate::auth::{RegisterRequest, UserRole};
 
+        let password_from_env = env::var("DEFAULT_ADMIN_PASSWORD").is_ok();
         let password = env::var("DEFAULT_ADMIN_PASSWORD").unwrap_or_else(|_| {
             let mut rng = thread_rng();
             let digits: Vec<char> = "0123456789".chars().collect();
@@ -355,7 +356,6 @@ async fn create_default_admin_if_needed(pool: &SqlitePool, auth_service: &AuthSe
             }
             pwd_chars.shuffle(&mut rng);
             let pwd: String = pwd_chars.into_iter().collect();
-            log::warn!("Generated admin password: {}", pwd);
             pwd
         });
 
@@ -373,7 +373,13 @@ async fn create_default_admin_if_needed(pool: &SqlitePool, auth_service: &AuthSe
             .bind("admin").bind(&user.id).execute(pool).await?;
         user.role = "admin".to_string();
 
-        log::warn!("Default admin created. Username: admin, Password: {}", password);
+        if password_from_env {
+            // Operator already knows it; never write it to logs
+            log::warn!("Default admin created. Username: admin, password from DEFAULT_ADMIN_PASSWORD");
+        } else {
+            // Shown once so the first login is possible; change it right away
+            log::warn!("Default admin created. Username: admin, generated password: {} (change it after first login)", password);
+        }
     }
     Ok(())
 }

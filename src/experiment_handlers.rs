@@ -100,7 +100,11 @@ pub async fn get_all_experiments(
     }
 
     let where_clause = conditions.join(" AND ");
-    let sort_order = query.sort_order.as_deref().unwrap_or("DESC");
+    // Interpolated into ORDER BY: only ASC/DESC may reach the SQL text
+    let sort_order = match query.sort_order.as_deref() {
+        Some(s) if s.eq_ignore_ascii_case("asc") => "ASC",
+        _ => "DESC",
+    };
 
     // Подсчёт
     let count_sql = format!("SELECT COUNT(*) as count FROM experiments WHERE {}", where_clause);

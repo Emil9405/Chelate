@@ -105,12 +105,23 @@ export const ReagentLabel = ({ reagent, batch }) => {
   );
 };
 
+/** Escape text for insertion into HTML (element content and quoted attributes) */
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
 /**
- * Generate printable HTML for labels
+ * Generate printable HTML for labels.
+ * All reagent/batch fields are user data and are escaped: this string is
+ * assigned to innerHTML, so unescaped values would run as HTML/JS.
  */
 const generateLabelHTML = (reagent, batch) => {
+  // GHS codes go into a URL path: keep only the GHS01..GHS09 form
   const ghsCodes =  reagent.hazard_pictograms 
-    ? reagent.hazard_pictograms.split(',').filter(Boolean) 
+    ? reagent.hazard_pictograms.split(',').map(c => c.trim()).filter(c => /^GHS0[1-9]$/.test(c))
     : [];
   const hasHazards = ghsCodes.length > 0;
   const dateStr = batch?.received_date 
@@ -128,10 +139,10 @@ const generateLabelHTML = (reagent, batch) => {
         <h1 style="font-size: 1px; font-weight: 900; margin: 0; line-height: 1;
           text-transform: uppercase; color: #000; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;">
-          ${reagent.name}
+          ${escapeHtml(reagent.name)}
         </h1>
         <div style="font-size: 11px; font-weight: 600; color: #000; margin-top: 4px;">
-          CAS: ${reagent.cas_number || '—'} | MW: ${reagent.molecular_weight || '—'} g/mol
+          CAS: ${escapeHtml(reagent.cas_number || '—')} | MW: ${escapeHtml(reagent.molecular_weight || '—')} g/mol
         </div>
       </div>
       <div style="display: flex; justify-content: space-between; flex: 1; padding-top: 4px; gap: 10px;">
@@ -139,12 +150,12 @@ const generateLabelHTML = (reagent, batch) => {
           <div>
             <div style="font-size: 10px; color: #555; margin-bottom: 2px;">Formula:</div>
             <div style="font-size: 28px; font-weight: bold; font-family: monospace; line-height: 1;">
-              ${reagent.formula || '—'}
+              ${escapeHtml(reagent.formula || '—')}
             </div>
           </div>
           <div style="border: 2px solid #000; padding: 4px 6px; font-size: 11px; font-weight: bold; max-width: 120px;">
             <div style="font-size: 9px; text-transform: uppercase; margin-bottom: 1px;">Storage:</div>
-            ${reagent.storage_conditions || 'Ambient'}
+            ${escapeHtml(reagent.storage_conditions || 'Ambient')}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start;">
@@ -170,8 +181,8 @@ const generateLabelHTML = (reagent, batch) => {
       </div>
       <div style="font-size: 10px; font-weight: bold; margin-top: auto; margin-bottom: 14px;
         display: flex; justify-content: space-between; z-index: 2;">
-        <span>${dateStr}</span>
-        <span>ID: ${batch.batch_number || batch.id}</span>
+        <span>${escapeHtml(dateStr)}</span>
+        <span>ID: ${escapeHtml(batch.batch_number || batch.id)}</span>
       </div>
       <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 14px;
         background: ${hasHazards 
