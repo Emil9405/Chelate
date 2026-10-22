@@ -29,6 +29,7 @@ pub async fn import_reagents_excel(
     payload: Multipart,
     req: HttpRequest,
 ) -> ApiResult<HttpResponse> {
+    crate::auth_handlers::require_permission_key(&req, &app_state.db_pool, "import_data", crate::auth::UserRole::can_import_data).await?;
     let claims = get_current_user(&req)?;
     let current_user_id = claims.sub;
 
@@ -88,6 +89,7 @@ pub async fn import_reagents_json(
     body: web::Json<Vec<ReagentImportDto>>,
     req: HttpRequest,
 ) -> ApiResult<HttpResponse> {
+    crate::auth_handlers::require_permission_key(&req, &app_state.db_pool, "import_data", crate::auth::UserRole::can_import_data).await?;
     let claims = get_current_user(&req)?;
     let count = import_reagents_logic(&app_state.db_pool, body.into_inner(), claims.sub).await?;
     Ok(HttpResponse::Ok().json(ApiResponse::<()>::success_with_message((), format!("Imported {} reagents", count))))

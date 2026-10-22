@@ -214,7 +214,9 @@ const Reagents = ({ user }) => {
           )}
         </div>
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <Button variant="secondary" onClick={() => setShowImportModal(true)} icon={<UploadIcon size={16} />}>Import</Button>
+          {hasPermission('import_data') && (
+            <Button variant="secondary" onClick={() => setShowImportModal(true)} icon={<UploadIcon size={16} />}>Import</Button>
+          )}
           {canEditReagents() && (
               <Button variant="primary" onClick={() => setShowCreateModal(true)} icon={<PlusIcon size={16} />}>Add Reagent</Button>
           )}

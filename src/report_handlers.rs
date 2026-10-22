@@ -242,7 +242,11 @@ fn build_report_config(request: &GenerateReportRequest) -> ReportConfig {
         _ => ReportConfig::all_batches(),
     };
 
-    config.preset = preset.to_string();
+    // Canonical name only: the preset ends up in the file name and XLSX sheet name
+    config.preset = match preset {
+        "low_stock" | "expiring_soon" | "expired" | "depleted" | "unplaced" => preset,
+        _ => "all_batches",
+    }.to_string();
     config.name = match preset {
         "low_stock" => "Low Stock Report".to_string(),
         "expiring_soon" => "Expiring Soon Report".to_string(),
@@ -689,14 +693,11 @@ fn build_xlsx_response(
     let date_fmt = Format::new().set_num_format("yyyy-mm-dd");
 
     // === Лист "Data" ===
-    let sheet_name = if config.preset.len() > 31 {
-        &config.preset[..31]
-    } else {
-        &config.preset
-    };
+    // Excel limits sheet names to 31 characters (cut on a char boundary)
+    let sheet_name: String = config.preset.chars().take(31).collect();
 
     let ws = wb.add_worksheet();
-    ws.set_name(sheet_name)
+    ws.set_name(&sheet_name)
         .map_err(|e| ApiError::InternalServerError(format!("XLSX sheet name: {}", e)))?;
 
     let headers = [
