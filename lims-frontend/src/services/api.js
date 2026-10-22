@@ -434,10 +434,11 @@ export const api = {
         });
     },
 
-    moveContainer: async (containerId, newPositionId) => {
+    // source: 'scan' when moved from the Scan page (bottle history)
+    moveContainer: async (containerId, newPositionId, source) => {
         return await apiCall(`${API_V1_BASE}/containers/${containerId}/move`, {
             method: 'PUT',
-            body: JSON.stringify({ new_position_id: newPositionId }),
+            body: JSON.stringify({ new_position_id: newPositionId, ...(source ? { source } : {}) }),
         });
     },
 
@@ -462,6 +463,63 @@ export const api = {
     resolveLabel: async (code) => {
         const response = await apiCall(`${API_V1_BASE}/labels/resolve?code=${encodeURIComponent(code)}`);
         return response?.data?.matches || [];
+    },
+
+    // Bottle history (placements, moves, draws, inventory), newest first
+    getContainerHistory: async (containerId) => {
+        const response = await apiCall(`${API_V1_BASE}/containers/${containerId}/history`);
+        return response?.data || [];
+    },
+
+    // ==================== INVENTORY ====================
+
+    listInventorySessions: async (status = 'all') => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions?status=${encodeURIComponent(status)}`);
+        return response?.data || [];
+    },
+
+    // scope_type: 'room' | 'zone' | 'position'. Resumes an open inventory of the same place.
+    startInventory: async (scopeType, scopeId, notes) => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions`, {
+            method: 'POST',
+            body: JSON.stringify({ scope_type: scopeType, scope_id: scopeId, notes: notes || null }),
+        });
+        return response?.data;
+    },
+
+    getInventorySession: async (id) => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions/${id}`);
+        return response?.data;
+    },
+
+    inventoryScan: async (id, code, positionId) => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions/${id}/scan`, {
+            method: 'POST',
+            body: JSON.stringify({ code, position_id: positionId }),
+        });
+        return response?.data;
+    },
+
+    // action: 'move_here' | 'place_here' | 'unplace'
+    resolveInventoryItem: async (id, itemId, action) => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions/${id}/items/${itemId}/resolve`, {
+            method: 'POST',
+            body: JSON.stringify({ action }),
+        });
+        return response?.data;
+    },
+
+    closeInventory: async (id, notes) => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions/${id}/close`, {
+            method: 'POST',
+            body: JSON.stringify({ notes: notes || null }),
+        });
+        return response?.data;
+    },
+
+    cancelInventory: async (id) => {
+        const response = await apiCall(`${API_V1_BASE}/inventory/sessions/${id}/cancel`, { method: 'POST' });
+        return response?.data;
     },
 
     useFromContainer: async (containerId, data) => {

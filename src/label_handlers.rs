@@ -160,7 +160,7 @@ impl From<ContainerRow> for ContainerLabel {
     }
 }
 
-const CONTAINER_ROW_SELECT: &str = r#"
+pub(crate) const CONTAINER_ROW_SELECT: &str = r#"
     SELECT
         bc.id AS container_id,
         bc.sequence_number,
@@ -200,7 +200,7 @@ const CONTAINER_ROW_SELECT: &str = r#"
     LEFT JOIN rooms rm ON rm.id = sz.room_id
 "#;
 
-const LABEL_ORDER: &str =
+pub(crate) const LABEL_ORDER: &str =
     "ORDER BY r.name COLLATE NOCASE, b.batch_number COLLATE NOCASE, bc.sequence_number";
 
 pub async fn find_containers(pool: &SqlitePool, query: &ScanQuery) -> ApiResult<Vec<ContainerLabel>> {

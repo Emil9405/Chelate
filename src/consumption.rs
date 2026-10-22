@@ -139,6 +139,9 @@ pub struct ConsumeRequest<'a> {
     /// Why an expired batch is used. Required for ad-hoc use; recorded in
     /// usage_logs.notes and the audit entry.
     pub expired_reason: Option<&'a str>,
+    /// Where the write-off came from, for the bottle history
+    /// (container_history::source: web, scan, experiment, system)
+    pub source: &'a str,
 }
 
 impl<'a> ConsumeRequest<'a> {
@@ -155,6 +158,7 @@ impl<'a> ConsumeRequest<'a> {
             release_reserved: 0.0,
             allow_expired: false,
             expired_reason: None,
+            source: crate::container_history::source::WEB,
         }
     }
 }
@@ -166,6 +170,8 @@ pub struct ContainerDraw {
     pub quantity_before: f64,
     pub quantity_after: f64,
     pub status: String,
+    /// The bottle was sealed before this draw
+    pub opened_now: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -460,6 +466,7 @@ pub async fn consume_from_batch(
                 quantity_before: c.quantity,
                 quantity_after: after,
                 status: status.to_string(),
+                opened_now: !c.is_opened,
             });
         }
     } else if req.container_id.is_some() {
@@ -532,6 +539,24 @@ pub async fn consume_from_batch(
         .execute(&mut *conn)
         .await?;
 
+    // 7. Bottle history: opened / used / emptied, per container drawn from
+    {
+        use crate::container_history::{event, record_event, NewEvent};
+        for d in &draws {
+            if d.opened_now {
+                record_event(conn, &NewEvent::new(&d.container_id, event::OPENED, req.source, req.user_id)).await?;
+            }
+            let mut used = NewEvent::new(&d.container_id, event::USED, req.source, req.user_id);
+            used.quantity = Some(tidy(d.quantity_before - d.quantity_after));
+            used.quantity_after = Some(d.quantity_after);
+            used.note = req.purpose;
+            record_event(conn, &used).await?;
+            if d.status == "empty" {
+                record_event(conn, &NewEvent::new(&d.container_id, event::EMPTIED, req.source, req.user_id)).await?;
+            }
+        }
+    }
+
     Ok(ConsumeResult {
         usage_id,
         batch_id: req.batch_id.to_string(),
@@ -589,6 +614,7 @@ pub async fn consume_experiment_link(
     let expired_reason = format!("consumed by experiment \"{}\" (reserved stock)", experiment_title);
     req.allow_expired = true;
     req.expired_reason = Some(&expired_reason);
+    req.source = crate::container_history::source::EXPERIMENT;
 
     consume_from_batch(conn, req).await.map(Some)
 }
@@ -669,6 +695,9 @@ mod tests {
         ] {
             sqlx::query(ddl).execute(&pool).await.unwrap();
         }
+        for ddl in crate::container_history::MIGRATIONS {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
         pool
     }
 
@@ -715,6 +744,17 @@ mod tests {
         let (q, s, _) = batch_state(&pool, "b").await;
         assert!((q - 1.8).abs() < 1e-12);
         assert_eq!(s, "available");
+
+        // Bottle history: c2 was already open and is now empty; c1 was sealed
+        let events: Vec<(String, String, Option<f64>, Option<f64>)> = sqlx::query_as(
+            "SELECT container_id, event_type, quantity, quantity_after FROM container_events ORDER BY rowid",
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(events, vec![
+            ("c2".into(), "used".into(), Some(0.5), Some(0.0)),
+            ("c2".into(), "emptied".into(), None, None),
+            ("c1".into(), "opened".into(), None, None),
+            ("c1".into(), "used".into(), Some(0.7), Some(0.3)),
+        ]);
     }
 
     #[tokio::test]
