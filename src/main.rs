@@ -95,6 +95,13 @@ async fn main() -> anyhow::Result<()> {
     let pool = create_database_pool(&config.database).await?;
     db::run_migrations(&pool).await?;
     jwt_rotation::init_rotation_table(&pool).await?;
+    match consumption::sync_low_stock_statuses(&pool).await {
+        Ok(n) => log::info!(
+            "Low-stock threshold: {}% of original quantity ({} batch statuses updated)",
+            consumption::low_stock_percent(), n
+        ),
+        Err(e) => log::warn!("Low-stock status sync failed: {}", e),
+    }
 
     let auth_service = Arc::new(AuthService::new(&config.auth.jwt_secret));
     create_default_admin_if_needed(&pool, &auth_service).await?;

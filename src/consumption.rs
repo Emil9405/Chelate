@@ -24,8 +24,61 @@ use crate::error::{ApiError, ApiResult};
 const QTY_EPS: f64 = 1e-9;
 /// A container/batch at or below this quantity counts as empty (unchanged legacy threshold)
 const EMPTY_EPS: f64 = 0.001;
-/// Batch is low_stock at or below this share of its original quantity
-pub const LOW_STOCK_RATIO: f64 = 0.2;
+/// Default low-stock threshold, in % of a batch's original quantity
+pub const DEFAULT_LOW_STOCK_PERCENT: f64 = 20.0;
+static LOW_STOCK_PERCENT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Low-stock threshold in % of the original quantity, the single rule used
+/// by the batch status machine, dashboard, low-stock list and reports.
+/// A percentage is unit-free: 10 L of a 25 L drum and 10 mg of a 100 mg vial
+/// are judged by how much of the package is left, not by the raw number.
+/// Configured with `LOW_STOCK_PERCENT` (0 < p < 100) in the environment/.env.
+pub fn low_stock_percent() -> f64 {
+    *LOW_STOCK_PERCENT.get_or_init(|| {
+        parse_low_stock_percent(std::env::var("LOW_STOCK_PERCENT").ok().as_deref())
+    })
+}
+
+pub fn low_stock_ratio() -> f64 {
+    low_stock_percent() / 100.0
+}
+
+fn parse_low_stock_percent(value: Option<&str>) -> f64 {
+    value
+        .and_then(|s| s.trim().trim_end_matches('%').trim().parse::<f64>().ok())
+        .filter(|p| p.is_finite() && *p > 0.0 && *p < 100.0)
+        .unwrap_or(DEFAULT_LOW_STOCK_PERCENT)
+}
+
+/// Re-applies the current low-stock threshold to stored statuses
+/// (available <-> low_stock only), so changing `LOW_STOCK_PERCENT` takes
+/// effect for every batch at startup, not only for the ones used afterwards.
+/// Returns the number of batches whose status changed.
+pub async fn sync_low_stock_statuses(pool: &sqlx::SqlitePool) -> Result<u64, sqlx::Error> {
+    let ratio = low_stock_ratio();
+    let mut tx = pool.begin().await?;
+    let to_low = sqlx::query(
+        "UPDATE batches SET status = 'low_stock' \
+         WHERE status = 'available' AND deleted_at IS NULL \
+           AND original_quantity > 0 AND quantity > ? AND quantity <= original_quantity * ?",
+    )
+    .bind(EMPTY_EPS)
+    .bind(ratio)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let to_available = sqlx::query(
+        "UPDATE batches SET status = 'available' \
+         WHERE status = 'low_stock' AND deleted_at IS NULL \
+           AND (original_quantity IS NULL OR original_quantity <= 0 OR quantity > original_quantity * ?)",
+    )
+    .bind(ratio)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok(to_low + to_available)
+}
 
 /// Strip float noise (0.30000000000000004 -> 0.3) before storing
 fn tidy(x: f64) -> f64 {
@@ -47,7 +100,7 @@ pub fn compute_container_status(quantity: f64, original_quantity: f64) -> &'stat
 
 /// Batch status after a quantity change.
 /// Depleted when every container is gone or the quantity is effectively zero;
-/// an expired batch stays expired; otherwise the 20% low-stock rule.
+/// an expired batch stays expired; otherwise the low-stock % rule.
 pub fn compute_batch_status(
     new_quantity: f64,
     original_quantity: f64,
@@ -59,7 +112,7 @@ pub fn compute_batch_status(
         "depleted"
     } else if status_before == "expired" {
         "expired"
-    } else if original_quantity > 0.0 && new_quantity <= original_quantity * LOW_STOCK_RATIO {
+    } else if original_quantity > 0.0 && new_quantity <= original_quantity * low_stock_ratio() {
         "low_stock"
     } else {
         "available"
@@ -799,5 +852,41 @@ mod tests {
         assert_eq!(compute_batch_status(0.0005, 10.0, false, 0, "low_stock"), "depleted");
         assert_eq!(compute_batch_status(3.0, 10.0, true, 0, "available"), "depleted");
         assert_eq!(compute_batch_status(3.0, 10.0, false, 0, "expired"), "expired");
+    }
+
+    #[test]
+    fn low_stock_percent_parsing() {
+        assert_eq!(parse_low_stock_percent(None), DEFAULT_LOW_STOCK_PERCENT);
+        assert_eq!(parse_low_stock_percent(Some("10")), 10.0);
+        assert_eq!(parse_low_stock_percent(Some(" 12.5 % ")), 12.5);
+        assert_eq!(parse_low_stock_percent(Some("0")), DEFAULT_LOW_STOCK_PERCENT);
+        assert_eq!(parse_low_stock_percent(Some("100")), DEFAULT_LOW_STOCK_PERCENT);
+        assert_eq!(parse_low_stock_percent(Some("abc")), DEFAULT_LOW_STOCK_PERCENT);
+    }
+
+    #[tokio::test]
+    async fn sync_low_stock_moves_only_available_and_low_stock() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE batches (id TEXT, quantity REAL, original_quantity REAL, \
+             status TEXT, deleted_at TEXT)",
+        ).execute(&pool).await.unwrap();
+        for (id, q, o, st) in [
+            ("a", 1.0, 10.0, "available"),   // 10% -> low_stock
+            ("b", 9.0, 10.0, "low_stock"),   // 90% -> available
+            ("c", 1.0, 10.0, "expired"),     // untouched
+            ("d", 1.0, 10.0, "in_use"),      // untouched
+            ("e", 5.0, 10.0, "available"),   // 50% stays
+        ] {
+            sqlx::query("INSERT INTO batches VALUES (?, ?, ?, ?, NULL)")
+                .bind(id).bind(q).bind(o).bind(st)
+                .execute(&pool).await.unwrap();
+        }
+        assert_eq!(sync_low_stock_statuses(&pool).await.unwrap(), 2);
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, status FROM batches ORDER BY id")
+                .fetch_all(&pool).await.unwrap();
+        let st: Vec<&str> = rows.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(st, ["low_stock", "available", "expired", "in_use", "available"]);
     }
 }

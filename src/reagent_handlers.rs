@@ -419,9 +419,9 @@ pub async fn get_reagent_by_id(
         available_batches: stock.available_batches,
         reserved_quantity: reserved_qty,
         available_quantity: total_qty - reserved_qty,
-        // Same 20% rule the batch status machine uses
+        // Same % rule the batch status machine uses, on unit-converted totals
         low_stock: total_qty > 0.0
-            && total_qty <= stock.original_quantity.unwrap_or(0.0) * 0.2,
+            && total_qty <= stock.original_quantity.unwrap_or(0.0) * crate::consumption::low_stock_ratio(),
         expiring_soon_count: stock.expiring_soon_count,
         expired_count: stock.expired_count,
         batches,

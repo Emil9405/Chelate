@@ -336,8 +336,8 @@ export const BatchUsageInput = ({ batch, reagentId, onUsageComplete, onShowHisto
       {/* Quantity input */}
       <input
         type="number"
-        step="0.01"
-        min="0.01"
+        step="any"
+        min="0"
         value={quantity}
         onChange={(e) => {
           setQuantity(e.target.value);

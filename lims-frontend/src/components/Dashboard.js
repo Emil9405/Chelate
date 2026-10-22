@@ -257,7 +257,7 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
         api.getDashboardStats().catch(() => null),
         api.getReagents({ page: 1, per_page: 1 }).catch(() => null),
         api.getAllBatches({ page: 1, per_page: 1 }).catch(() => null),
-        api.getLowStockItems(10).catch(() => []),
+        api.getLowStockItems().catch(() => []),
         api.getExpiringItems(30).catch(() => []),
         api.getRecentActivity().catch(() => null),
         api.getDashboardTrends().catch(() => null),

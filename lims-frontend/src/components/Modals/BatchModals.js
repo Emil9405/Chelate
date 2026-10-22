@@ -127,7 +127,7 @@ const BatchFormModal = ({ isOpen, onClose, title, reagentId, batch = null, onSav
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <Input 
                   type="number" 
-                  step="0.01" 
+                  step="any" 
                   name="quantity" 
                   value={formData.quantity} 
                   onChange={handleChange} 
@@ -154,7 +154,7 @@ const BatchFormModal = ({ isOpen, onClose, title, reagentId, batch = null, onSav
             <FormGroup label="Pack Size" hint="Amount per pack for counting">
               <Input 
                 type="number" 
-                step="1" 
+                step="any" 
                 min="0"
                 name="pack_size" 
                 value={formData.pack_size} 

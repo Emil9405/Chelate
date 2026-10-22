@@ -15,10 +15,15 @@ const Table = ({
   perPage = 10,
   onPageChange  
 }) => {
-  const totalPages = Math.ceil(totalItems / perPage);
+  // Slice client-side only when the caller drives paging (onPageChange).
+  // Otherwise `data` is the full list or an already server-paged page:
+  // slicing it to `perPage` (10) silently hid every row after the 10th
+  // (Users, Reports, usage history), with no page controls shown.
+  const clientPaged = pagination && typeof onPageChange === 'function';
+  const totalPages = clientPaged ? Math.ceil(totalItems / perPage) : 0;
   const startIndex = (currentPage - 1) * perPage;
   const endIndex = startIndex + perPage;
-  const paginatedData = data ? data.slice(startIndex, endIndex) : [];
+  const paginatedData = data ? (clientPaged ? data.slice(startIndex, endIndex) : data) : [];
 
   const handlePageChange = (page) => {
     if (onPageChange) onPageChange(page);

@@ -10,6 +10,7 @@ import Input from './Input';
 import Select from './Select';
 import { CreateUserModal, EditUserModal, ViewUserModal } from './Modals';
 import { KeyIcon, EditIcon, TrashIcon, EyeIcon } from './Icons';
+import useIsMobile from './hooks/useIsMobile';
 
 // ===================== SWITCH COMPONENT =====================
 const Switch = ({ checked, onChange, disabled = false, label }) => (
@@ -351,6 +352,67 @@ const UserActivityModal = ({ isOpen, onClose, user }) => {
 };
 
 // ===================== MAIN COMPONENT =====================
+// ===================== USER LIST PIECES =====================
+const ROLE_COLORS = {
+  admin: { bg: '#fed7d7', color: '#c53030' },
+  researcher: { bg: '#c6f6d5', color: '#2f855a' },
+  viewer: { bg: '#bee3f8', color: '#2b6cb0' },
+};
+
+const RoleBadge = ({ role }) => {
+  const r = role?.toLowerCase();
+  const style = ROLE_COLORS[r] || { bg: '#e2e8f0', color: '#4a5568' };
+  return <Badge style={{ backgroundColor: style.bg, color: style.color }}>{r ? r.charAt(0).toUpperCase() + r.slice(1) : 'Unknown'}</Badge>;
+};
+
+const StatusText = ({ active }) => (
+  <span style={{ color: active ? '#38a169' : '#e53e3e', fontWeight: '500', whiteSpace: 'nowrap' }}>{active ? '● Active' : '● Inactive'}</span>
+);
+
+const iconBtn = (extra) => ({ padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', ...extra });
+
+const UserActions = ({ item, onAction, large = false }) => {
+  const size = large ? { width: '40px', height: '40px' } : {};
+  return (
+    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+      <Button variant="secondary" onClick={() => onAction('view', item)} style={iconBtn(size)} title="View Details" aria-label="View details"><EyeIcon size={16} /></Button>
+      <Button variant="secondary" onClick={() => onAction('edit', item)} style={iconBtn(size)} title="Edit User" aria-label="Edit user"><EditIcon size={16} /></Button>
+      <Button onClick={() => onAction('permissions', item)} style={iconBtn({ ...size, backgroundColor: '#805ad5', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' })} title="Manage Permissions" aria-label="Manage permissions"><ShieldIcon size={16} /></Button>
+      <Button onClick={() => onAction('activity', item)} style={iconBtn({ ...size, backgroundColor: '#3182ce', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' })} title="View Activity History" aria-label="Activity history"><HistoryIcon size={16} /></Button>
+      <Button onClick={() => onAction('reset', item)} style={iconBtn({ ...size, backgroundColor: '#ecc94b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' })} title="Reset Password" aria-label="Reset password"><KeyIcon size={16} /></Button>
+      <Button variant="danger" onClick={() => onAction('delete', item)} style={iconBtn(size)} title="Delete User" aria-label="Delete user"><TrashIcon size={16} /></Button>
+    </div>
+  );
+};
+
+// Phone layout: one card per user instead of a 7-column table
+const UserCardList = ({ users, onAction, emptyMessage }) => {
+  if (users.length === 0) {
+    return <div style={{ textAlign: 'center', padding: '2rem 1rem', color: '#718096' }}>{emptyMessage}</div>;
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {users.map(u => (
+        <div key={u.id} style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '12px', background: 'white' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <span style={{ fontWeight: '600', color: '#1a365d', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.username || '—'}</span>
+            <RoleBadge role={u.role} />
+          </div>
+          {u.name && <div style={{ marginTop: '4px', color: '#2d3748', fontSize: '14px' }}>{u.name}</div>}
+          {u.email && <div style={{ marginTop: '2px', color: '#718096', fontSize: '13px', overflowWrap: 'anywhere' }}>{u.email}</div>}
+          <div style={{ marginTop: '6px', display: 'flex', gap: '12px', fontSize: '12px', color: '#718096', flexWrap: 'wrap' }}>
+            <StatusText active={u.is_active !== false} />
+            {u.created_at && <span>Created {new Date(u.created_at).toLocaleDateString('ru-RU')}</span>}
+          </div>
+          <div style={{ marginTop: '10px' }}>
+            <UserActions item={u} onAction={onAction} large />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const Users = ({ user }) => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -365,6 +427,7 @@ const Users = ({ user }) => {
   const [error, setError] = useState('');
 
   const isAdmin = user?.role?.toLowerCase() === 'admin';
+  const isMobile = useIsMobile();
 
   const loadUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -435,22 +498,25 @@ const Users = ({ user }) => {
     </div>
   );
 
+  const emptyMessage = users.length === 0 ? "No users found in the system." : "No users match your search criteria.";
+  const sectionPad = isMobile ? '12px' : '1.5rem 2rem';
+
   return (
-    <div style={{ padding: '6rem 2rem 2rem 2rem' }}>
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '2rem', fontWeight: '600', color: '#2d3748', marginBottom: '0.5rem' }}>Users</h1>
+    <div style={{ padding: isMobile ? '68px 12px 12px' : '6rem 2rem 2rem 2rem' }}>
+      <div style={{ marginBottom: isMobile ? '1rem' : '2rem' }}>
+        <h1 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '600', color: '#2d3748', marginBottom: '0.5rem' }}>Users</h1>
         <p style={{ color: '#718096' }}>Manage system users, permissions, and view activity history</p>
       </div>
       {error && <ErrorMessage message={error} onDismiss={() => setError('')} />}
       <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)', overflow: 'hidden' }}>
-        <div style={{ padding: '1.5rem 2rem', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ padding: sectionPad, borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <h2 style={{ fontSize: '1.25rem', fontWeight: '600', color: '#2d3748', margin: 0 }}>User List {users.length > 0 && <span style={{ marginLeft: '0.5rem', fontSize: '0.875rem', color: '#718096', fontWeight: '400' }}>({filteredUsers.length} of {users.length})</span>}</h2>
           <Button variant="primary" onClick={() => setShowCreateModal(true)}>+ Add User</Button>
         </div>
-        <div style={{ padding: '1.5rem 2rem', borderBottom: '1px solid #e2e8f0' }}>
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-            <Input placeholder="Search by name, username or email..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ flex: 1, minWidth: '250px' }} />
-            <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} style={{ width: '160px' }}>
+        <div style={{ padding: sectionPad, borderBottom: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', gap: isMobile ? '8px' : '1rem', flexWrap: 'wrap' }}>
+            <Input placeholder="Search by name, username or email..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={isMobile ? { flex: '1 1 100%', minWidth: 0 } : { flex: 1, minWidth: '250px' }} />
+            <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} style={{ width: isMobile ? '100%' : '160px' }}>
               <option value="">All Roles</option>
               <option value="admin">Admin</option>
               <option value="researcher">Researcher</option>
@@ -458,31 +524,21 @@ const Users = ({ user }) => {
             </Select>
           </div>
         </div>
-        <div style={{ padding: '1rem 2rem 2rem' }}>
+        <div style={{ padding: isMobile ? '12px' : '1rem 2rem 2rem' }}>
           {loading ? <Loading text="Loading users..." /> : (
+            isMobile ? (
+              <UserCardList users={filteredUsers} onAction={handleAction} emptyMessage={emptyMessage} />
+            ) : (
             <Table data={filteredUsers} columns={[
               { key: 'username', label: 'Username', render: (item) => <span style={{ fontWeight: '500', color: '#1a365d' }}>{item.username || '—'}</span> },
               { key: 'name', label: 'Full Name' },
               { key: 'email', label: 'Email' },
-              { key: 'role', label: 'Role', render: (item) => {
-                const role = item.role?.toLowerCase();
-                const roleColors = { 'admin': { bg: '#fed7d7', color: '#c53030' }, 'researcher': { bg: '#c6f6d5', color: '#2f855a' }, 'viewer': { bg: '#bee3f8', color: '#2b6cb0' } };
-                const style = roleColors[role] || { bg: '#e2e8f0', color: '#4a5568' };
-                return <Badge style={{ backgroundColor: style.bg, color: style.color }}>{role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Unknown'}</Badge>;
-              }},
-              { key: 'is_active', label: 'Status', render: (item) => <span style={{ color: item.is_active !== false ? '#38a169' : '#e53e3e', fontWeight: '500' }}>{item.is_active !== false ? '● Active' : '● Inactive'}</span> },
+              { key: 'role', label: 'Role', render: (item) => <RoleBadge role={item.role} /> },
+              { key: 'is_active', label: 'Status', render: (item) => <StatusText active={item.is_active !== false} /> },
               { key: 'created_at', label: 'Created', render: (item) => item.created_at ? new Date(item.created_at).toLocaleDateString('ru-RU') : '—' },
-              { key: 'actions', label: 'Actions', render: (item) => (
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  <Button variant="secondary" onClick={() => handleAction('view', item)} style={{ padding: '6px', display: 'flex', alignItems: 'center' }} title="View Details"><EyeIcon size={16} /></Button>
-                  <Button variant="secondary" onClick={() => handleAction('edit', item)} style={{ padding: '6px', display: 'flex', alignItems: 'center' }} title="Edit User"><EditIcon size={16} /></Button>
-                  <Button onClick={() => handleAction('permissions', item)} style={{ padding: '6px', display: 'flex', alignItems: 'center', backgroundColor: '#805ad5', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }} title="Manage Permissions"><ShieldIcon size={16} /></Button>
-                  <Button onClick={() => handleAction('activity', item)} style={{ padding: '6px', display: 'flex', alignItems: 'center', backgroundColor: '#3182ce', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }} title="View Activity History"><HistoryIcon size={16} /></Button>
-                  <Button onClick={() => handleAction('reset', item)} style={{ padding: '6px', display: 'flex', alignItems: 'center', backgroundColor: '#ecc94b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }} title="Reset Password"><KeyIcon size={16} /></Button>
-                  <Button variant="danger" onClick={() => handleAction('delete', item)} style={{ padding: '6px', display: 'flex', alignItems: 'center' }} title="Delete User"><TrashIcon size={16} /></Button>
-                </div>
-              )}
-            ]} emptyMessage={users.length === 0 ? "No users found in the system." : "No users match your search criteria."} />
+              { key: 'actions', label: 'Actions', render: (item) => <UserActions item={item} onAction={handleAction} /> },
+            ]} emptyMessage={emptyMessage} />
+            )
           )}
         </div>
       </div>

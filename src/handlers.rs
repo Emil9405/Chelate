@@ -325,15 +325,16 @@ pub async fn get_dashboard_stats(
         .fetch_one(&app_state.db_pool)
         .await?;
 
-    // Low stock = same 20% rule the batch status machine uses (not an absolute
-    // quantity, which would mix units: 10 kg and 10 mg are not comparable)
+    // Low stock = the same % rule as the batch status machine and the
+    // /batches/low-stock list (not an absolute quantity, which mixes units)
     let low_stock: (i64,) = sqlx::query_as(&format!(
         "SELECT COUNT(*) FROM batches \
          WHERE status IN {st} AND deleted_at IS NULL \
-           AND (status = 'low_stock' OR (original_quantity > 0 AND quantity <= original_quantity * 0.2)) \
+           AND original_quantity > 0 AND quantity <= original_quantity * ? \
            AND reagent_id NOT IN (SELECT id FROM reagents WHERE deleted_at IS NOT NULL)",
         st = crate::reagent_stock::STOCK_STATUSES_SQL
     ))
+        .bind(crate::consumption::low_stock_ratio())
         .fetch_one(&app_state.db_pool)
         .await?;
 
