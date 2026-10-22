@@ -5,6 +5,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../services/api';
 import useIsMobile from '../hooks/useIsMobile';
+import LabelPrintModal from '../labels/LabelPrintModal';
+import { DataMatrixIcon } from '../labels/LabelIcons';
 
 // ==================== КОНСТАНТЫ ====================
 
@@ -793,6 +795,7 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showPositionForm, setShowPositionForm] = useState(false);
   const [showInventory, setShowInventory] = useState(false);
+  const [showLabels, setShowLabels] = useState(false);
   const [editPosition, setEditPosition] = useState(null);
   const [hovered, setHovered] = useState(false);
   const touch = useIsMobile(TOUCH_QUERY);
@@ -852,6 +855,9 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6366f1' }} onClick={() => setShowInventory(true)} title="View inventory" aria-label="View inventory">
             <i className="fas fa-eye" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
+          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#2b6cb0' }} onClick={() => setShowLabels(true)} title="Print labels for the bottles in this zone" aria-label="Print labels">
+            <DataMatrixIcon size={touch ? 15 : 12} />
+          </button>
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowZoneForm(true)} title="Edit zone" aria-label="Edit zone">
             <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
@@ -905,6 +911,17 @@ const ZoneSection = ({ zone, positions, onRefresh }) => {
           position={editPosition}
           onSave={() => { setShowPositionForm(false); onRefresh(); }}
           onCancel={() => { setShowPositionForm(false); setEditPosition(null); }}
+        />
+      )}
+
+      {/* Labels for every bottle placed in this zone (initial labelling shelf by shelf) */}
+      {showLabels && (
+        <LabelPrintModal
+          isOpen={showLabels}
+          onClose={() => setShowLabels(false)}
+          title={`Labels ${zone.name}`}
+          subtitle={`${zone.name} — all bottles in this zone`}
+          selector={{ zone_id: zone.id }}
         />
       )}
 

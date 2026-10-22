@@ -13,6 +13,7 @@ import { PrinterIcon } from './icons';
 import useBatchLogic from './useBatchLogic';
 import PlacementModal from './PlacementModal';
 import BatchExpandedCard from './BatchExpandedCard';
+import LabelPrintModal from '../labels/LabelPrintModal';
 
 import {
   CreateBatchModal,
@@ -263,6 +264,7 @@ const ReagentAccordionItem = ({
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [expandedBatchId, setExpandedBatchId] = useState(null);
+  const [labelBatch, setLabelBatch] = useState(null);
   const { rooms } = useRooms();
 
   const logic = useBatchLogic(reagent.id, isExpanded, onReagentsRefresh);
@@ -460,6 +462,7 @@ const ReagentAccordionItem = ({
                       onDelete={logic.handleDeleteBatch}
                       onHistory={(b) => { logic.setSelectedBatch(b); logic.setShowUsageHistory(true); }}
                       onRequalify={(b) => { logic.setSelectedBatch(b); logic.setShowRequalify(true); }}
+                      onLabels={(b) => setLabelBatch(b)}
                       onRefresh={logic.loadBatches}
                       isMobile={isMobile}
                     />
@@ -519,6 +522,19 @@ const ReagentAccordionItem = ({
         />
       )}
       
+      {/* ===== Bottle labels (Data Matrix) ===== */}
+      {labelBatch && (
+        <LabelPrintModal
+          isOpen={!!labelBatch}
+          onClose={() => setLabelBatch(null)}
+          title={`Labels ${reagent.name} ${labelBatch.batch_number}`}
+          subtitle={`${reagent.name} · ${labelBatch.batch_number}`}
+          selector={{ batch_ids: [labelBatch.id] }}
+          batch={{ ...labelBatch, container_count: Math.max(labelBatch.container_count || 0, (logic.containersMap[labelBatch.id] || []).length) }}
+          onContainersChanged={(id) => { logic.loadContainers(id); logic.loadBatches(); }}
+        />
+      )}
+
       {/* ===== Placement Modal (v2 — со stepper) ===== */}
       {logic.containerToPlace && (
         <PlacementModal

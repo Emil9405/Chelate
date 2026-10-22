@@ -95,6 +95,7 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 - **GHS Classification** — Integrated hazard pictograms and safety data
 - **Expiry Alerts** — Automated notifications for expiring chemicals
 - **Hierarchical Storage** — Location tracking (Building → Room → Cabinet → Shelf)
+- **Bottle Labels** — A Data Matrix label for every bottle, printed on A4 (plain paper to cut, or sticker sheets); scan it with a phone to see the bottle, write off an amount or move it
 - **Bulk Operations** — Import/export thousands of records via CSV/Excel
 
 ### Equipment & Assets
@@ -111,7 +112,7 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 
 ### Performance
 - **Sub-second Queries** — Optimized indexes, CTEs, and window functions
-- **Cursor Pagination** — Efficient handling of large result sets
+- **Server-side Pagination** — Filtered, sorted pages for large result sets
 - **Virtual Scrolling** — Smooth frontend UX with massive datasets
 - **Connection Pooling** — Concurrent request handling
 
@@ -179,6 +180,12 @@ cd backend && cargo build --release
 cd frontend && npm run build
 # Serve dist/ with nginx or similar
 ```
+
+**Scanning labels with a phone:** live camera scanning needs the site to be opened over
+HTTPS (browsers expose the camera only to secure pages). Over plain HTTP the Scan page
+falls back to taking a photo of the label, which works on any phone. A USB or Bluetooth
+scanner in keyboard mode works on the same page, and so does typing the 8-character code
+printed under each symbol.
 
 ---
 

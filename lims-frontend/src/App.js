@@ -12,6 +12,7 @@ import Experiments from './components/Experiments';
 import ErrorBoundary from './components/ErrorBoundary';
 import LocationManager from './components/storage/LocationManager'; // <-- Изменили импорт на LocationManager
 import ArchivePage from './components/ArchivePage';
+import ScanPage from './components/labels/ScanPage';
 import './index.css';
 
 const App = () => {
@@ -196,6 +197,8 @@ const App = () => {
         return <Users user={user} />;
       case 'storage': // Оставляем маршрут 'storage' как просил, но рендерим LocationManager
         return <LocationManager user={user} />;
+      case 'scan':
+        return <ScanPage user={user} />;
       case 'archive':
         return <ArchivePage user={user} onNavigateBack={() => setCurrentPage('dashboard')} />;
       default:
