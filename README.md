@@ -3,7 +3,7 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange)
 ![React](https://img.shields.io/badge/react-18.x-61dafb)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 
 **A high-performance Laboratory Information Management System built with Rust and React.**
 
@@ -20,9 +20,9 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 | Problem | Solution |
 |---------|----------|
 | Legacy LIMS are slow and clunky | Rust backend, indexed SQLite queries, server-side pagination |
-| Vendor lock-in with proprietary formats | Open source, a single SQLite file, plain REST/JSON API, CSV/Excel/JSON import and export |
+| Vendor lock-in with proprietary formats | Source available, a single SQLite file, plain REST/JSON API, CSV/Excel/JSON import and export |
 | Manual paper trails and errors | Audit log, per-bottle history, scan-based inventory checks |
-| Expensive per-seat licensing | Self-hosted, MIT licensed |
+| Expensive per-seat licensing | Self-hosted, free for academic and other noncommercial use |
 
 > **In Production:** Protocol generation time reduced by ~90%, manual inventory errors eliminated.
 
@@ -389,7 +389,12 @@ Please follow Rust conventions (`rustfmt`, `clippy`) and add tests for new featu
 
 ## License
 
-MIT License.
+Chelate is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Free for noncommercial use:** research, teaching and study, and use by universities, public research institutes, charities and other noncommercial organizations, including modifying the code for your own lab.
+- **Commercial use needs a separate license:** running it inside a company, or offering it as a paid product or service. Contact the author.
+
+The source is public, but because commercial use is restricted this is not an OSI-approved open-source license.
 
 ---
 
