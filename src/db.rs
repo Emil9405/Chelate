@@ -793,6 +793,8 @@ async fn run_additional_migrations(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE audit_logs ADD COLUMN description TEXT",
         "ALTER TABLE audit_logs ADD COLUMN changes TEXT",
         "ALTER TABLE usage_logs ADD COLUMN placement_id TEXT REFERENCES batch_placements(id)",
+        // Written by every write-off since consume_from_batch; older databases may lack it
+        "ALTER TABLE usage_logs ADD COLUMN experiment_id TEXT REFERENCES experiments(id)",
 
         // ==================== ROOMS ====================
         "ALTER TABLE rooms ADD COLUMN color TEXT CHECK(color IS NULL OR length(color) <= 20)",
