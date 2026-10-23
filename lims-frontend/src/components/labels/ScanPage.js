@@ -2,7 +2,9 @@
 // Scan a Chelate label with the phone camera and act on what it is:
 //   - a bottle (Data Matrix): contents, write-off, move, history;
 //   - a place (QR on a room, cabinet or shelf): what is there, and on a shelf
-//     "put bottles here" by scanning them.
+//     "put bottles here" by scanning them;
+//   - a manufacturer's own code on a bottle with no Chelate label yet: goods
+//     receiving (batch, bottles, reagent, expiry) in one step.
 // Scanning a bottle, then "Move: scan the shelf label", then the shelf's QR
 // moves the bottle.
 //
@@ -20,6 +22,7 @@ import PlacementModal from '../Reagents/PlacementModal';
 import BottleCard from './BottleCard';
 import LocationCard from './LocationCard';
 import PlaceHere from './PlaceHere';
+import ReceiveSession from './ReceiveSession';
 import CameraView from './CameraView';
 import useCameraScanner from './useCameraScanner';
 import { ScanIcon } from './LabelIcons';
@@ -43,6 +46,7 @@ const ScanPage = ({ user }) => {
   const [current, setCurrent] = useState(null);
   const [location, setLocation] = useState(null);
   const [putHere, setPutHere] = useState(null);       // shelf being filled by scanning bottles
+  const [receiving, setReceiving] = useState(null);   // { scan } or {}: receiving goods by scanning
   const [moveFor, setMoveFor] = useState(null);       // bottle waiting for its shelf label
   const [confirmMove, setConfirmMove] = useState(null); // { bottle, shelf }
   const [moving, setMoving] = useState(false);
@@ -92,6 +96,13 @@ const ScanPage = ({ user }) => {
       } else if (moveFor) {
         setError('Scan the shelf label, not a bottle. Cancel to go back to the bottle.');
         restartCamera();
+      } else if (r.supplier) {
+        if (canAct) {
+          setReceiving({ scan: r.supplier });
+        } else {
+          setError('This is a manufacturer code from a bottle that has no Chelate label yet. Ask someone who can receive goods to add it.');
+          restartCamera();
+        }
       } else if (r.matches.length === 1) {
         setCurrent(r.matches[0]);
       } else {
@@ -105,7 +116,7 @@ const ScanPage = ({ user }) => {
     } finally {
       handlingRef.current = false;
     }
-  }, [stop, cameraOn, moveFor, clearResult, restartCamera]);
+  }, [stop, cameraOn, moveFor, clearResult, restartCamera, canAct]);
   lookupRef.current = lookup;
 
   // Phones open straight into the camera; on a computer the code field
@@ -208,6 +219,13 @@ const ScanPage = ({ user }) => {
     if (count > 0) setNotice(`${count} bottle${count !== 1 ? 's' : ''} placed on ${shelf.path}`);
   };
 
+  const finishReceiving = (count) => {
+    setReceiving(null);
+    setError('');
+    if (count > 0) setNotice(`${count} bottle${count !== 1 ? 's' : ''} received. Print their labels, stick them on, then place them by scanning the shelf.`);
+    restartCamera();
+  };
+
   const submitManual = (e) => {
     e.preventDefault();
     if (manual.trim()) {
@@ -216,7 +234,7 @@ const ScanPage = ({ user }) => {
     }
   };
 
-  const idle = !current && matches.length === 0 && !location && !confirmMove && !putHere;
+  const idle = !current && matches.length === 0 && !location && !confirmMove && !putHere && !receiving;
   const shownError = error || (idle ? cameraError : '');
   const hasResult = current || matches.length > 1 || location || confirmMove;
 
@@ -229,7 +247,9 @@ const ScanPage = ({ user }) => {
       <canvas ref={scanner.canvasRef} style={{ display: 'none' }} />
       <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} style={{ display: 'none' }} />
 
-      {putHere ? (
+      {receiving ? (
+        <ReceiveSession initialScan={receiving.scan} onDone={finishReceiving} />
+      ) : putHere ? (
         <PlaceHere shelf={putHere} onSwitchShelf={setPutHere} onDone={finishPutHere} />
       ) : (
         <>
@@ -281,6 +301,11 @@ const ScanPage = ({ user }) => {
               <Button variant={liveSupported ? 'secondary' : 'primary'} onClick={() => fileRef.current && fileRef.current.click()} style={{ height: '48px' }}>
                 {liveSupported ? (isMobile ? 'Take a photo instead' : 'Read a photo of the label') : 'Take a photo of the label'}
               </Button>
+              {canAct && (
+                <Button variant="secondary" onClick={() => { stop(); setNotice(''); setError(''); setReceiving({}); }} style={{ height: '44px' }}>
+                  Receive goods
+                </Button>
+              )}
               <form onSubmit={submitManual} style={{ display: 'flex', gap: '8px' }}>
                 <input
                   value={manual} onChange={e => setManual(e.target.value)}

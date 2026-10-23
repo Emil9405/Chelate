@@ -98,6 +98,7 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 - **Hierarchical Storage** — Room → Cabinet (zone) → Shelf (position), with the contents of every level
 - **Bottle Labels** — A Data Matrix label for every bottle, printed on A4 (plain paper to cut, or sticker sheets); scan it with a phone to see the bottle, write off an amount or move it
 - **Location Labels** — A QR label for every room, cabinet and shelf; scan a shelf to see what is on it, scan bottles onto it ("put bottles here"), or scan a bottle and then its shelf to move it; in an inventory check a shelf QR picks the shelf
+- **Receiving by Scan** — Scan the manufacturer's own Data Matrix on each bottle (Sigma-Aldrich and Merck GS1 codes, `ARTICLE-SIZE,BATCH` text codes, bare Merck articles, EAN-13). Bottles of one batch add up; the batch number, expiry date and article are read from the code. An article is linked to a reagent once and recognised afterwards, so only a new article needs a person. One step creates the batch with all its bottles (or adds bottles to an existing batch), optionally on a scanned shelf, then prints Chelate labels for them. CAS numbers are checked by their check digit
 - **Bottle History** — Every placement, move, draw, disposal and inventory sighting of a bottle is journaled with who, when, where from and where to; the journal is never pruned
 - **Inventory Checks** — Scan every bottle in a room, cabinet or shelf; Chelate lists what is misplaced, unrecorded or missing, lets you fix it on the spot and keeps a printable record
 - **Import / Export** — Reagents, batches and equipment via CSV, Excel or JSON
@@ -260,7 +261,8 @@ Tokens last `AUTH_TOKEN_EXPIRATION_HOURS` hours (default 24). There is no refres
 | Reagents | `GET/POST /reagents`, `GET /reagents/search?q=`, `GET/PUT/DELETE /reagents/{id}`, `GET /reagents/{id}/details`, `GET /reagents/export`, `POST /reagents/import` (also `/import/json`, `/import/excel`) |
 | Batches | `GET/POST /reagents/{id}/batches`, `GET/PUT/DELETE /reagents/{rid}/batches/{id}`, `POST …/use`, `GET …/usage`, `GET /batches/low-stock`, `GET /batches/expiring`, `POST /batches/filter` |
 | Bottles | `GET/POST /batches/{id}/containers`, `POST /containers/{id}/place`, `PUT /containers/{id}/move`, `DELETE /containers/{id}/unplace`, `POST /containers/{id}/use`, `GET /containers/{id}/history`, `POST /containers/place-bulk`, `move-bulk` |
-| Labels | `POST /labels/containers` and `POST /labels/locations` (label data), `GET /labels/resolve?code=` (scan lookup for a bottle or a place) |
+| Labels | `POST /labels/containers` and `POST /labels/locations` (label data), `GET /labels/resolve?code=` (scan lookup for a bottle, a place or a manufacturer code) |
+| Intake | `POST /intake/receive` (batch with N bottles, optional shelf, remembers the article), `PUT /intake/products` (link an article to a reagent) |
 | Inventory checks | `GET/POST /inventory/sessions`, `GET /inventory/sessions/{id}`, `POST …/scan`, `…/items/{id}/resolve`, `…/close`, `…/cancel` |
 | Storage | `/storage/zones`, `/storage/positions`, `/storage/hierarchy`, `/rooms` |
 | Equipment | `/equipment`, `/equipment/{id}/parts`, `…/maintenance`, `…/files` |

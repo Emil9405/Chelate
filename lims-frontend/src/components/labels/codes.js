@@ -13,3 +13,12 @@ export const looksLikeLocationCode = (raw) => {
 
 export const KIND_LABEL = { room: 'Room', zone: 'Cabinet', position: 'Shelf' };
 export const KIND_COLOR = { room: '#6b46c1', zone: '#2b6cb0', position: '#2f855a' };
+
+/** CAS registry number with a valid check digit, e.g. 14371-10-9 */
+export const casOk = (raw) => {
+  const m = /^(\d{2,7})-(\d{2})-(\d)$/.exec(String(raw || '').trim());
+  if (!m) return false;
+  const digits = (m[1] + m[2]).split('').reverse();
+  const sum = digits.reduce((acc, d, i) => acc + Number(d) * (i + 1), 0);
+  return sum % 10 === Number(m[3]);
+};

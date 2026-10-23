@@ -58,6 +58,12 @@ const PlaceHere = ({ shelf, onSwitchShelf, onDone }) => {
         return;
       }
 
+      if (r.supplier) {
+        push('warn', 'Manufacturer code: this bottle has no Chelate label yet',
+          'Receive it first (Scan → Receive goods), print its label, then place it.');
+        return;
+      }
+
       if (r.matches.length !== 1) {
         push('error', 'Several bottles share this code', 'Scan the symbol on the bottle instead of typing the short code.');
         return;

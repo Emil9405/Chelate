@@ -54,6 +54,8 @@ mod container_history;
 mod inventory_handlers;
 mod label_handlers;
 mod location_labels;
+mod supplier_codes;
+mod supplier_intake;
 mod reagent_stock;
 mod routes;
 pub mod soft_delete;

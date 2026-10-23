@@ -239,6 +239,9 @@ pub struct ScanResponse {
     /// Set instead of `matches` when the code is a storage location label
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<crate::location_labels::LocationDetail>,
+    /// Set instead of `matches` when the code is the supplier's own (Sigma / Merck)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supplier: Option<crate::supplier_intake::SupplierScan>,
 }
 
 /// GET /api/v1/labels/resolve?code=...
@@ -254,24 +257,42 @@ pub async fn resolve_scan(
         return Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse {
             matches: Vec::new(),
             location: Some(location),
+            supplier: None,
         })));
     }
 
-    let parsed = parse_scan_code(raw).ok_or_else(|| {
-        let shown: String = raw.chars().filter(|c| !c.is_control()).take(60).collect();
-        ApiError::BadRequest(format!(
-            "Not a Chelate label: \"{}\". Scan the code printed by Chelate, or type its short code.",
-            shown
-        ))
-    })?;
+    // Our own bottle label, or a short code typed by hand
+    if let Some(parsed) = parse_scan_code(raw) {
+        let matches = find_containers(&app_state.db_pool, &parsed).await?;
+        if !matches.is_empty() {
+            return Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse {
+                matches,
+                location: None,
+                supplier: None,
+            })));
+        }
+    }
 
-    let matches = find_containers(&app_state.db_pool, &parsed).await?;
-    if matches.is_empty() {
+    // The supplier's own code on a bottle that has no Chelate label yet
+    if let Some(code) = crate::supplier_codes::parse_supplier_code(raw) {
+        let supplier = crate::supplier_intake::scan_info(&app_state.db_pool, code).await?;
+        return Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse {
+            matches: Vec::new(),
+            location: None,
+            supplier: Some(supplier),
+        })));
+    }
+
+    if parse_scan_code(raw).is_some() {
         return Err(ApiError::NotFound(
             "No bottle with this label. Its batch may have been deleted.".to_string(),
         ));
     }
-    Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse { matches, location: None })))
+    let shown: String = raw.chars().filter(|c| !c.is_control()).take(60).collect();
+    Err(ApiError::BadRequest(format!(
+        "Not a Chelate label: \"{}\". Scan the code printed by Chelate, or type its short code.",
+        shown
+    )))
 }
 
 #[derive(Debug, Deserialize, Default)]
