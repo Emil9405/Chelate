@@ -1,5 +1,5 @@
 // components/labels/useCameraScanner.js
-// Camera + Data Matrix decoding, shared by the Scan page and inventory.
+// Camera + Data Matrix / QR decoding, shared by the Scan page and inventory.
 //
 // Live camera needs a secure context (HTTPS or localhost). Elsewhere
 // `liveSupported` is false and callers offer `decodeFile` (a photo taken with
@@ -10,7 +10,7 @@
 // after `cooldownMs`, so a label held in view is not counted many times.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createDataMatrixDecoder } from './barcode';
+import { createCodeDecoder } from './barcode';
 
 const SCAN_INTERVAL_MS = 180;
 export const GUIDE = 0.7; // share of the visible square that is decoded
@@ -51,7 +51,7 @@ const useCameraScanner = ({ onCode, continuous = false, cooldownMs = 2500 } = {}
   const [cameraError, setCameraError] = useState('');
 
   const getDecoder = useCallback(async () => {
-    if (!decoderRef.current) decoderRef.current = await createDataMatrixDecoder();
+    if (!decoderRef.current) decoderRef.current = await createCodeDecoder();
     return decoderRef.current;
   }, []);
 

@@ -1,11 +1,11 @@
 // components/labels/labelSheet.js
-// A4 sheets of bottle labels: layouts and the printable HTML document.
+// A4 sheets of labels (bottle Data Matrix, location QR): layouts and the printable HTML document.
 //
 // All sizes are in millimetres. The layouts match common A4 sticker sheets,
 // so the same print also fits pre-cut sticker sheets, and each one keeps
 // printable margins for plain paper that is cut by hand.
 
-import { dataMatrixSvg } from './barcode';
+import { dataMatrixSvg, qrSvg } from './barcode';
 
 export const LAYOUTS = {
   small: {
@@ -31,6 +31,35 @@ export const LAYOUTS = {
     cols: 3, rows: 7, w: 63.5, h: 38.1,
     left: 7.2, top: 15.15, gapX: 2.54, gapY: 0,
     pad: 2, code: 21, nameSize: 9, textSize: 7, monoSize: 6.5, nameLines: 2, ghs: 4,
+  },
+};
+
+// Storage location labels: bigger, readable from a distance. 99.1x38.1 and
+// 99.1x67.7 mm are the common A4 sticker cells (L7163 / L7165 style).
+export const LOCATION_LAYOUTS = {
+  shelf: {
+    id: 'shelf',
+    name: 'Shelf · 99.1×38.1 mm',
+    hint: '14 per sheet — shelves, drawers',
+    cols: 2, rows: 7, w: 99.1, h: 38.1,
+    left: 4.65, top: 15.15, gapX: 2.54, gapY: 0,
+    pad: 2.5, code: 30, nameSize: 15, textSize: 8, monoSize: 8.5, nameLines: 2, ghs: 0,
+  },
+  door: {
+    id: 'door',
+    name: 'Door · 99.1×67.7 mm',
+    hint: '8 per sheet — cabinet doors, refrigerators, rooms',
+    cols: 2, rows: 4, w: 99.1, h: 67.7,
+    left: 4.65, top: 13.1, gapX: 2.54, gapY: 0,
+    pad: 3.5, code: 46, nameSize: 22, textSize: 10, monoSize: 10, nameLines: 3, ghs: 0,
+  },
+  compact: {
+    id: 'compact',
+    name: 'Compact · 63.5×38.1 mm',
+    hint: '21 per sheet — small shelves and drawers',
+    cols: 3, rows: 7, w: 63.5, h: 38.1,
+    left: 7.2, top: 15.15, gapX: 2.54, gapY: 0,
+    pad: 2, code: 26, nameSize: 11, textSize: 6.5, monoSize: 7, nameLines: 2, ghs: 0,
   },
 };
 
@@ -68,7 +97,29 @@ export const buildCells = (labels, { copies = 1, skip = 0 } = {}) => {
   return cells;
 };
 
+const KIND_TITLE = { room: 'ROOM', zone: 'CABINET', position: 'SHELF' };
+
+const isLocationLabel = (cell) => cell && (cell.kind === 'room' || cell.kind === 'zone' || cell.kind === 'position');
+
+// Color of the room, only if it is a plain CSS hex color (it goes into a style attribute)
+const safeColor = (c) => (/^#[0-9a-fA-F]{3,8}$/.test(c || '') ? c : '#cbd5e0');
+
+const locationHtml = (l, svg) => {
+  // Path without the label's own name: "Lab 101 / Cabinet A" for a shelf
+  const parts = String(l.path || '').split(' / ');
+  const where = l.kind === 'room' ? '' : parts.slice(0, -1).join(' / ');
+  return `<div class="bar" style="background:${safeColor(l.room_color)}"></div>
+    <div class="code">${svg}</div>
+    <div class="text">
+      <div class="kind">${KIND_TITLE[l.kind] || ''}${l.zone_type && l.kind === 'zone' && l.zone_type !== 'cabinet' ? ` · ${escapeHtml(String(l.zone_type).replace(/_/g, ' ').toUpperCase())}` : ''}</div>
+      <div class="name">${escapeHtml(l.name)}</div>
+      ${where ? `<div class="line">${escapeHtml(where)}</div>` : ''}
+      <div class="short">${escapeHtml(l.short_code)}</div>
+    </div>`;
+};
+
 const labelHtml = (label, svg, layout, assetBase) => {
+  if (isLocationLabel(label)) return locationHtml(label, svg);
   const r = label;
   const lines = [];
   if (layout.id !== 'small') {
@@ -117,6 +168,8 @@ const sheetCss = (layout, cutGuides) => `
   .short { font-family: "Courier New", monospace; font-size: ${layout.monoSize}pt; letter-spacing: 0.2mm; }
   .ghs { display: flex; gap: 0.8mm; margin: 0.4mm 0; }
   .ghs img { width: 7mm; height: 7mm; }
+  .bar { position: absolute; left: 0; top: 0; bottom: 0; width: 1.8mm; }
+  .kind { font-size: ${Math.max(5.5, layout.textSize - 1.5)}pt; letter-spacing: 0.35mm; font-weight: 700; color: #4a5568; }
   @media screen {
     body { background: #e2e8f0; }
     .sheet { margin: 8mm auto; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.25); }
@@ -134,7 +187,7 @@ export const buildSheetDocument = async (cells, layout, {
   const svgCache = new Map();
   for (const cell of cells) {
     if (cell && !svgCache.has(cell.payload)) {
-      svgCache.set(cell.payload, await dataMatrixSvg(cell.payload));
+      svgCache.set(cell.payload, isLocationLabel(cell) ? await qrSvg(cell.payload) : await dataMatrixSvg(cell.payload));
     }
   }
 

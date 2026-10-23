@@ -3,7 +3,7 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange)
 ![React](https://img.shields.io/badge/react-18.x-61dafb)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 
 **A high-performance Laboratory Information Management System built with Rust and React.**
 
@@ -13,16 +13,16 @@
 
 ## Overview
 
-Chelate LIMS is a modern web-based system for chemical inventory tracking, equipment maintenance, and laboratory workflow management. Designed specifically for academic and research laboratories, it handles large datasets (100,000+ records) with sub-second query performance.
+Chelate LIMS is a modern web-based system for chemical inventory tracking, equipment maintenance, and laboratory workflow management. Designed specifically for academic and research laboratories, it is built to stay fast on large datasets (indexed queries, FTS5 search, server-side pagination).
 
 ### Why Chelate?
 
 | Problem | Solution |
 |---------|----------|
-| Legacy LIMS are slow and clunky | Rust backend delivers sub-millisecond queries |
-| Vendor lock-in with proprietary formats | Open-source, SQLite/PostgreSQL, standard APIs |
-| Manual paper trails and errors | Digital audit logs, automated workflows |
-| Expensive per-seat licensing | Self-hosted, MIT licensed |
+| Legacy LIMS are slow and clunky | Rust backend, indexed SQLite queries, server-side pagination |
+| Vendor lock-in with proprietary formats | Source available, a single SQLite file, plain REST/JSON API, CSV/Excel/JSON import and export |
+| Manual paper trails and errors | Audit log, per-bottle history, scan-based inventory checks |
+| Expensive per-seat licensing | Self-hosted, free for academic and other noncommercial use |
 
 > **In Production:** Protocol generation time reduced by ~90%, manual inventory errors eliminated.
 
@@ -90,32 +90,41 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 ## Features
 
 ### Chemical Management
-- **Full-Text Search** — FTS5-powered instant search across 100k+ records
-- **Batch Tracking** — Trace every gram from receipt to usage with lot numbers
-- **GHS Classification** — Integrated hazard pictograms and safety data
-- **Expiry Alerts** — Automated notifications for expiring chemicals
-- **Hierarchical Storage** — Location tracking (Building → Room → Cabinet → Shelf)
+- **Full-Text Search** — FTS5 search across reagents, with automatic fallback to `LIKE`
+- **Batch Tracking** — Trace every gram from receipt to usage with lot numbers; requalification history for expired batches
+- **Low-Stock Alerts** — A batch is low on stock when what is left drops below a percentage of its original quantity (`LOW_STOCK_PERCENT`, default 20%), so 10 L of a 25 L drum and 10 mg of a 100 mg vial are judged by the same rule
+- **GHS Classification** — Hazard pictograms and safety data, printable as stickers
+- **Expiry Alerts** — Expiring and expired batches on the dashboard and in reports
+- **Hierarchical Storage** — Room → Cabinet (zone) → Shelf (position), with the contents of every level
 - **Bottle Labels** — A Data Matrix label for every bottle, printed on A4 (plain paper to cut, or sticker sheets); scan it with a phone to see the bottle, write off an amount or move it
-- **Bottle History** — Every placement, move, draw, disposal and inventory sighting of a bottle is journaled with who, when, where from and where to
+- **Location Labels** — A QR label for every room, cabinet and shelf; scan a shelf to see what is on it, scan bottles onto it ("put bottles here"), or scan a bottle and then its shelf to move it; in an inventory check a shelf QR picks the shelf
+- **Bottle History** — Every placement, move, draw, disposal and inventory sighting of a bottle is journaled with who, when, where from and where to; the journal is never pruned
 - **Inventory Checks** — Scan every bottle in a room, cabinet or shelf; Chelate lists what is misplaced, unrecorded or missing, lets you fix it on the spot and keeps a printable record
-- **Bulk Operations** — Import/export thousands of records via CSV/Excel
+- **Import / Export** — Reagents, batches and equipment via CSV, Excel or JSON
+- **Archive** — Deleted reagents and equipment are soft-deleted and can be restored by an admin under `/admin/archive`
+
+### Experiments & Reports
+- **Experiments** — Plan experiments, attach reagents, start / complete / cancel them; consumption is written off from the chosen batch automatically; calendar view
+- **Reports** — Presets and custom field selection, exportable
 
 ### Equipment & Assets
-- **Maintenance Scheduler** — Calendar integration for calibrations (ISO 17025)
-- **Usage Logs** — Immutable digital records replacing paper logbooks
+- **Maintenance Scheduler** — Calibrations, cleaning and maintenance with history (ISO 17025)
 - **Parts Tracking** — Monitor sub-components (lamps, columns, seals)
-- **Status Dashboard** — Real-time equipment availability
+- **Documentation** — Photos, manuals and other files attached to equipment and parts
+- **Status Dashboard** — Equipment availability at a glance
 
 ### Security & Compliance
-- **JWT Authentication** — RS256 asymmetric signing with automatic rotation
-- **Role-Based Access** — Granular permissions (Admin, Manager, User, Guest)
+- **JWT Authentication** — HMAC-signed tokens; the signing secret is rotated automatically every 3 days
+- **Password Hashing** — bcrypt; login lockout after repeated failures
+- **Role-Based Access** — Roles Admin, Researcher and Viewer, plus per-user permissions per module (Reagents, Batches, Equipment, Experiments, Reports)
 - **Audit Logging** — Complete activity tracking for regulatory compliance
 - **SQL Injection Protection** — Parameterized queries throughout
+- **Security Headers** — `X-Frame-Options`, `nosniff`, `Referrer-Policy`; HSTS when HTTPS is required
 
 ### Performance
-- **Sub-second Queries** — Optimized indexes, CTEs, and window functions
+- **Indexed Queries & FTS5** — Search stays fast on large inventories
 - **Server-side Pagination** — Filtered, sorted pages for large result sets
-- **Virtual Scrolling** — Smooth frontend UX with massive datasets
+- **Virtual Scrolling** — Smooth frontend UX with long reagent lists
 - **Connection Pooling** — Concurrent request handling
 
 ---
@@ -124,12 +133,11 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 
 | Layer | Technology |
 |-------|------------|
-| **Backend** | Rust, Actix-web 4.x, Tokio |
-| **Database** | SQLite (FTS5) / PostgreSQL, SQLx |
-| **Auth** | JWT (RS256), Argon2 password hashing |
-| **Frontend** | React 18, TypeScript, TailwindCSS |
-| **Build** | Cargo, Vite |
-| **Deploy** | Docker, Linux Systemd |
+| **Backend** | Rust, Actix-web 4, Tokio |
+| **Database** | SQLite (FTS5), SQLx; tables and migrations are created automatically on start |
+| **Auth** | JWT (HMAC, rotating secret), bcrypt password hashing |
+| **Frontend** | React 18 (JavaScript, Create React App), inline styles, zxing-wasm for Data Matrix |
+| **Deploy** | Single binary + static frontend build, Linux (systemd), behind nginx for HTTPS |
 
 ---
 
@@ -139,52 +147,55 @@ Chelate LIMS is a modern web-based system for chemical inventory tracking, equip
 
 - Rust 1.70+ (stable)
 - Node.js 18+
-- SQLite 3.35+ (for FTS5)
+- SQLite with FTS5 (bundled with the Rust SQLite driver)
 
 ### Installation
 
 ```bash
-# Clone repository
-git clone https://github.com/Emil9405/LIMSgen
-cd chelate-lims
+git clone https://github.com/Emil9405/Chelate
+cd Chelate
 
-# Backend setup
-cd backend
-cp .env.example .env
+# Backend (the Rust crate is in the repository root; the binary is called `lims`)
 cargo build --release
-cargo run --bin init_db
-cargo run --bin generate_keys
 
-# Frontend setup
-cd ../frontend
-cp .env.example .env
+# Frontend
+cd lims-frontend
 npm install
 ```
+
+There is no separate database or key setup step. On the first start the server:
+
+- creates the SQLite database file and all tables;
+- generates a `JWT_SECRET` and saves it to `.env` if there is none;
+- creates the user `admin`. Its password is `DEFAULT_ADMIN_PASSWORD` if that is set, otherwise a random one printed **once** in the server log. Change it after the first login.
 
 ### Running
 
 **Development:**
 ```bash
 # Terminal 1: Backend (http://localhost:8080)
-cd backend && cargo run
+cargo run
 
-# Terminal 2: Frontend (http://localhost:3000)
-cd frontend && npm run dev
+# Terminal 2: Frontend (http://localhost:3000, API requests are proxied to :8080)
+cd lims-frontend && npm start
 ```
 
 **Production:**
 ```bash
-# Backend
-cd backend && cargo build --release
-./target/release/chelate-lims
+# Build the frontend
+cd lims-frontend && npm run build && cd ..
 
-# Frontend
-cd frontend && npm run build
-# Serve dist/ with nginx or similar
+# Run the backend; it also serves the built frontend
+LIMS_ENV=production \
+FRONTEND_BUILD_DIR=/path/to/Chelate/lims-frontend/build \
+./target/release/lims
 ```
 
+In production mode the server refuses to start with a short or default `JWT_SECRET` or with `*` in `ALLOWED_ORIGINS`. Set `FRONTEND_BUILD_DIR` explicitly: the default (`../lims-frontend/build`) is relative to the directory you start the binary from.
+
 **Scanning labels with a phone:** live camera scanning needs the site to be opened over
-HTTPS (browsers expose the camera only to secure pages). Over plain HTTP the Scan page
+HTTPS (browsers expose the camera only to secure pages), for example with nginx and a
+certificate in front of the server. Over plain HTTP the Scan page
 falls back to taking a photo of the label, which works on any phone. A USB or Bluetooth
 scanner in keyboard mode works on the same page, and so does typing the 8-character code
 printed under each symbol.
@@ -194,30 +205,32 @@ printed under each symbol.
 ## Project Structure
 
 ```
-chelate-lims/
-├── backend/
+Chelate/
+├── Cargo.toml
+├── src/                         # Rust backend (crate `lims`)
+│   ├── main.rs                  # startup, CORS, static files
+│   ├── config.rs                # .env / environment configuration
+│   ├── db.rs                    # schema, migrations, FTS5
+│   ├── auth.rs, auth_handlers.rs, jwt_rotation.rs
+│   ├── *_handlers.rs            # reagents, batches, containers, storage, rooms,
+│   │                            #   equipment, experiments, reports, labels, inventory
+│   ├── consumption.rs           # the single write-off path and low-stock rule
+│   ├── container_history.rs     # bottle journal and placement changes
+│   ├── models/                  # data models
+│   ├── query_builders/          # filters, FTS queries
+│   ├── import_export/           # CSV / Excel / JSON
+│   └── routes/                  # route tables, permission checks per module
+├── lims-frontend/
 │   ├── src/
-│   │   ├── main.rs
-│   │   ├── config.rs
-│   │   ├── models/          # chemical.rs, equipment.rs, user.rs
-│   │   ├── handlers/        # REST API endpoints
-│   │   ├── database/        # Migrations, queries, connection pool
-│   │   ├── middleware/      # Auth, audit logging
-│   │   └── utils/
-│   ├── Cargo.toml
-│   └── .env
-├── frontend/
-│   ├── src/
-│   │   ├── components/      # React components
-│   │   ├── services/        # API clients
-│   │   ├── hooks/           # Custom hooks
-│   │   └── types/           # TypeScript definitions
-│   ├── package.json
-│   └── .env
-├── docs/
-│   ├── API.md
-│   ├── DATABASE.md
-│   └── DEPLOYMENT.md
+│   │   ├── components/          # React components
+│   │   │   ├── labels/          # Data Matrix labels, scan page, bottle history
+│   │   │   ├── inventory/       # inventory checks
+│   │   │   ├── storage/         # rooms, cabinets, shelves
+│   │   │   ├── Reagents/, Modals/, experiment/
+│   │   │   └── hooks/
+│   │   └── services/            # API client
+│   └── package.json
+├── screenshots/
 └── README.md
 ```
 
@@ -225,114 +238,95 @@ chelate-lims/
 
 ## API Reference
 
+Login is public; everything under `/api/v1` needs `Authorization: Bearer <token>`.
+
 ### Authentication
 
 ```http
-POST /api/auth/login
+POST /auth/login
 Content-Type: application/json
 
-{"username": "user@lab.edu", "password": "..."}
+{"username": "admin", "password": "..."}
 
-→ {"access_token": "eyJ...", "refresh_token": "eyJ...", "expires_in": 3600}
+→ {"token": "eyJ...", "expires_in": 86400, "user": {...}}
 ```
 
-```http
-POST /api/auth/refresh
-Authorization: Bearer {refresh_token}
+Tokens last `AUTH_TOKEN_EXPIRATION_HOURS` hours (default 24). There is no refresh endpoint: log in again when a token expires. Self-registration (`POST /auth/register`) is off unless `AUTH_ALLOW_SELF_REGISTRATION=true`; admins create users under `/api/v1/auth/users`.
 
-→ {"access_token": "eyJ...", "expires_in": 3600}
-```
+### Main endpoints (all under `/api/v1`)
 
-### Chemicals
+| Area | Endpoints |
+|------|-----------|
+| Reagents | `GET/POST /reagents`, `GET /reagents/search?q=`, `GET/PUT/DELETE /reagents/{id}`, `GET /reagents/{id}/details`, `GET /reagents/export`, `POST /reagents/import` (also `/import/json`, `/import/excel`) |
+| Batches | `GET/POST /reagents/{id}/batches`, `GET/PUT/DELETE /reagents/{rid}/batches/{id}`, `POST …/use`, `GET …/usage`, `GET /batches/low-stock`, `GET /batches/expiring`, `POST /batches/filter` |
+| Bottles | `GET/POST /batches/{id}/containers`, `POST /containers/{id}/place`, `PUT /containers/{id}/move`, `DELETE /containers/{id}/unplace`, `POST /containers/{id}/use`, `GET /containers/{id}/history`, `POST /containers/place-bulk`, `move-bulk` |
+| Labels | `POST /labels/containers` and `POST /labels/locations` (label data), `GET /labels/resolve?code=` (scan lookup for a bottle or a place) |
+| Inventory checks | `GET/POST /inventory/sessions`, `GET /inventory/sessions/{id}`, `POST …/scan`, `…/items/{id}/resolve`, `…/close`, `…/cancel` |
+| Storage | `/storage/zones`, `/storage/positions`, `/storage/hierarchy`, `/rooms` |
+| Equipment | `/equipment`, `/equipment/{id}/parts`, `…/maintenance`, `…/files` |
+| Experiments | `/experiments`, `/experiments/{id}/start`, `complete`, `cancel`, `…/reagents` |
+| Reports & dashboard | `/reports/presets`, `/reports/generate`, `/reports/export`, `/dashboard/stats` |
+| Admin | `/auth/users`, `/auth/users/{id}/permissions`, `/admin/archive/*` |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/chemicals/search?q=acetone&page=1&limit=50` | Full-text search |
-| GET | `/api/chemicals/{id}` | Get by ID |
-| POST | `/api/chemicals` | Create new record |
-| PUT | `/api/chemicals/{id}` | Update record |
-| DELETE | `/api/chemicals/{id}` | Delete record |
-
-**Create Chemical Example:**
+**Create reagent example:**
 ```json
 {
   "name": "Acetone",
-  "cas": "67-64-1",
-  "formula": "C3H6O",
-  "quantity": 2.5,
-  "unit": "L",
-  "location": "Building A, Room 101, Cabinet 3",
-  "supplier": "Sigma-Aldrich",
-  "catalog_number": "179124",
-  "batch_number": "SHBL4523"
+  "cas_number": "67-64-1",
+  "formula": "C3H6O"
 }
 ```
-
-### Equipment
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/equipment` | List all equipment |
-| GET | `/api/equipment/{id}` | Get by ID |
-| POST | `/api/equipment` | Register new equipment |
-| PUT | `/api/equipment/{id}` | Update record |
-| DELETE | `/api/equipment/{id}` | Remove equipment |
+Batches (lot number, quantity, unit, expiry, supplier) are added to a reagent with `POST /reagents/{id}/batches`.
 
 ---
 
 ## Database Schema
 
-### Core Tables
+SQLite. Tables are created and migrated automatically at startup.
 
-**chemicals**
-```sql
-id, name, cas, formula, quantity, unit, location,
-supplier, catalog_number, batch_number, expiry_date,
-ghs_codes, storage_conditions, created_at, updated_at
-```
+| Group | Tables |
+|-------|--------|
+| Inventory | `reagents`, `batches`, `batch_containers`, `batch_placements`, `batch_requalifications`, `usage_logs` |
+| Storage | `rooms`, `storage_zones`, `storage_positions` |
+| History & checks | `container_events` (bottle journal), `inventory_sessions`, `inventory_items` |
+| Equipment | `equipment`, `equipment_parts`, `equipment_maintenance`, `equipment_files` |
+| Experiments | `experiments`, `experiment_reagents` |
+| Users & security | `users`, `user_permissions`, `jwt_rotation_log`, `audit_logs` |
 
-**equipment**
-```sql
-id, name, type, manufacturer, model, serial_number,
-location, status, purchase_date, last_maintenance,
-next_calibration, created_at, updated_at
-```
-
-**users**
-```sql
-id, username, password_hash, role, department,
-created_at, updated_at
-```
-
-**audit_log**
-```sql
-id, user_id, action, resource, resource_id,
-details (JSON), ip_address, timestamp
-```
+Full-text search uses FTS5 virtual tables over reagents.
 
 ---
 
 ## Configuration
 
-Key environment variables (`.env`):
+Configuration is read from the environment and from a `.env` file in the working directory (or the file named by `ENV_FILE`). All variables are optional.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `LIMS_ENV` | – | `production` serves the built frontend and enables strict checks |
+| `BIND_ADDRESS` | `127.0.0.1` | Address to listen on |
+| `LIMS_PORT` | `8080` | Port |
+| `DATABASE_URL` | `lims.db` | Path of the SQLite file |
+| `JWT_SECRET` | generated | Signing secret; saved to `.env` if missing; rotated automatically |
+| `ALLOWED_ORIGINS` | localhost:3000 and :8080 | Comma-separated CORS origins |
+| `FRONTEND_BUILD_DIR` | `../lims-frontend/build` | Built frontend (production) |
+| `DEFAULT_ADMIN_PASSWORD` | random | Password of the first `admin` user |
+| `LOW_STOCK_PERCENT` | `20` | Low-stock threshold, % of a batch's original quantity |
+| `AUTH_TOKEN_EXPIRATION_HOURS` | `24` | Token lifetime |
+| `AUTH_MAX_LOGIN_ATTEMPTS` / `AUTH_LOCKOUT_DURATION_MINUTES` | `5` / `15` | Login lockout |
+| `AUTH_ALLOW_SELF_REGISTRATION` | `false` | Open registration |
+| `EQUIPMENT_FILES_DIR` | `./uploads/equipment` | Where equipment files are stored |
+| `RUST_LOG` | – | Log level |
+
+Example `.env` for a server:
 
 ```bash
-# Database
-DATABASE_URL=sqlite://./data/lims.db
-DATABASE_POOL_SIZE=10
-
-# Authentication
-JWT_PRIVATE_KEY_PATH=./keys/private.pem
-JWT_PUBLIC_KEY_PATH=./keys/public.pem
-JWT_EXPIRY_HOURS=1
-
-# Server
-HOST=0.0.0.0
-PORT=8080
-CORS_ORIGINS=http://localhost:3000
-
-# Logging
-RUST_LOG=info,actix_web=debug
+LIMS_ENV=production
+BIND_ADDRESS=127.0.0.1          # nginx in front, see below
+LIMS_PORT=8080
+DATABASE_URL=/var/lib/chelate/lims.db
+ALLOWED_ORIGINS=https://lims.example.edu
+FRONTEND_BUILD_DIR=/opt/Chelate/lims-frontend/build
 ```
 
 ---
@@ -340,15 +334,11 @@ RUST_LOG=info,actix_web=debug
 ## Testing
 
 ```bash
-# Backend unit & integration tests
-cd backend
+# Backend unit tests
 cargo test
-cargo test -- --nocapture  # with output
 
 # Frontend tests
-cd frontend
-npm test
-npm run test:coverage
+cd lims-frontend && npm test
 ```
 
 ---
@@ -357,10 +347,12 @@ npm run test:coverage
 
 | Issue | Solution |
 |-------|----------|
-| Database locked | Increase `busy_timeout` in config |
-| JWT verification failed | Regenerate keys: `cargo run --bin generate_keys` |
-| Search not working | Rebuild FTS index: `cargo run --bin rebuild_fts` |
-| CORS errors | Check `CORS_ORIGINS` matches frontend URL |
+| Server exits in production with "Insecure JWT secret" | Set `JWT_SECRET` to a random string of 32+ characters, or remove it from `.env` and let the server generate one |
+| Server exits with "Wildcard CORS origins" | Set `ALLOWED_ORIGINS` to your real URL instead of `*` |
+| CORS errors in the browser | `ALLOWED_ORIGINS` must contain the exact URL (scheme, host, port) the site is opened at |
+| Blank page or 404 for the frontend in production | `FRONTEND_BUILD_DIR` must point to `lims-frontend/build` after `npm run build` |
+| Scan page shows no camera | The camera needs HTTPS. Use a certificate, or scan with a photo, a typed code or a USB scanner |
+| Forgot a user's password | Another admin can reset it under Users (`PUT /api/v1/auth/users/{id}/reset-password`) |
 
 ---
 
@@ -369,11 +361,15 @@ npm run test:coverage
 - [x] Core inventory & equipment modules
 - [x] Full-text search (FTS5)
 - [x] Role-based access control
-- [x] Label printing with QR codes
+- [x] Sticker printing with GHS pictograms
 - [x] Audit logging
+- [x] Data Matrix bottle labels and phone scanning
+- [x] Bottle history journal
+- [x] Inventory checks by scanning
+- [x] Low-stock alerts as a percentage of the original quantity
+- [x] Shelf labels (scan bottle, then scan shelf)
 - [ ] Direct instrument integration (Agilent, Shimadzu)
 - [ ] Electronic Lab Notebook (ELN) features
-- [ ] Mobile app for QR scanning
 - [ ] Chemical supplier API integration
 - [ ] Multi-language support (EN, RU, AZ)
 - [ ] Cloud backup & sync
@@ -388,13 +384,18 @@ npm run test:coverage
 4. Push: `git push origin feature/new-feature`
 5. Open a Pull Request
 
-Please follow Rust conventions (`rustfmt`, `clippy`) and add tests for new features.
+Please follow Rust conventions (`rustfmt`, `clippy`) and add tests for new features. Run `cargo test` before opening a pull request.
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+Chelate is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Free for noncommercial use:** research, teaching and study, and use by universities, public research institutes, charities and other noncommercial organizations, including modifying the code for your own lab.
+- **Commercial use needs a separate license:** running it inside a company, or offering it as a paid product or service. Contact the author.
+
+The source is public, but because commercial use is restricted this is not an OSI-approved open-source license.
 
 ---
 
@@ -409,5 +410,5 @@ Combining domain expertise in synthetic organic chemistry with systems programmi
 ---
 
 <p align="center">
-  <strong>Version 1.0.0</strong> · Active Development · January 2025
+  <strong>Version 0.1.0</strong> · Active Development
 </p>

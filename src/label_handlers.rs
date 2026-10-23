@@ -236,18 +236,31 @@ pub struct ResolveQuery {
 pub struct ScanResponse {
     /// One match for a scanned label; several only for an ambiguous typed code
     pub matches: Vec<ContainerLabel>,
+    /// Set instead of `matches` when the code is a storage location label
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<crate::location_labels::LocationDetail>,
 }
 
 /// GET /api/v1/labels/resolve?code=...
+/// Bottle labels give `matches`; storage location labels give `location`.
 pub async fn resolve_scan(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<ResolveQuery>,
 ) -> ApiResult<HttpResponse> {
     let raw = query.code.as_str();
+
+    if let Some(place) = crate::location_labels::parse_location_code(raw) {
+        let location = crate::location_labels::resolve_location(&app_state.db_pool, &place).await?;
+        return Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse {
+            matches: Vec::new(),
+            location: Some(location),
+        })));
+    }
+
     let parsed = parse_scan_code(raw).ok_or_else(|| {
         let shown: String = raw.chars().filter(|c| !c.is_control()).take(60).collect();
         ApiError::BadRequest(format!(
-            "Not a Chelate label: \"{}\". Scan the code printed by Chelate, or type its 8-character short code.",
+            "Not a Chelate label: \"{}\". Scan the code printed by Chelate, or type its short code.",
             shown
         ))
     })?;
@@ -258,7 +271,7 @@ pub async fn resolve_scan(
             "No bottle with this label. Its batch may have been deleted.".to_string(),
         ));
     }
-    Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse { matches })))
+    Ok(HttpResponse::Ok().json(ApiResponse::success(ScanResponse { matches, location: None })))
 }
 
 #[derive(Debug, Deserialize, Default)]
