@@ -15,6 +15,7 @@ pub mod dashboard;
 pub mod archive;
 pub mod labels;
 pub mod inventory;
+pub mod intake;
 
 use actix_web::web;
 use actix_web_httpauth::middleware::HttpAuthentication;
@@ -41,6 +42,7 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
             .configure(reports::configure)
             .configure(labels::configure)
             .configure(inventory::configure)
+            .configure(intake::configure)
             // Unit conversion
             .service(
                 web::scope("/units")

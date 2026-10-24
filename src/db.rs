@@ -565,6 +565,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("container history migration: {}", e))?;
 
+    // ==================== SUPPLIER ARTICLES (receiving by scan) ====================
+    crate::supplier_intake::run_migrations(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("supplier intake migration: {}", e))?;
+
     // ==================== PERFORMANCE INDEXES ====================
     ensure_performance_indexes(pool).await?;
 
