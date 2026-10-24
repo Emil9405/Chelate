@@ -145,6 +145,19 @@ pub enum ArticleKey {
     Unrecognised,
 }
 
+/// The Merck pack code in a typed catalog number: `1054322511` and `1.05432.2511`
+/// give `2511`; `105432-2511L` too (four digits where Sigma would write a size).
+/// `103943-250G` has none: 250 G is a size, the pack code (0250) is not written.
+pub fn typed_merck_pack_code(cat_number: &str) -> Option<String> {
+    lazy_static! {
+        static ref PACK_RE: Regex =
+            Regex::new(r"^[18](?:\d{5}(\d{4})|\.\d{5}\.(\d{4})|\d{5}-(\d{4})[A-Z]{0,2})$").unwrap();
+    }
+    let a: String = cat_number.trim().to_uppercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let c = PACK_RE.captures(&a)?;
+    c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3)).map(|m| m.as_str().to_string())
+}
+
 /// Reads a typed catalog number. The batch number decides between Merck and
 /// Sigma when the digits fit both, because their batch formats differ.
 pub fn article_key(cat_number: &str, batch_number: Option<&str>) -> ArticleKey {
@@ -770,6 +783,17 @@ mod tests {
             ("", "X", ArticleKey::Unrecognised),
         ] {
             assert_eq!(article_key(cat, Some(batch)), want, "{cat} / {batch}");
+        }
+        for (cat, want) in [
+            ("1054322511", Some("2511")),
+            ("1.05432.2511", Some("2511")),
+            ("105432-2511L", Some("2511")),
+            ("104724-0025G", Some("0025")),
+            ("103943-250G", None),
+            ("M0512-500G", None),
+            ("1.05426", None),
+        ] {
+            assert_eq!(typed_merck_pack_code(cat).as_deref(), want, "{cat}");
         }
         // A scanned Merck code and a typed one give the same key
         let scanned = parse_supplier_code("1039430250").unwrap();

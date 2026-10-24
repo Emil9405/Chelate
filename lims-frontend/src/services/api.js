@@ -499,11 +499,24 @@ export const api = {
     },
 
     // The same or a similar batch number already in Chelate: { exact, similar, elsewhere }
-    checkBatch: async (reagentId, batch) => {
+    // With the bottle's article ({ series, catalog, pack }) it also suggests the quantity in one bottle
+    checkBatch: async (reagentId, batch, article = null) => {
         const q = new URLSearchParams({ batch });
         if (reagentId) q.set('reagent_id', reagentId);
+        if (article && article.series && article.catalog && article.pack) {
+            q.set('series', article.series);
+            q.set('catalog', article.catalog);
+            q.set('pack', article.pack);
+        }
         const response = await apiCall(`${API_V1_BASE}/intake/batch-check?${q.toString()}`);
         return response?.data || { exact: null, similar: [], elsewhere: [] };
+    },
+
+    // Articles already linked to these reagents: { reagent_id: [{ series, catalog }] }
+    articlesForReagents: async (ids) => {
+        if (!ids.length) return {};
+        const response = await apiCall(`${API_V1_BASE}/intake/products?reagent_ids=${encodeURIComponent(ids.join(','))}`);
+        return response?.data || {};
     },
 
     // What linking the catalog numbers stored in batches would do (writes nothing)

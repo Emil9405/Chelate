@@ -48,6 +48,8 @@ const dateOnly = (iso) => (iso ? String(iso).slice(0, 10) : '');
 const fmtQty = (v) => String(Math.round(v * 1e6) / 1e6);
 
 /** What the batch check was (or must be) made for: reagent and batch number */
+const CHECKING = 'Checking the batch number…';
+
 const checkKeyOf = (g) => `${g.reagent ? g.reagent.id : (g.draft ? 'new' : '')}|${g.batchNumber.trim()}`;
 
 /** An existing batch fills the quantity and unit the person has not entered yet */
@@ -65,6 +67,15 @@ const articleTitle = (code) => {
   const pack = code.pack ? ` · ${code.pack.raw}` : '';
   return `${series ? `${series} ` : ''}${cat}${pack}${code.grade_suffix ? `-${code.grade_suffix}` : ''}`;
 };
+
+/** Article and pack code of a scanned bottle, for the server's quantity suggestion */
+const articleOf = (code) => (code.catalog && code.pack ? { series: code.series, catalog: code.catalog, pack: code.pack.raw } : null);
+
+/** Merck 1.00983 (as printed), other numbering as is */
+const articleName = (a) => (a.series === 'merck' && /^\d{6}$/.test(a.catalog) ? `Merck ${a.catalog[0]}.${a.catalog.slice(1)}` : a.catalog);
+
+const MAX_BOTTLES = 500;
+const countOf = (g) => Number(g.count) || 0;
 
 /** Bottles with the same article, batch and pack are one group */
 const sigOf = (code) => [code.series, code.catalog || code.gtin || '', code.batch || '', code.pack ? code.pack.raw : ''].join('|');
@@ -96,7 +107,7 @@ const seedGroup = (scan) => {
     check: { exact: existing || null, similar: scan.similar_batches || [], elsewhere: scan.batch_elsewhere || [] },
     checkKey: `${scan.reagent ? scan.reagent.id : ''}|${(code.batch || '').trim()}`,
     confirmedNew: '', // checkKeyOf(g) the person confirmed as a new batch
-    open: !scan.reagent || !pack,
+    expanded: false, // a complete card shows one line until the person opens it
     state: 'ready', // ready | saving | done | error
     error: '',
     result: null,
@@ -111,7 +122,7 @@ const groupProblem = (g) => {
   }
   if (!g.batchNumber.trim()) return 'Enter the batch number';
   const key = checkKeyOf(g);
-  if (g.checkKey !== key) return 'Checking the batch number…';
+  if (g.checkKey !== key) return CHECKING;
   const c = g.check;
   if (!c.exact && (c.similar.length > 0 || c.elsewhere.length > 0) && g.confirmedNew !== key) {
     return 'A similar batch is already in Chelate: choose it or confirm a new batch';
@@ -121,7 +132,8 @@ const groupProblem = (g) => {
   if (c.exact && unitFactor(g.unit, c.exact.unit) == null) {
     return `This batch is kept in ${canonUnit(c.exact.unit) || c.exact.unit}: choose a unit that converts to it`;
   }
-  if (!(g.count >= 1)) return 'No bottles';
+  if (!(countOf(g) >= 1)) return 'Enter the number of bottles';
+  if (countOf(g) > MAX_BOTTLES) return `At most ${MAX_BOTTLES} bottles at once`;
   return '';
 };
 
@@ -131,7 +143,9 @@ const ReagentPicker = ({ group, onChange }) => {
   const [q, setQ] = useState('');
   const [found, setFound] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [articles, setArticles] = useState({});
   const [creating, setCreating] = useState(!!group.draft);
+  const code = group.scan.code;
 
   useEffect(() => {
     const term = q.trim();
@@ -142,6 +156,9 @@ const ReagentPicker = ({ group, onChange }) => {
       try {
         const r = await api.searchReagents(term);
         if (!cancelled) setFound(r);
+        // which products each reagent already holds: another article of the same maker is usually another grade
+        const a = await api.articlesForReagents(r.map(x => x.id)).catch(() => ({}));
+        if (!cancelled) setArticles(a);
       } catch (_) {
         if (!cancelled) setFound([]);
       } finally {
@@ -152,7 +169,11 @@ const ReagentPicker = ({ group, onChange }) => {
   }, [q]);
 
   if (group.reagent) {
+    const others = !group.scan.reagent && code.catalog
+      ? (group.reagent.articles || []).filter(a => a.series === code.series && a.catalog !== code.catalog)
+      : [];
     return (
+      <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', background: '#f0fff4', border: '1px solid #c6f6d5', borderRadius: '8px', padding: '8px 10px' }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 700, color: '#22543d', overflowWrap: 'anywhere' }}>{group.reagent.name}</div>
@@ -165,6 +186,13 @@ const ReagentPicker = ({ group, onChange }) => {
           </button>
         )}
       </div>
+      {others.length > 0 && (
+        <div role="alert" style={{ fontSize: '0.78rem', color: '#7b341e', background: '#fffaf0', border: '1px solid #fbd38d', borderRadius: '8px', padding: '6px 10px', marginTop: '6px' }}>
+          {group.reagent.name} already holds {others.map(articleName).join(', ')}. Another article of the same maker
+          is usually another grade or concentration: check the label, or create a new reagent.
+        </div>
+      )}
+      </>
     );
   }
 
@@ -199,10 +227,13 @@ const ReagentPicker = ({ group, onChange }) => {
       {searching && <div style={{ fontSize: '0.75rem', color: '#718096', marginTop: '4px' }}>Searching…</div>}
       {found.map(r => (
         <button key={r.id} type="button"
-          onClick={() => onChange({ reagent: { id: r.id, name: r.name, cas: r.cas_number }, draft: null })}
+          onClick={() => onChange({ reagent: { id: r.id, name: r.name, cas: r.cas_number, articles: articles[r.id] || [] }, draft: null })}
           style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginTop: '4px', border: '1px solid #e2e8f0', borderRadius: '8px', background: 'white', cursor: 'pointer' }}>
           <div style={{ fontWeight: 700, color: '#1a365d', overflowWrap: 'anywhere' }}>{r.name}</div>
           <div style={{ fontSize: '0.75rem', color: '#718096' }}>{[r.cas_number && `CAS ${r.cas_number}`, r.formula].filter(Boolean).join(' · ')}</div>
+          {(articles[r.id] || []).length > 0 && (
+            <div style={{ fontSize: '0.75rem', color: '#4a5568' }}>Articles: {articles[r.id].map(articleName).join(', ')}</div>
+          )}
         </button>
       ))}
       {q.trim().length >= 2 && !searching && found.length === 0 && (
@@ -223,13 +254,22 @@ const GroupCard = ({ g, onChange, onRemove }) => {
   const problem = groupProblem(g);
   const done = g.state === 'done';
   const existing = g.check.exact;
-  const merckPack = code.series === 'merck' && code.pack && !code.pack.unit && !existing && !g.scan.suggested_pack;
+  const merckPack = code.series === 'merck' && code.pack && !code.pack.unit && !existing && !(num(g.packSize) > 0);
   const key = checkKeyOf(g);
   const c = g.check;
   const similarShown = !done && !existing && (c.similar.length > 0 || c.elsewhere.length > 0);
   const factor = existing && g.unit ? unitFactor(g.unit, existing.unit) : null;
+  // A complete card is one line; it opens when something is missing or the person asks
+  const showForm = g.expanded || g.state === 'error' || (!!problem && problem !== CHECKING);
   const converted = existing && factor != null && canonUnit(g.unit) !== canonUnit(existing.unit) && num(g.packSize) > 0
     ? `${fmtQty(num(g.packSize) * factor)} ${canonUnit(existing.unit) || existing.unit}` : '';
+
+  // Once something was missing the card stays open until the person closes it,
+  // so it does not fold away under their fingers when the last field is filled
+  useEffect(() => {
+    if (!done && problem && problem !== CHECKING && !g.expanded) onChange({ expanded: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problem, done]);
 
   // Re-check the batch number whenever it or the reagent changes
   useEffect(() => {
@@ -240,11 +280,18 @@ const GroupCard = ({ g, onChange, onRemove }) => {
     const t = setTimeout(async () => {
       let check = EMPTY_CHECK;
       try {
-        check = await api.checkBatch(g.reagent ? g.reagent.id : null, batch);
+        check = await api.checkBatch(g.reagent ? g.reagent.id : null, batch, articleOf(code));
       } catch (_) {
         // the server checks again when receiving
       }
-      if (!cancelled) onChange({ check, checkKey: key, ...fillFromBatch(g, check.exact) });
+      if (cancelled) return;
+      const patch = { check, checkKey: key, ...fillFromBatch(g, check.exact) };
+      // a pack received before, or a round Merck code read with the chosen reagent's unit
+      if (!check.exact && !g.packSize && check.suggested_pack) {
+        patch.packSize = String(check.suggested_pack.value);
+        if (!g.unit) patch.unit = check.suggested_pack.unit;
+      }
+      onChange(patch);
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -264,10 +311,13 @@ const GroupCard = ({ g, onChange, onRemove }) => {
         </div>
         {!done && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-            <button type="button" aria-label="One bottle less" onClick={() => onChange({ count: Math.max(1, g.count - 1) })}
+            <button type="button" aria-label="One bottle less" onClick={() => onChange({ count: Math.max(1, countOf(g) - 1) })}
               style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #e2e8f0', background: 'white', fontSize: '1.1rem', cursor: 'pointer' }}>−</button>
-            <div style={{ minWidth: '34px', textAlign: 'center', fontWeight: 800, fontSize: '1.15rem' }} aria-label={`${g.count} bottles`}>{g.count}</div>
-            <button type="button" aria-label="One bottle more" onClick={() => onChange({ count: g.count + 1 })}
+            <input aria-label="Bottles" inputMode="numeric" value={g.count}
+              onChange={e => { const d = e.target.value.replace(/\D/g, '').slice(0, 3); onChange({ count: d === '' ? '' : Number(d) }); }}
+              onFocus={e => e.target.select()}
+              style={{ width: '48px', height: '34px', textAlign: 'center', fontWeight: 800, fontSize: '1.1rem', border: '1px solid #e2e8f0', borderRadius: '8px', padding: 0 }} />
+            <button type="button" aria-label="One bottle more" onClick={() => onChange({ count: Math.min(MAX_BOTTLES, countOf(g) + 1) })}
               style={{ width: '32px', height: '32px', borderRadius: '8px', border: '1px solid #e2e8f0', background: 'white', fontSize: '1.1rem', cursor: 'pointer' }}>+</button>
           </div>
         )}
@@ -320,14 +370,25 @@ const GroupCard = ({ g, onChange, onRemove }) => {
 
       {done && g.result && (
         <div style={{ marginTop: '8px', color: '#276749', fontSize: '0.85rem', fontWeight: 700 }}>
-          ✓ {g.count} bottle{g.count !== 1 ? 's' : ''} received
+          ✓ {countOf(g)} bottle{countOf(g) !== 1 ? 's' : ''} received
           {g.result.placed > 0 ? `, ${g.result.placed} placed on the shelf` : ''}
           {g.result.warnings.map(w => <div key={w} style={{ color: '#975a16', fontWeight: 400 }}>{w}</div>)}
         </div>
       )}
       {g.state === 'error' && <div role="alert" style={{ marginTop: '8px', color: '#c53030', fontSize: '0.85rem' }}>{g.error}</div>}
 
-      {!done && (
+      {!done && !showForm && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', gap: '8px' }}>
+          <div style={{ fontSize: '0.85rem', color: '#276749', fontWeight: 700, minWidth: 0, overflowWrap: 'anywhere' }}>
+            {countOf(g)} × {g.packSize} {g.unit}{g.expiry ? ` · expires ${g.expiry}` : ''}
+          </div>
+          <button type="button" onClick={() => onChange({ expanded: true })} style={{ ...linkBtn, padding: 0, whiteSpace: 'nowrap' }}>
+            Edit
+          </button>
+        </div>
+      )}
+
+      {!done && showForm && (
         <>
           <div style={{ marginTop: '10px' }}>
             <ReagentPicker group={g} onChange={onChange} />
@@ -364,16 +425,20 @@ const GroupCard = ({ g, onChange, onRemove }) => {
               <input style={input} type="date" value={g.expiry || ''} onChange={e => onChange({ expiry: e.target.value })} />
             </label>
           </div>
-          {!code.expiry && <div style={{ fontSize: '0.75rem', color: '#718096', marginTop: '3px' }}>This code carries no expiry date; enter it from the label if there is one.</div>}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', gap: '8px' }}>
             <div style={{ fontSize: '0.8rem', color: problem ? '#975a16' : '#276749', minWidth: 0 }}>
-              {problem || `${g.count} × ${g.packSize} ${g.unit}`}
+              {problem || `${countOf(g)} × ${g.packSize} ${g.unit}`}
             </div>
-            <button type="button" onClick={onRemove}
-              style={{ background: 'none', border: 'none', color: '#c53030', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              Remove
-            </button>
+            <div style={{ display: 'flex', gap: '14px', flexShrink: 0 }}>
+              {!problem && (
+                <button type="button" onClick={() => onChange({ expanded: false })} style={{ ...linkBtn, padding: 0 }}>Done</button>
+              )}
+              <button type="button" onClick={onRemove}
+                style={{ background: 'none', border: 'none', color: '#c53030', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', padding: 0 }}>
+                Remove
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -448,8 +513,9 @@ const ReceiveSession = ({ initialScan, onDone }) => {
       const sig = sigOf(code);
       setGroups(prev => {
         const hit = prev.find(g => g.sig === sig && g.state !== 'done');
-        if (hit) return prev.map(g => (g === hit ? { ...g, count: g.count + 1 } : g));
-        return [...prev, seedGroup(r.supplier)];
+        if (hit) return prev.map(g => (g === hit ? { ...g, count: Math.min(MAX_BOTTLES, countOf(g) + 1) } : g));
+        // newest first: it is the one the person is looking at
+        return [seedGroup(r.supplier), ...prev];
       });
       if (navigator.vibrate) navigator.vibrate(40);
     } catch (e) {
@@ -484,7 +550,10 @@ const ReceiveSession = ({ initialScan, onDone }) => {
   const pending = useMemo(() => groups.filter(g => g.state !== 'done'), [groups]);
   const receivedGroups = useMemo(() => groups.filter(g => g.state === 'done'), [groups]);
   const readyAll = pending.length > 0 && pending.every(g => !groupProblem(g));
-  const totalBottles = pending.reduce((n, g) => n + g.count, 0);
+  const totalBottles = pending.reduce((n, g) => n + countOf(g), 0);
+  const firstProblem = pending.map(g => [g, groupProblem(g)]).find(([, p]) => p);
+  const compact = groups.length > 0;
+  const barFixed = isMobile && pending.length > 0;
   const newIds = useMemo(() => receivedGroups.flatMap(g => (g.result ? g.result.container_ids : [])), [receivedGroups]);
 
   const receiveAll = async () => {
@@ -510,7 +579,7 @@ const ReceiveSession = ({ initialScan, onDone }) => {
         const body = {
           reagent_id: reagent.id,
           batch_number: g.batchNumber.trim(),
-          bottles: g.count,
+          bottles: countOf(g),
           pack_size: num(g.packSize),
           unit: g.unit,
           expiry_date: g.expiry || undefined,
@@ -527,10 +596,12 @@ const ReceiveSession = ({ initialScan, onDone }) => {
             catalog: code.catalog,
             gtin: code.gtin || undefined,
             pack_unit: code.series === 'merck' ? baseUnitOf(g.unit) : undefined,
+            // the quantity of this Merck pack code is offered next time
+            pack_code: code.series === 'merck' && code.pack && /^\d{1,10}$/.test(code.pack.raw) ? code.pack.raw : undefined,
           };
         }
         const result = await api.receiveGoods(body);
-        update(g.key, { state: 'done', result, open: false });
+        update(g.key, { state: 'done', result, expanded: false });
       } catch (e) {
         update(g.key, { state: 'error', error: e.message || 'Could not receive this batch' });
       }
@@ -540,11 +611,11 @@ const ReceiveSession = ({ initialScan, onDone }) => {
 
   return (
     <div>
-      <div style={{ background: '#f0fff4', border: '2px solid #38a169', borderRadius: '12px', padding: '10px 14px', marginBottom: '10px' }}>
+      <div style={{ background: '#f0fff4', border: '2px solid #38a169', borderRadius: '12px', padding: compact ? '6px 12px' : '10px 14px', marginBottom: '10px' }}>
         <div style={{ fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.06em', color: '#2f855a' }}>RECEIVING GOODS</div>
-        <div style={{ fontSize: '0.85rem', color: '#4a5568', marginTop: '2px' }}>
-          Scan the square Data Matrix on each bottle. Bottles of one batch add up.
-          {shelf ? <> New bottles go on <b>{shelf.path}</b>.</> : ' Scan a shelf label to put the new bottles on that shelf.'}
+        <div style={{ fontSize: compact ? '0.8rem' : '0.85rem', color: '#4a5568', marginTop: '2px' }}>
+          {compact ? null : 'Scan the square Data Matrix on each bottle. Bottles of one batch add up. '}
+          {shelf ? <>New bottles go on <b>{shelf.path}</b>.</> : 'Scan a shelf label to put the new bottles on that shelf.'}
         </div>
       </div>
 
@@ -552,7 +623,7 @@ const ReceiveSession = ({ initialScan, onDone }) => {
 
       <canvas ref={scanner.canvasRef} style={{ display: 'none' }} />
       <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} style={{ display: 'none' }} />
-      {liveSupported && <CameraView scanner={scanner} hidden={!isMobile && !cameraOn} />}
+      {liveSupported && <CameraView scanner={scanner} hidden={!isMobile && !cameraOn} compact={compact} />}
       {!liveSupported && (
         <div style={{ background: '#ebf8ff', border: '1px solid #bee3f8', color: '#2a4365', borderRadius: '12px', padding: '10px 12px', fontSize: '0.82rem' }}>
           Live scanning needs HTTPS. Take a photo of each code instead, or use a USB scanner in the field below.
@@ -563,9 +634,16 @@ const ReceiveSession = ({ initialScan, onDone }) => {
         {liveSupported && !isMobile && !cameraOn && (
           <Button variant="secondary" onClick={start} style={{ height: '44px' }}>Use webcam</Button>
         )}
-        <Button variant="secondary" onClick={() => fileRef.current && fileRef.current.click()} style={{ height: '44px' }} disabled={busy}>
-          {isMobile ? 'Take a photo instead' : 'Read a photo of the code'}
-        </Button>
+        {compact && liveSupported ? (
+          <button type="button" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}
+            style={{ ...linkBtn, padding: 0, alignSelf: 'center' }}>
+            {isMobile ? 'Take a photo instead' : 'Read a photo of the code'}
+          </button>
+        ) : (
+          <Button variant="secondary" onClick={() => fileRef.current && fileRef.current.click()} style={{ height: '44px' }} disabled={busy}>
+            {isMobile ? 'Take a photo instead' : 'Read a photo of the code'}
+          </Button>
+        )}
         <form onSubmit={e => { e.preventDefault(); if (manual.trim()) { handle(manual.trim()); setManual(''); } }} style={{ display: 'flex', gap: '8px' }}>
           <input value={manual} onChange={e => setManual(e.target.value)} placeholder="Scan with a USB scanner or paste a code"
             aria-label="Manufacturer code" autoFocus={!isMobile} autoComplete="off" spellCheck={false}
@@ -600,10 +678,22 @@ const ReceiveSession = ({ initialScan, onDone }) => {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '14px' }}>
         {pending.length > 0 && (
-          <Button variant="primary" onClick={receiveAll} disabled={!readyAll || saving} loading={saving} style={{ width: '100%', height: '48px' }}>
-            Receive {totalBottles} bottle{totalBottles !== 1 ? 's' : ''}
-            {pending.length > 1 ? ` in ${pending.length} batches` : ''}
-          </Button>
+          // On a phone the button stays above the tab bar, so a scanned bottle is received without scrolling
+          <div style={barFixed ? {
+            position: 'fixed', left: 0, right: 0, zIndex: 950, bottom: 'calc(64px + env(safe-area-inset-bottom))',
+            padding: '8px 16px', background: 'rgba(255, 255, 255, 0.97)', borderTop: '1px solid #e2e8f0',
+            boxShadow: '0 -2px 10px rgba(26, 54, 93, 0.08)',
+          } : undefined}>
+            {firstProblem && !saving && (
+              <div style={{ fontSize: '0.78rem', color: '#975a16', marginBottom: '6px', overflowWrap: 'anywhere' }}>
+                {(firstProblem[0].reagent && firstProblem[0].reagent.name) || articleTitle(firstProblem[0].scan.code)}: {firstProblem[1]}
+              </div>
+            )}
+            <Button variant="primary" onClick={receiveAll} disabled={!readyAll || saving} loading={saving} style={{ width: '100%', height: '48px' }}>
+              Receive {totalBottles} bottle{totalBottles !== 1 ? 's' : ''}
+              {pending.length > 1 ? ` in ${pending.length} batches` : ''}
+            </Button>
+          </div>
         )}
         {newIds.length > 0 && (
           <Button variant="secondary" onClick={() => setPrinting(true)} style={{ width: '100%', height: '46px' }}>
@@ -614,6 +704,7 @@ const ReceiveSession = ({ initialScan, onDone }) => {
           onClick={() => { stop(); onDone(newIds.length); }} style={{ width: '100%', height: '46px' }}>
           {pending.length > 0 ? 'Close without receiving' : 'Done'}
         </Button>
+        {barFixed && <div aria-hidden="true" style={{ height: firstProblem ? '96px' : '72px' }} />}
       </div>
 
       {printing && (

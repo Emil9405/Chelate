@@ -65,6 +65,8 @@ const ArticleBackfill = () => {
     }
   };
 
+  const packs = report && report.new_packs ? report.new_packs.length : 0;
+
   if (!open) {
     return (
       <div style={{ marginBottom: '10px' }}>
@@ -91,12 +93,13 @@ const ArticleBackfill = () => {
               ? <><b>{plural(report.new_links.length, 'article')}</b> linked to their reagents. Their bottles are recognised at the first scan.</>
               : <>The catalog numbers in your batches link <b>{plural(report.new_links.length, 'article')}</b> to their reagents.</>}
             {report.already_linked > 0 && ` ${report.already_linked} were linked before.`}
+            {packs > 0 && ` ${report.applied ? 'Saved' : 'Also'} the quantity of ${plural(packs, 'Merck pack code')} (such as 2511 = 2.5 L) from the stored batches.`}
             {report.batches_without_article > 0 && ` ${plural(report.batches_without_article, 'batch')} have no catalog number.`}
           </div>
 
-          {!report.applied && report.new_links.length > 0 && (
+          {!report.applied && (report.new_links.length > 0 || packs > 0) && (
             <Button variant="primary" onClick={apply} loading={busy} disabled={busy} style={{ width: '100%', height: '44px', marginTop: '8px' }}>
-              Link {plural(report.new_links.length, 'article')}
+              {report.new_links.length > 0 ? `Link ${plural(report.new_links.length, 'article')}` : `Save ${plural(packs, 'pack size')}`}
             </Button>
           )}
 

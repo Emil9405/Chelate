@@ -37,7 +37,7 @@ use crate::auth_handlers::{self, BatchAction};
 use crate::container_history;
 use crate::error::{ApiError, ApiResult};
 use crate::handlers::ApiResponse;
-use crate::supplier_codes::{article_key, ArticleKey, Series, SupplierCode};
+use crate::supplier_codes::{article_key, typed_merck_pack_code, ArticleKey, Series, SupplierCode};
 use crate::AppState;
 
 pub const MAX_BOTTLES: i64 = 500;
@@ -59,6 +59,16 @@ pub const MIGRATIONS: &[&str] = &[
         gtin TEXT PRIMARY KEY,
         series TEXT NOT NULL,
         catalog TEXT NOT NULL
+    )"#,
+    // What a Merck pack code holds for one article: `2511` of 1.05432 is 2.5 L
+    r#"CREATE TABLE IF NOT EXISTS supplier_packs (
+        series TEXT NOT NULL,
+        catalog TEXT NOT NULL,
+        pack_code TEXT NOT NULL,
+        value REAL NOT NULL CHECK(value > 0),
+        unit TEXT NOT NULL,
+        updated_at DATETIME NOT NULL,
+        PRIMARY KEY (series, catalog, pack_code)
     )"#,
 ];
 
@@ -118,7 +128,8 @@ pub struct SupplierScan {
 
 /// What the code alone says about the pack, or what a stored base unit adds.
 /// A Merck pack code is only turned into a quantity for round codes: `2511` is a
-/// special pack, not 2511 g, so it is left for a person to enter.
+/// special pack, not 2511 g, so it is left for a person to enter (and remembered
+/// afterwards, see `pack_suggestion`).
 pub fn suggest_pack(code: &SupplierCode, base_unit: Option<&str>) -> Option<SuggestedPack> {
     let pack = code.pack.as_ref()?;
     if let (Some(value), Some(unit)) = (pack.value, pack.unit.as_deref()) {
@@ -127,19 +138,91 @@ pub fn suggest_pack(code: &SupplierCode, base_unit: Option<&str>) -> Option<Sugg
     if code.series != Series::Merck {
         return None;
     }
-    let n = pack.value?;
-    let unit = base_unit?;
-    if n <= 0.0 || n.fract() != 0.0 || (n as i64) % 10 != 0 {
+    merck_round_pack(&pack.raw, base_unit?)
+}
+
+/// `1000` with base unit mL is 1 L, `0500` with g is 500 g; `2511` is no quantity
+fn merck_round_pack(pack_code: &str, base_unit: &str) -> Option<SuggestedPack> {
+    if pack_code.is_empty() || !pack_code.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    Some(if n >= 1000.0 {
-        SuggestedPack {
-            value: n / 1000.0,
-            unit: if unit == "mL" { "L" } else { "kg" }.to_string(),
-        }
-    } else {
-        SuggestedPack { value: n, unit: unit.to_string() }
+    let n: f64 = pack_code.parse().ok()?;
+    if n <= 0.0 || (n as i64) % 10 != 0 || !matches!(base_unit, "g" | "mL") {
+        return None;
+    }
+    Some(readable_pack(n, base_unit))
+}
+
+/// 2500 mL reads as 2.5 L, 1000 g as 1 kg
+fn readable_pack(value: f64, unit: &str) -> SuggestedPack {
+    match canonical_unit(unit) {
+        Some("mL") if value >= 1000.0 => SuggestedPack { value: round9(value / 1000.0), unit: "L".to_string() },
+        Some("g") if value >= 1000.0 => SuggestedPack { value: round9(value / 1000.0), unit: "kg".to_string() },
+        Some(c) => SuggestedPack { value, unit: c.to_string() },
+        None => SuggestedPack { value, unit: unit.to_string() },
+    }
+}
+
+/// `g` or `mL` when all batches of the reagent are kept in units of one kind
+async fn reagent_base_unit(conn: &mut sqlx::SqliteConnection, reagent_id: &str) -> ApiResult<Option<&'static str>> {
+    let units: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT unit FROM batches WHERE reagent_id = ? AND deleted_at IS NULL",
+    )
+    .bind(reagent_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let kinds: BTreeSet<u8> = units
+        .iter()
+        .filter_map(|u| canonical_unit(u).and_then(unit_scale).map(|(k, _)| k))
+        .collect();
+    Ok(match kinds.iter().collect::<Vec<_>>().as_slice() {
+        [0] => Some("g"),
+        [1] => Some("mL"),
+        _ => None,
     })
+}
+
+/// Quantity in one bottle of an article with this pack code: what was received
+/// before, else a round Merck code read with the article's (or the reagent's) unit.
+pub async fn pack_suggestion(
+    conn: &mut sqlx::SqliteConnection,
+    series: &str,
+    catalog: &str,
+    pack_code: &str,
+    reagent_id: Option<&str>,
+) -> ApiResult<Option<SuggestedPack>> {
+    let catalog = catalog.trim().to_uppercase();
+    let pack_code = pack_code.trim();
+    if catalog.is_empty() || pack_code.is_empty() {
+        return Ok(None);
+    }
+    let known: Option<(f64, String)> = sqlx::query_as(
+        "SELECT value, unit FROM supplier_packs WHERE series = ? AND catalog = ? AND pack_code = ?",
+    )
+    .bind(series)
+    .bind(&catalog)
+    .bind(pack_code)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((value, unit)) = known {
+        return Ok(Some(readable_pack(value, &unit)));
+    }
+    if series != Series::Merck.as_str() {
+        return Ok(None);
+    }
+    let stored: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT pack_unit FROM supplier_products WHERE series = ? AND catalog = ?",
+    )
+    .bind(series)
+    .bind(&catalog)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let base = match (stored.flatten(), reagent_id) {
+        (Some(u), _) => Some(if u == "g" { "g" } else { "mL" }),
+        (None, Some(r)) => reagent_base_unit(conn, r).await?,
+        (None, None) => None,
+    };
+    Ok(base.and_then(|b| merck_round_pack(pack_code, b)))
 }
 
 // ==================== UNITS ====================
@@ -267,6 +350,8 @@ pub struct BatchCheck {
     pub similar: Vec<SimilarBatch>,
     /// The same or a similar number recorded under another reagent
     pub elsewhere: Vec<SimilarBatch>,
+    /// Quantity in one bottle, when the article and pack code were given and tell it
+    pub suggested_pack: Option<SuggestedPack>,
 }
 
 impl BatchCheck {
@@ -388,7 +473,20 @@ pub async fn scan_info(pool: &SqlitePool, code: SupplierCode) -> ApiResult<Suppl
     };
 
     let base_unit = reagent.as_ref().and_then(|r| r.pack_unit.as_deref());
-    let suggested_pack = suggest_pack(&code, base_unit);
+    let mut suggested_pack = suggest_pack(&code, base_unit);
+    if suggested_pack.is_none() {
+        if let (Some(cat), Some(pack)) = (code.catalog.as_deref(), code.pack.as_ref()) {
+            let mut conn = pool.acquire().await?;
+            suggested_pack = pack_suggestion(
+                &mut conn,
+                code.series.as_str(),
+                cat,
+                &pack.raw,
+                reagent.as_ref().map(|r| r.id.as_str()),
+            )
+            .await?;
+        }
+    }
     let expired = code.expiry.map(|d| d < Utc::now().date_naive()).unwrap_or(false);
     Ok(SupplierScan {
         code,
@@ -410,6 +508,10 @@ pub struct RememberProduct {
     pub gtin: Option<String>,
     /// `g` or `mL`: what a Merck pack code counts
     pub pack_unit: Option<String>,
+    /// The Merck pack code of these bottles (`2511`): the quantity received is
+    /// remembered for it and offered next time
+    #[serde(default)]
+    pub pack_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -493,6 +595,11 @@ fn validate(req: &ReceiveRequest) -> ApiResult<()> {
         if let Some(g) = r.gtin.as_deref() {
             if g.len() != 14 || !g.chars().all(|c| c.is_ascii_digit()) {
                 return bad("GTIN must be 14 digits");
+            }
+        }
+        if let Some(p) = r.pack_code.as_deref() {
+            if p.is_empty() || p.len() > 10 || !p.chars().all(|c| c.is_ascii_digit()) {
+                return bad("Pack code must be 1 to 10 digits");
             }
         }
     }
@@ -686,7 +793,7 @@ pub async fn receive(pool: &SqlitePool, user_id: &str, req: &ReceiveRequest) -> 
     }
 
     if let Some(r) = &req.remember {
-        remember_product(&mut tx, r, &req.reagent_id, user_id).await?;
+        remember_product(&mut tx, r, &req.reagent_id, user_id, Some((req.pack_size, unit.as_str()))).await?;
     }
 
     let batch_bottles: i64 = sqlx::query_scalar(
@@ -705,6 +812,7 @@ async fn remember_product(
     r: &RememberProduct,
     reagent_id: &str,
     user_id: &str,
+    received: Option<(f64, &str)>,
 ) -> ApiResult<()> {
     let catalog = r.catalog.trim().to_uppercase();
     let now = Utc::now();
@@ -732,6 +840,21 @@ async fn remember_product(
         .bind(g)
         .bind(&r.series)
         .bind(&catalog)
+        .execute(&mut *conn)
+        .await?;
+    }
+    if let (Some(code), Some((value, unit)), "merck") = (r.pack_code.as_deref(), received, r.series.as_str()) {
+        sqlx::query(
+            "INSERT INTO supplier_packs (series, catalog, pack_code, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(series, catalog, pack_code) DO UPDATE SET value = excluded.value, unit = excluded.unit, \
+               updated_at = excluded.updated_at",
+        )
+        .bind(&r.series)
+        .bind(&catalog)
+        .bind(code)
+        .bind(value)
+        .bind(canonical_unit(unit).unwrap_or(unit))
+        .bind(Utc::now())
         .execute(&mut *conn)
         .await?;
     }
@@ -779,10 +902,22 @@ pub struct BackfillSkip {
     pub catalog: Option<String>,
 }
 
+/// A Merck pack code whose quantity the stored batches agree on
+#[derive(Debug, Serialize)]
+pub struct BackfillPack {
+    pub series: String,
+    pub catalog: String,
+    pub pack_code: String,
+    pub value: f64,
+    pub unit: String,
+}
+
 #[derive(Debug, Serialize, Default)]
 pub struct BackfillReport {
     pub applied: bool,
     pub new_links: Vec<BackfillLink>,
+    /// Pack quantities learnt for Merck pack codes not known before
+    pub new_packs: Vec<BackfillPack>,
     pub already_linked: usize,
     pub conflicts: Vec<BackfillConflict>,
     pub ambiguous: Vec<BackfillSkip>,
@@ -795,6 +930,7 @@ struct CatRow {
     cat_number: String,
     batch_number: String,
     unit: String,
+    pack_size: Option<f64>,
     reagent_id: String,
     reagent_name: String,
 }
@@ -811,7 +947,7 @@ pub async fn backfill(pool: &SqlitePool, user_id: &str, apply: bool) -> ApiResul
     .fetch_one(pool)
     .await?;
     let rows: Vec<CatRow> = sqlx::query_as(
-        "SELECT trim(b.cat_number) AS cat_number, b.batch_number, b.unit, b.reagent_id, r.name AS reagent_name \
+        "SELECT trim(b.cat_number) AS cat_number, b.batch_number, b.unit, b.pack_size, b.reagent_id, r.name AS reagent_name \
          FROM batches b JOIN reagents r ON r.id = b.reagent_id \
          WHERE b.deleted_at IS NULL AND r.deleted_at IS NULL AND trim(COALESCE(b.cat_number, '')) != '' \
          ORDER BY r.name, b.cat_number",
@@ -822,9 +958,24 @@ pub async fn backfill(pool: &SqlitePool, user_id: &str, apply: bool) -> ApiResul
     // (series, catalog) -> reagent_id -> (name, batches, units)
     let mut found: BTreeMap<(String, String), BTreeMap<String, (String, i64, BTreeSet<u8>)>> = BTreeMap::new();
     let mut skipped: BTreeSet<(String, String)> = BTreeSet::new();
+    // (catalog, pack code) -> (value, unit) -> batches
+    let mut packs: BTreeMap<(String, String), BTreeMap<(String, String), i64>> = BTreeMap::new();
     for row in rows {
         match article_key(&row.cat_number, Some(&row.batch_number)) {
             ArticleKey::Known { series, catalog } => {
+                if series == Series::Merck {
+                    if let (Some(code), Some(size), Some(unit)) =
+                        (typed_merck_pack_code(&row.cat_number), row.pack_size, canonical_unit(&row.unit))
+                    {
+                        if size > 0.0 {
+                            *packs
+                                .entry((catalog.clone(), code))
+                                .or_default()
+                                .entry((fmt_qty(size), unit.to_string()))
+                                .or_default() += 1;
+                        }
+                    }
+                }
                 let e = found
                     .entry((series.as_str().to_string(), catalog))
                     .or_default()
@@ -911,9 +1062,49 @@ pub async fn backfill(pool: &SqlitePool, user_id: &str, apply: bool) -> ApiResul
         }
     }
 
-    if apply && !report.new_links.is_empty() {
+    // A pack code is learnt when its batches agree on one quantity (or most do)
+    let known_packs: BTreeSet<(String, String)> =
+        sqlx::query_as::<_, (String, String)>("SELECT catalog, pack_code FROM supplier_packs WHERE series = 'merck'")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    for ((catalog, code), sizes) in packs {
+        if known_packs.contains(&(catalog.clone(), code.clone())) {
+            continue;
+        }
+        let mut by_count: Vec<((String, String), i64)> = sizes.into_iter().collect();
+        by_count.sort_by(|a, b| b.1.cmp(&a.1));
+        if by_count.len() > 1 && by_count[0].1 == by_count[1].1 {
+            continue;
+        }
+        let ((value, unit), _) = by_count.swap_remove(0);
+        report.new_packs.push(BackfillPack {
+            series: Series::Merck.as_str().to_string(),
+            catalog,
+            pack_code: code,
+            value: value.parse().unwrap_or(0.0),
+            unit,
+        });
+    }
+
+    if apply && (!report.new_links.is_empty() || !report.new_packs.is_empty()) {
         let now = Utc::now();
         let mut tx = pool.begin().await?;
+        for p in &report.new_packs {
+            sqlx::query(
+                "INSERT INTO supplier_packs (series, catalog, pack_code, value, unit, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(series, catalog, pack_code) DO NOTHING",
+            )
+            .bind(&p.series)
+            .bind(&p.catalog)
+            .bind(&p.pack_code)
+            .bind(p.value)
+            .bind(&p.unit)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
         for l in &report.new_links {
             sqlx::query(
                 "INSERT INTO supplier_products (id, series, catalog, reagent_id, pack_unit, created_by, created_at, updated_at) \
@@ -1005,6 +1196,7 @@ pub async fn link_product_handler(
         catalog: body.catalog.clone(),
         gtin: body.gtin.clone(),
         pack_unit: body.pack_unit.clone(),
+        pack_code: None,
     };
     // Reuse receive()'s checks on the article part
     let probe = ReceiveRequest {
@@ -1025,13 +1217,14 @@ pub async fn link_product_handler(
             catalog: remember.catalog.clone(),
             gtin: remember.gtin.clone(),
             pack_unit: remember.pack_unit.clone(),
+            pack_code: None,
         }),
         confirm_new_batch: false,
     };
     validate(&probe)?;
 
     let mut tx = app_state.db_pool.begin().await?;
-    remember_product(&mut tx, &remember, &body.reagent_id, &claims.sub).await?;
+    remember_product(&mut tx, &remember, &body.reagent_id, &claims.sub, None).await?;
     tx.commit().await?;
     Ok(HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({ "linked": true }))))
 }
@@ -1040,6 +1233,10 @@ pub async fn link_product_handler(
 pub struct BatchCheckQuery {
     pub reagent_id: Option<String>,
     pub batch: String,
+    /// Article and pack code of the scanned bottle, for `suggested_pack`
+    pub series: Option<String>,
+    pub catalog: Option<String>,
+    pub pack: Option<String>,
 }
 
 /// GET /intake/batch-check?reagent_id=&batch= : the same or a similar batch number in Chelate
@@ -1054,8 +1251,52 @@ pub async fn batch_check_handler(
     }
     let reagent = query.reagent_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let mut conn = app_state.db_pool.acquire().await?;
-    let check = check_batch(&mut conn, reagent, &query.batch).await?;
+    let mut check = check_batch(&mut conn, reagent, &query.batch).await?;
+    if let (Some(series), Some(catalog), Some(pack)) = (&query.series, &query.catalog, &query.pack) {
+        if catalog.chars().count() <= 100 && pack.chars().count() <= 20 {
+            check.suggested_pack = pack_suggestion(&mut conn, series, catalog, pack, reagent).await?;
+        }
+    }
     Ok(HttpResponse::Ok().json(ApiResponse::success(check)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArticlesQuery {
+    /// Comma-separated reagent ids
+    pub reagent_ids: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct LinkedArticle {
+    pub reagent_id: String,
+    pub series: String,
+    pub catalog: String,
+}
+
+/// GET /intake/products?reagent_ids=a,b : articles linked to these reagents, so a
+/// person choosing a reagent for a new article sees which products it already holds
+pub async fn articles_handler(
+    app_state: web::Data<Arc<AppState>>,
+    query: web::Query<ArticlesQuery>,
+    http_request: HttpRequest,
+) -> ApiResult<HttpResponse> {
+    auth_handlers::check_batch_permission_async(&http_request, BatchAction::View, &app_state.db_pool).await?;
+    let ids: Vec<&str> = query.reagent_ids.split(',').map(str::trim).filter(|s| !s.is_empty()).take(50).collect();
+    let mut out: BTreeMap<String, Vec<LinkedArticle>> = BTreeMap::new();
+    if !ids.is_empty() {
+        let sql = format!(
+            "SELECT reagent_id, series, catalog FROM supplier_products WHERE reagent_id IN ({}) ORDER BY series, catalog",
+            vec!["?"; ids.len()].join(",")
+        );
+        let mut q = sqlx::query_as::<_, LinkedArticle>(&sql);
+        for id in &ids {
+            q = q.bind(*id);
+        }
+        for a in q.fetch_all(&app_state.db_pool).await? {
+            out.entry(a.reagent_id.clone()).or_default().push(a);
+        }
+    }
+    Ok(HttpResponse::Ok().json(ApiResponse::success(out)))
 }
 
 /// GET /intake/products/backfill : what linking the stored catalog numbers would do
@@ -1081,6 +1322,7 @@ pub async fn backfill_apply_handler(
     let mut cs = ChangeSet::new();
     cs.created("articles_linked", &report.new_links.len().to_string());
     cs.created("conflicts_left", &report.conflicts.len().to_string());
+    cs.created("pack_sizes_learnt", &report.new_packs.len().to_string());
     audit::audit_with_changes(
         &app_state.db_pool,
         &claims.sub,
@@ -1310,6 +1552,7 @@ mod tests {
             catalog: "105426".to_string(),
             gtin: dm.gtin.clone(),
             pack_unit: Some("mL".to_string()),
+            pack_code: None,
         });
         receive(&pool, "u1", &req).await.unwrap();
 
@@ -1373,6 +1616,7 @@ mod tests {
             catalog: "452882".to_string(),
             gtin: None,
             pack_unit: None,
+            pack_code: None,
         });
         receive(&pool, "u1", &req).await.unwrap();
         let sigma = parse_supplier_code(&gs("010406183555518510STBL0017␝240452882-500G␝422840")).unwrap();
@@ -1600,5 +1844,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(still, "r1");
+    }
+
+    #[tokio::test]
+    async fn a_special_merck_pack_is_remembered_after_the_first_receipt() {
+        let pool = setup().await;
+        let dm = parse_supplier_code(&gs("0104065268083710422276␝10K55640426␝2401054262511")).unwrap();
+        assert_eq!(scan_info(&pool, dm.clone()).await.unwrap().suggested_pack, None);
+
+        let mut req = request("r2", "K55640426", 1);
+        req.remember = Some(RememberProduct {
+            series: "merck".to_string(),
+            catalog: "105426".to_string(),
+            gtin: None,
+            pack_unit: Some("mL".to_string()),
+            pack_code: Some("2511".to_string()),
+        });
+        receive(&pool, "u1", &req).await.unwrap();
+
+        // next batch of the same article and pack: 2.5 L offered
+        let next = parse_supplier_code(&gs("0104065268083710422276␝10K60000001␝2401054262511")).unwrap();
+        assert_eq!(
+            scan_info(&pool, next).await.unwrap().suggested_pack,
+            Some(SuggestedPack { value: 2.5, unit: "L".to_string() })
+        );
+        // a bad pack code is refused
+        let mut bad = request("r2", "K1", 1);
+        bad.remember = Some(RememberProduct {
+            series: "merck".to_string(),
+            catalog: "105426".to_string(),
+            gtin: None,
+            pack_unit: None,
+            pack_code: Some("25x".to_string()),
+        });
+        assert!(receive(&pool, "u1", &bad).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_new_merck_article_takes_its_unit_from_the_chosen_reagent() {
+        let pool = setup().await;
+        old_batch(&pool, "b1", "r2", "K1", "L", None).await;
+        old_batch(&pool, "b2", "r1", "K2", "G", None).await;
+        let mut conn = pool.acquire().await.unwrap();
+        // not linked yet: nothing without a reagent
+        assert_eq!(pack_suggestion(&mut conn, "merck", "109999", "0500", None).await.unwrap(), None);
+        assert_eq!(
+            pack_suggestion(&mut conn, "merck", "109999", "0500", Some("r2")).await.unwrap(),
+            Some(SuggestedPack { value: 500.0, unit: "mL".to_string() })
+        );
+        assert_eq!(
+            pack_suggestion(&mut conn, "merck", "109999", "1000", Some("r1")).await.unwrap(),
+            Some(SuggestedPack { value: 1.0, unit: "kg".to_string() })
+        );
+        // a special code needs a person once
+        assert_eq!(pack_suggestion(&mut conn, "merck", "109999", "2511", Some("r2")).await.unwrap(), None);
+        // Sigma sizes come from the code itself, not from here
+        assert_eq!(pack_suggestion(&mut conn, "sigma", "34850", "0500", Some("r2")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn backfill_learns_pack_quantities_from_stored_batches() {
+        let pool = setup().await;
+        old_batch(&pool, "b1", "r2", "Z0891532", "ml", Some("105432-2511L")).await;
+        old_batch(&pool, "b2", "r2", "Z0891533", "ML", Some("1054322511")).await;
+        // round codes and Sigma sizes are not stored
+        old_batch(&pool, "b3", "r1", "MKCH5601", "g", Some("W228605-1KG-K")).await;
+        let report = backfill(&pool, "u1", true).await.unwrap();
+        let packs: Vec<(&str, &str, f64, &str)> = report
+            .new_packs
+            .iter()
+            .map(|p| (p.catalog.as_str(), p.pack_code.as_str(), p.value, p.unit.as_str()))
+            .collect();
+        assert_eq!(packs, vec![("105432", "2511", 2500.0, "mL")]);
+
+        let dm = parse_supplier_code(&gs("0104065268083710422276␝10Z0999999␝2401054322511")).unwrap();
+        assert_eq!(
+            scan_info(&pool, dm).await.unwrap().suggested_pack,
+            Some(SuggestedPack { value: 2.5, unit: "L".to_string() })
+        );
+        assert!(backfill(&pool, "u1", true).await.unwrap().new_packs.is_empty());
     }
 }

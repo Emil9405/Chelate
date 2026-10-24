@@ -10,6 +10,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/receive", web::post().to(supplier_intake::receive_handler))
             .route("/batch-check", web::get().to(supplier_intake::batch_check_handler))
             .route("/products", web::put().to(supplier_intake::link_product_handler))
+            .route("/products", web::get().to(supplier_intake::articles_handler))
             .route("/products/backfill", web::get().to(supplier_intake::backfill_preview_handler))
             .route("/products/backfill", web::post().to(supplier_intake::backfill_apply_handler))
     );
