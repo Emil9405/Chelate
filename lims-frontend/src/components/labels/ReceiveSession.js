@@ -7,6 +7,9 @@
 // in one bottle and an expiry date, and "Receive" creates the batch with its
 // bottles in one step. Labels are printed afterwards for the new bottles.
 // Scanning a shelf's QR label first puts the new bottles on that shelf.
+// A batch number that looks like one already in Chelate (l/I, a cut-off digit,
+// the pack typed after it, or the same number under another reagent) has to be
+// chosen or confirmed as new before it is received.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../services/api';
@@ -15,9 +18,18 @@ import useIsMobile from '../hooks/useIsMobile';
 import CameraView from './CameraView';
 import LabelPrintModal from './LabelPrintModal';
 import useCameraScanner from './useCameraScanner';
-import { casOk } from './codes';
+import ArticleBackfill from './ArticleBackfill';
+import { canonUnit, casOk, unitFactor } from './codes';
 
-const UNITS = ['g', 'mg', 'kg', 'mL', 'L'];
+const UNITS = ['g', 'mg', 'kg', 'mL', 'L', 'pcs'];
+const EMPTY_CHECK = { exact: null, similar: [], elsewhere: [] };
+const SIMILAR_WHY = {
+  case: 'Only upper and lower case differ.',
+  lookalike: 'I, l and 1, or O and 0, look alike.',
+  cut: 'A character or two at the end differ.',
+  pack: 'The pack size seems to be typed after the number.',
+  same: '',
+};
 const SERIES_NAME = { merck: 'Merck', sigma: 'Sigma-Aldrich', other: '' };
 
 const input = {
@@ -32,6 +44,20 @@ const num = (v) => {
 };
 
 const dateOnly = (iso) => (iso ? String(iso).slice(0, 10) : '');
+
+const fmtQty = (v) => String(Math.round(v * 1e6) / 1e6);
+
+/** What the batch check was (or must be) made for: reagent and batch number */
+const checkKeyOf = (g) => `${g.reagent ? g.reagent.id : (g.draft ? 'new' : '')}|${g.batchNumber.trim()}`;
+
+/** An existing batch fills the quantity and unit the person has not entered yet */
+const fillFromBatch = (g, batch) => {
+  if (!batch) return {};
+  const patch = {};
+  if (!g.packSize && batch.pack_size) patch.packSize = String(batch.pack_size);
+  if (!g.unit) patch.unit = canonUnit(batch.unit) || batch.unit;
+  return patch;
+};
 
 const articleTitle = (code) => {
   const series = SERIES_NAME[code.series] || '';
@@ -51,7 +77,9 @@ const baseUnitOf = (unit) => (unit === 'mL' || unit === 'L' ? 'mL' : 'g');
 const seedGroup = (scan) => {
   const code = scan.code;
   const existing = scan.batch;
-  const pack = existing && existing.pack_size ? { value: existing.pack_size, unit: existing.unit } : scan.suggested_pack;
+  const pack = existing && existing.pack_size
+    ? { value: existing.pack_size, unit: canonUnit(existing.unit) || existing.unit }
+    : scan.suggested_pack;
   const sig = sigOf(code);
   groupSeq += 1;
   return {
@@ -63,8 +91,11 @@ const seedGroup = (scan) => {
     draft: null,
     batchNumber: code.batch || '',
     packSize: pack ? String(pack.value) : '',
-    unit: pack ? pack.unit : (existing ? existing.unit : ''),
+    unit: pack ? pack.unit : (existing ? canonUnit(existing.unit) || existing.unit : ''),
     expiry: code.expiry || dateOnly(existing && existing.expiry_date),
+    check: { exact: existing || null, similar: scan.similar_batches || [], elsewhere: scan.batch_elsewhere || [] },
+    checkKey: `${scan.reagent ? scan.reagent.id : ''}|${(code.batch || '').trim()}`,
+    confirmedNew: '', // checkKeyOf(g) the person confirmed as a new batch
     open: !scan.reagent || !pack,
     state: 'ready', // ready | saving | done | error
     error: '',
@@ -79,8 +110,17 @@ const groupProblem = (g) => {
     if (g.draft.cas.trim() && !casOk(g.draft.cas)) return 'CAS number is not valid (check the digits)';
   }
   if (!g.batchNumber.trim()) return 'Enter the batch number';
+  const key = checkKeyOf(g);
+  if (g.checkKey !== key) return 'Checking the batch number…';
+  const c = g.check;
+  if (!c.exact && (c.similar.length > 0 || c.elsewhere.length > 0) && g.confirmedNew !== key) {
+    return 'A similar batch is already in Chelate: choose it or confirm a new batch';
+  }
   if (!(num(g.packSize) > 0)) return 'Enter the quantity in one bottle';
   if (!g.unit) return 'Choose the unit';
+  if (c.exact && unitFactor(g.unit, c.exact.unit) == null) {
+    return `This batch is kept in ${canonUnit(c.exact.unit) || c.exact.unit}: choose a unit that converts to it`;
+  }
   if (!(g.count >= 1)) return 'No bottles';
   return '';
 };
@@ -182,8 +222,33 @@ const GroupCard = ({ g, onChange, onRemove }) => {
   const code = g.scan.code;
   const problem = groupProblem(g);
   const done = g.state === 'done';
-  const existing = g.scan.batch;
-  const merckPack = code.series === 'merck' && code.pack && !code.pack.unit && !existing;
+  const existing = g.check.exact;
+  const merckPack = code.series === 'merck' && code.pack && !code.pack.unit && !existing && !g.scan.suggested_pack;
+  const key = checkKeyOf(g);
+  const c = g.check;
+  const similarShown = !done && !existing && (c.similar.length > 0 || c.elsewhere.length > 0);
+  const factor = existing && g.unit ? unitFactor(g.unit, existing.unit) : null;
+  const converted = existing && factor != null && canonUnit(g.unit) !== canonUnit(existing.unit) && num(g.packSize) > 0
+    ? `${fmtQty(num(g.packSize) * factor)} ${canonUnit(existing.unit) || existing.unit}` : '';
+
+  // Re-check the batch number whenever it or the reagent changes
+  useEffect(() => {
+    if (done || key === g.checkKey) return undefined;
+    const batch = g.batchNumber.trim();
+    if (!batch) { onChange({ check: EMPTY_CHECK, checkKey: key }); return undefined; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      let check = EMPTY_CHECK;
+      try {
+        check = await api.checkBatch(g.reagent ? g.reagent.id : null, batch);
+      } catch (_) {
+        // the server checks again when receiving
+      }
+      if (!cancelled) onChange({ check, checkKey: key, ...fillFromBatch(g, check.exact) });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, done]);
 
   return (
     <li style={{ background: 'white', border: `1px solid ${done ? '#c6f6d5' : g.state === 'error' ? '#fed7d7' : '#e2e8f0'}`, borderRadius: '12px', padding: '12px', listStyle: 'none' }}>
@@ -210,11 +275,48 @@ const GroupCard = ({ g, onChange, onRemove }) => {
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
         {existing && <Chip tone="blue">Batch already in Chelate: {existing.bottles} bottle{existing.bottles !== 1 ? 's' : ''}. These are added.</Chip>}
-        {!existing && g.reagent && <Chip tone="green">New batch</Chip>}
+        {!existing && g.reagent && !similarShown && <Chip tone="green">New batch</Chip>}
         {!g.reagent && !g.draft && <Chip tone="orange">New article</Chip>}
         {g.scan.expired && <Chip tone="red">Expired {code.expiry}</Chip>}
         {code.warnings.map(w => <Chip key={w} tone="orange">{w}</Chip>)}
       </div>
+
+      {similarShown && (
+        <div role="alert" style={{ marginTop: '8px', background: '#fffaf0', border: '1px solid #fbd38d', borderRadius: '8px', padding: '8px 10px', fontSize: '0.82rem', color: '#7b341e' }}>
+          {c.similar.map(s => (
+            <div key={s.batch_id} style={{ marginBottom: '6px' }}>
+              Batch <b>{s.batch_number}</b> of this reagent is already in Chelate ({s.bottles} bottle{s.bottles !== 1 ? 's' : ''}). {SIMILAR_WHY[s.reason]}
+              <div>
+                <button type="button" onClick={() => onChange({ batchNumber: s.batch_number, confirmedNew: '' })} style={linkBtn}>
+                  Add to {s.batch_number}
+                </button>
+              </div>
+            </div>
+          ))}
+          {c.elsewhere.map(s => (
+            <div key={s.batch_id} style={{ marginBottom: '6px' }}>
+              Batch <b>{s.batch_number}</b> is recorded under <b>{s.reagent_name}</b>. {SIMILAR_WHY[s.reason]}
+              {g.reagent ? (
+                <div>Check the reagent: a different grade or concentration is a different reagent.</div>
+              ) : (
+                <div>
+                  <button type="button" style={linkBtn}
+                    onClick={() => onChange({ reagent: { id: s.reagent_id, name: s.reagent_name }, draft: null, batchNumber: s.batch_number, confirmedNew: '' })}>
+                    Use {s.reagent_name}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {g.confirmedNew === key ? (
+            <div style={{ fontWeight: 700, color: '#276749' }}>✓ {g.batchNumber.trim()} will be received as a new batch</div>
+          ) : (
+            <button type="button" onClick={() => onChange({ confirmedNew: key })} style={linkBtn}>
+              No, {g.batchNumber.trim()} is a new batch
+            </button>
+          )}
+        </div>
+      )}
 
       {done && g.result && (
         <div style={{ marginTop: '8px', color: '#276749', fontSize: '0.85rem', fontWeight: 700 }}>
@@ -236,13 +338,18 @@ const GroupCard = ({ g, onChange, onRemove }) => {
               <input style={input} value={g.packSize} onChange={e => onChange({ packSize: e.target.value })} inputMode="decimal" placeholder="2.5" />
             </label>
             <label style={{ ...label, width: '96px' }}>Unit
-              <select style={input} value={g.unit} onChange={e => onChange({ unit: e.target.value })} disabled={!!existing}>
+              <select style={input} value={g.unit} onChange={e => onChange({ unit: e.target.value })}>
                 <option value="">–</option>
                 {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                 {g.unit && !UNITS.includes(g.unit) && <option value={g.unit}>{g.unit}</option>}
               </select>
             </label>
           </div>
+          {converted && (
+            <div style={{ fontSize: '0.75rem', color: '#2a4365', marginTop: '3px' }}>
+              The batch is kept in {canonUnit(existing.unit) || existing.unit}: each bottle is recorded as {converted}.
+            </div>
+          )}
           {merckPack && (
             <div style={{ fontSize: '0.75rem', color: '#975a16', marginTop: '3px' }}>
               Pack code {code.pack.raw} is not a quantity: take it from the label.
@@ -273,6 +380,8 @@ const GroupCard = ({ g, onChange, onRemove }) => {
     </li>
   );
 };
+
+const linkBtn = { background: 'none', border: 'none', color: '#2b6cb0', fontWeight: 700, padding: '4px 0 0', cursor: 'pointer', textAlign: 'left' };
 
 const TONES = {
   green: ['#f0fff4', '#276749'], blue: ['#ebf8ff', '#2a4365'], orange: ['#fffaf0', '#7b341e'], red: ['#fff5f5', '#c53030'],
@@ -410,6 +519,7 @@ const ReceiveSession = ({ initialScan, onDone }) => {
           pcode: code.pcode || undefined,
           position_id: shelf ? shelf.id : undefined,
           source: 'scan',
+          confirm_new_batch: g.confirmedNew === checkKeyOf(g) || undefined,
         };
         if (code.catalog) {
           body.remember = {
@@ -437,6 +547,8 @@ const ReceiveSession = ({ initialScan, onDone }) => {
           {shelf ? <> New bottles go on <b>{shelf.path}</b>.</> : ' Scan a shelf label to put the new bottles on that shelf.'}
         </div>
       </div>
+
+      {groups.length === 0 && <ArticleBackfill />}
 
       <canvas ref={scanner.canvasRef} style={{ display: 'none' }} />
       <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} style={{ display: 'none' }} />

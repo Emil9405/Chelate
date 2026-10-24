@@ -116,6 +116,61 @@ lazy_static! {
     static ref AI240_TAIL_RE: Regex = Regex::new(
         r"^(\d{10}|[A-Z0-9]{2,20}-\d+(?:\.\d+)?(?:KG|MG|UL|ML|G|L)(?:-[A-Z0-9]{1,4})*)(422\d{3})?$"
     ).unwrap();
+
+    // Catalog numbers as people type them into Chelate (import files, older batches)
+    /// `1.00014.2500`, `1.00014`, also with a mistyped pack (`1.047610.500`)
+    static ref TYPED_MERCK_DOTTED_RE: Regex = Regex::new(r"^([18])\.(\d{5})(?:[.\d]{0,8})$").unwrap();
+    /// `1000142500`: article + pack, as in AI 240
+    static ref TYPED_MERCK_10_RE: Regex = Regex::new(r"^[18]\d{9}$").unwrap();
+    /// `M0512-500G`, `244023`, `W292907`, `RDD016-2.5KG`, `103943-250G` (a Merck article
+    /// written the way the Sigma web shop shows it), `W228605-1KG-K`
+    static ref TYPED_ARTICLE_RE: Regex = Regex::new(
+        r"^([A-Z]{0,3}\d{2,6})(?:-(\d+(?:[.,]\d+)?(?:KG|MG|UL|ML|G|L)))?(?:-[A-Z0-9]{1,4})*$"
+    ).unwrap();
+    /// Merck batch numbers: `K47917114`, `I1421783`, `Z0891532`, `AM1912388`, `HC31835254`
+    static ref MERCK_BATCH_RE: Regex = Regex::new(r"^[A-Z]{1,2}\d{6,9}$").unwrap();
+    /// Sigma-Aldrich batch numbers: `MKCS4698`, `BCCK1832`, `STBF8846V`
+    static ref SIGMA_BATCH_RE: Regex = Regex::new(r"^[A-Z]{3,4}\d{3,5}[A-Z]?$").unwrap();
+}
+
+/// What a catalog number typed into Chelate says about the article, in the
+/// same `series` + `catalog` terms a scanned code uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArticleKey {
+    Known { series: Series, catalog: String },
+    /// Six digits starting with 1 or 8 are a Merck article (`103943` = 1.03943) or a
+    /// Sigma one (`185361`); the batch number did not tell which.
+    Ambiguous { catalog: String },
+    Unrecognised,
+}
+
+/// Reads a typed catalog number. The batch number decides between Merck and
+/// Sigma when the digits fit both, because their batch formats differ.
+pub fn article_key(cat_number: &str, batch_number: Option<&str>) -> ArticleKey {
+    let a: String = cat_number.trim().to_uppercase().chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(c) = TYPED_MERCK_DOTTED_RE.captures(&a) {
+        return ArticleKey::Known { series: Series::Merck, catalog: format!("{}{}", &c[1], &c[2]) };
+    }
+    if TYPED_MERCK_10_RE.is_match(&a) {
+        return ArticleKey::Known { series: Series::Merck, catalog: a[..6].to_string() };
+    }
+    let Some(c) = TYPED_ARTICLE_RE.captures(&a) else {
+        return ArticleKey::Unrecognised;
+    };
+    let art = c[1].to_string();
+    let merck_like = art.len() == 6 && art.chars().all(|ch| ch.is_ascii_digit()) && matches!(&art[..1], "1" | "8");
+    if !merck_like {
+        return ArticleKey::Known { series: Series::Sigma, catalog: art };
+    }
+    let batch = batch_number.map(|b| b.trim().to_uppercase()).unwrap_or_default();
+    if MERCK_BATCH_RE.is_match(&batch) {
+        ArticleKey::Known { series: Series::Merck, catalog: art }
+    } else if SIGMA_BATCH_RE.is_match(&batch) {
+        ArticleKey::Known { series: Series::Sigma, catalog: art }
+    } else {
+        ArticleKey::Ambiguous { catalog: art }
+    }
 }
 
 // ==================== ENTRY POINT ====================
@@ -679,5 +734,48 @@ mod tests {
         assert!(!cas_check_ok("14371-10-8"));
         assert!(!cas_check_ok("abc"));
         assert!(!cas_check_ok("143711-09"));
+    }
+
+    #[test]
+    fn typed_catalog_numbers() {
+        let merck = |c: &str| ArticleKey::Known { series: Series::Merck, catalog: c.to_string() };
+        let sigma = |c: &str| ArticleKey::Known { series: Series::Sigma, catalog: c.to_string() };
+        // Forms seen in the lab's import file
+        for (cat, batch, want) in [
+            ("1000142500", "K47917114", merck("100014")),
+            ("8017562500", "S8411256", merck("801756")),
+            ("1.05426.1000", "", merck("105426")),
+            ("8.22290.1000", "S8213890", merck("822290")),
+            ("1.047610.500", "B2141561", merck("104761")),
+            ("103943-250G", "B2162743", merck("103943")),
+            ("105432-2511L", "Z0891532", merck("105432")),
+            ("116754", "HC31835254", merck("116754")),
+            ("101188-1KG", "AM1912388", merck("101188")),
+            ("106498-5KG", "MB2226298", merck("106498")),
+            ("812705", "70820", ArticleKey::Ambiguous { catalog: "812705".to_string() }),
+            ("185361-500G", "MKCS4698", sigma("185361")),
+            ("190764", "BCCK1832", sigma("190764")),
+            ("M0512-500G", "0000431902", sigma("M0512")),
+            ("209201-1KG", "1004123AZ", sigma("209201")),
+            ("185361-500G", "1004123AZ", ArticleKey::Ambiguous { catalog: "185361".to_string() }),
+            ("34850", "STBF8846V", sigma("34850")),
+            ("W292907", "SHBP9989", sigma("W292907")),
+            ("RDD016-2.5KG", "SLBZ3807", sigma("RDD016")),
+            ("C805172-500g", "", sigma("C805172")),
+            ("W228605-1KG-K", "MKCH5601", sigma("W228605")),
+            ("06300-1KG", "", sigma("06300")),
+            ("21390.293", "17I204006", ArticleKey::Unrecognised),
+            ("ED2SS", "BCCH8763", ArticleKey::Unrecognised),
+            ("2221228", "STBJ2608", ArticleKey::Unrecognised),
+            ("", "X", ArticleKey::Unrecognised),
+        ] {
+            assert_eq!(article_key(cat, Some(batch)), want, "{cat} / {batch}");
+        }
+        // A scanned Merck code and a typed one give the same key
+        let scanned = parse_supplier_code("1039430250").unwrap();
+        assert_eq!(
+            article_key("103943-250G", Some("B2162743")),
+            ArticleKey::Known { series: scanned.series, catalog: scanned.catalog.unwrap() }
+        );
     }
 }

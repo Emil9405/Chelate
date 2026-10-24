@@ -498,6 +498,26 @@ export const api = {
         });
     },
 
+    // The same or a similar batch number already in Chelate: { exact, similar, elsewhere }
+    checkBatch: async (reagentId, batch) => {
+        const q = new URLSearchParams({ batch });
+        if (reagentId) q.set('reagent_id', reagentId);
+        const response = await apiCall(`${API_V1_BASE}/intake/batch-check?${q.toString()}`);
+        return response?.data || { exact: null, similar: [], elsewhere: [] };
+    },
+
+    // What linking the catalog numbers stored in batches would do (writes nothing)
+    previewArticleBackfill: async () => {
+        const response = await apiCall(`${API_V1_BASE}/intake/products/backfill`);
+        return response?.data || response;
+    },
+
+    // Link every article whose reagent is unambiguous
+    applyArticleBackfill: async () => {
+        const response = await apiCall(`${API_V1_BASE}/intake/products/backfill`, { method: 'POST' });
+        return response?.data || response;
+    },
+
     // ==================== LOCATION LABELS (QR) ====================
 
     // selector: { room_id | zone_id | position_id, include_children }
