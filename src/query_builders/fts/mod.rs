@@ -5,6 +5,7 @@
 pub mod config;
 
 use sqlx::SqlitePool;
+use crate::query_builders::utils::{like_any, like_contains};
 
 pub struct FtsQueryBuilder;
 
@@ -19,11 +20,9 @@ impl FtsQueryBuilder {
 
     /// Проверить доступность произвольной FTS таблицы
     pub async fn check_fts_table_available(pool: &SqlitePool, fts_table: &str) -> bool {
-        let query = format!(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{}'",
-            fts_table.replace('\'', "''") // Экранирование для безопасности
-        );
-        let result: Result<(i64,), _> = sqlx::query_as(&query).fetch_one(pool).await;
+        let result: Result<(i64,), _> = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?"
+        ).bind(fts_table).fetch_one(pool).await;
         matches!(result, Ok((count,)) if count > 0)
     }
 
@@ -65,23 +64,12 @@ impl FtsQueryBuilder {
             (condition, vec![fts_query])
         } else {
             // Fallback на LIKE
-            let pattern = format!("%{}%", crate::query_builders::utils::escape_like_value(search_trimmed));
-            
-            if like_fields.is_empty() {
-                return (String::new(), Vec::new());
-            }
-            
-            let conditions: Vec<String> = like_fields
+            let fields: Vec<String> = like_fields
                 .iter()
-                .map(|f| format!("{}.{} LIKE ?", table_alias, f))
+                .map(|f| format!("{}.{}", table_alias, f))
                 .collect();
-            
-            let params: Vec<String> = like_fields
-                .iter()
-                .map(|_| pattern.clone())
-                .collect();
-            
-            (format!("({})", conditions.join(" OR ")), params)
+            let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+            like_any(&fields, search_trimmed)
         }
     }
 
@@ -96,7 +84,7 @@ impl FtsQueryBuilder {
             return (String::new(), Vec::new());
         }
 
-        let pattern = format!("%{}%", crate::query_builders::utils::escape_like_value(search_trimmed));
+        let pattern = like_contains(search_trimmed);
 
         if use_fts {
             let fts_query = Self::build_fts_query(search_trimmed);
@@ -110,7 +98,8 @@ impl FtsQueryBuilder {
             let condition = format!(
                 "({}.rowid IN (SELECT rowid FROM reagents_fts WHERE reagents_fts MATCH ?) \
                  OR EXISTS (SELECT 1 FROM batches bs WHERE bs.reagent_id = {}.id AND \
-                 (bs.batch_number LIKE ? OR bs.cat_number LIKE ? OR bs.supplier LIKE ?)))",
+                 (bs.batch_number LIKE ? ESCAPE '\\' OR bs.cat_number LIKE ? ESCAPE '\\' \
+                 OR bs.supplier LIKE ? ESCAPE '\\')))",
                 table_alias, table_alias
             );
             
@@ -118,9 +107,11 @@ impl FtsQueryBuilder {
         } else {
             // Обычный LIKE поиск по всем полям
             let condition = format!(
-                "({}.name LIKE ? OR {}.formula LIKE ? OR {}.cas_number LIKE ? OR {}.manufacturer LIKE ? \
+                "({}.name LIKE ? ESCAPE '\\' OR {}.formula LIKE ? ESCAPE '\\' \
+                 OR {}.cas_number LIKE ? ESCAPE '\\' OR {}.manufacturer LIKE ? ESCAPE '\\' \
                  OR EXISTS (SELECT 1 FROM batches bs WHERE bs.reagent_id = {}.id AND \
-                 (bs.batch_number LIKE ? OR bs.cat_number LIKE ? OR bs.supplier LIKE ?)))",
+                 (bs.batch_number LIKE ? ESCAPE '\\' OR bs.cat_number LIKE ? ESCAPE '\\' \
+                 OR bs.supplier LIKE ? ESCAPE '\\')))",
                 table_alias, table_alias, table_alias, table_alias, table_alias
             );
             

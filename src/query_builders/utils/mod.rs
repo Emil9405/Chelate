@@ -8,26 +8,90 @@ use crate::query_builders::filters::whitelist::{FieldConfig, FieldValidationErro
 
 // ==================== ЭКРАНИРОВАНИЕ ====================
 
-/// Экранирование спецсимволов LIKE
+/// Escape `\`, `%` and `_` so the value matches literally in a LIKE pattern.
+///
+/// SQLite has no default LIKE escape character: the pattern only works in a
+/// clause that names one, so build the SQL with [`like_sql`] / [`like_any`]
+/// (`... LIKE ? ESCAPE '\'`). Without it `\_` is two literal characters and a
+/// search for `Test_value` finds nothing.
 pub fn escape_like_value(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
-        .replace('[', "\\[")
 }
 
-/// Sanitize user input for FTS5 MATCH — whitelist approach.
-/// Keeps only alphanumeric + space. Adds * for prefix search.
-/// Returns ready-to-use FTS5 MATCH string, or empty if no valid tokens.
+/// `field LIKE ? ESCAPE '\'` — the only LIKE form for escaped user input.
+/// `field` is SQL text: pass a column name from code, never user input.
+pub fn like_sql(field: &str) -> String {
+    format!("{} LIKE ? ESCAPE '\\'", field)
+}
+
+/// Pattern for "contains": `%value%` with the value escaped.
+pub fn like_contains(value: &str) -> String {
+    format!("%{}%", escape_like_value(value))
+}
+
+/// Pattern for "starts with": `value%` with the value escaped.
+pub fn like_prefix(value: &str) -> String {
+    format!("{}%", escape_like_value(value))
+}
+
+/// Pattern for "ends with": `%value` with the value escaped.
+pub fn like_suffix(value: &str) -> String {
+    format!("%{}", escape_like_value(value))
+}
+
+/// `(a LIKE ? ESCAPE '\' OR b LIKE ? ESCAPE '\' ...)` and one "contains"
+/// parameter per column. Column names that are not plain identifiers
+/// (`name`, `b.batch_number`) are skipped, as a whitelist would; returns an
+/// empty condition when the value is blank or no column is left.
+pub fn like_any(fields: &[&str], value: &str) -> (String, Vec<String>) {
+    let value = value.trim();
+    let fields: Vec<&str> = fields
+        .iter()
+        .copied()
+        .filter(|f| {
+            let ok = is_safe_report_field(f);
+            debug_assert!(ok, "like_any: '{}' is not a plain column name", f);
+            ok
+        })
+        .collect();
+    if value.is_empty() || fields.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let pattern = like_contains(value);
+    let sql = fields.iter().map(|f| like_sql(f)).collect::<Vec<_>>().join(" OR ");
+    (format!("({})", sql), vec![pattern; fields.len()])
+}
+
+/// At most this many search words reach FTS5; the rest are dropped.
+pub const MAX_FTS_TERMS: usize = 16;
+
+/// User input → FTS5 MATCH expression (bind it as a parameter).
+///
+/// Each whitespace-separated word becomes one quoted phrase of its
+/// letter/digit runs, the last one a prefix: `64-17-5` → `"64 17 5"*`,
+/// `sodium chloride` → `"sodium"* "chloride"*` (both words, any order).
+/// This mirrors the `unicode61` tokenizer, which splits stored text on
+/// punctuation too, so a CAS number or "95-97%" finds its row; joining the
+/// pieces (`64175*`) would find nothing.
+///
+/// Only letters and digits survive and every term is quoted, so FTS5
+/// operators (`AND`, `OR`, `NOT`, `NEAR`, `column:`, `^`, `*`, `(`) can't
+/// appear: a bare `NOT*` is a syntax error that used to fail the request.
+/// Returns an empty string when nothing searchable is left.
 pub fn sanitize_fts_query(query: &str) -> String {
     query
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
-        .collect::<String>()
         .split_whitespace()
-        .filter(|s| !s.is_empty())
-        .map(|word| format!("{}*", word))
+        .filter_map(|word| {
+            let tokens: Vec<&str> = word
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty())
+                .collect();
+            (!tokens.is_empty()).then(|| format!("\"{}\"*", tokens.join(" ")))
+        })
+        .take(MAX_FTS_TERMS)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -195,21 +259,120 @@ mod tests {
         assert_eq!(escape_like_value("test"), "test");
         assert_eq!(escape_like_value("test%value"), "test\\%value");
         assert_eq!(escape_like_value("test_value"), "test\\_value");
-        assert_eq!(escape_like_value("test[value"), "test\\[value");
+        assert_eq!(escape_like_value("a\\b"), "a\\\\b");
+        // SQLite LIKE has no [..] classes: '[' is an ordinary character
+        assert_eq!(escape_like_value("test[value"), "test[value");
     }
-#[test]
-fn test_sanitize_fts_query() {
-    assert_eq!(sanitize_fts_query("hello world"), "hello* world*");
-    assert_eq!(sanitize_fts_query("hello (world)"), "hello* world*");
-    assert_eq!(sanitize_fts_query("test*query"), "testquery*");
-    assert_eq!(sanitize_fts_query("a+b-c"), "abc*");
-    // Previously crashing characters:
-    assert_eq!(sanitize_fts_query("!"), "");
-    assert_eq!(sanitize_fts_query("@#$%"), "");
-    assert_eq!(sanitize_fts_query("H2SO4!"), "H2SO4*");
-    assert_eq!(sanitize_fts_query("test.value"), "testvalue*");
-    assert_eq!(sanitize_fts_query("name='x'; DROP TABLE--"), "namex* DROP* TABLE*");
-}
+
+    #[test]
+    fn test_like_helpers() {
+        assert_eq!(like_sql("b.batch_number"), "b.batch_number LIKE ? ESCAPE '\\'");
+        assert_eq!(like_contains("50%"), "%50\\%%");
+        assert_eq!(like_prefix("A_1"), "A\\_1%");
+        assert_eq!(like_suffix("x"), "%x");
+
+        let (sql, params) = like_any(&["name", "b.cat_number"], " 1.05426 ");
+        assert_eq!(sql, "(name LIKE ? ESCAPE '\\' OR b.cat_number LIKE ? ESCAPE '\\')");
+        assert_eq!(params, vec!["%1.05426%".to_string(), "%1.05426%".to_string()]);
+
+        assert_eq!(like_any(&["name"], "   "), (String::new(), Vec::new()));
+        assert_eq!(like_any(&[], "x"), (String::new(), Vec::new()));
+    }
+
+    /// The patterns must find exactly the literal text in SQLite.
+    #[tokio::test]
+    async fn test_like_patterns_in_sqlite() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (v TEXT)").execute(&pool).await.unwrap();
+        for v in ["Test_value", "TestXvalue", "50% w/w", "500 mL", "a\\b", "[x]"] {
+            sqlx::query("INSERT INTO t VALUES (?)").bind(v).execute(&pool).await.unwrap();
+        }
+        let find = |q: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let (sql, params) = like_any(&["v"], q);
+                let sql = format!("SELECT v FROM t WHERE {} ORDER BY v", sql);
+                let mut query = sqlx::query_scalar::<_, String>(&sql);
+                for p in &params { query = query.bind(p); }
+                query.fetch_all(&pool).await.unwrap()
+            }
+        };
+        assert_eq!(find("Test_value").await, vec!["Test_value"]);
+        assert_eq!(find("50%").await, vec!["50% w/w"]);
+        assert_eq!(find("a\\b").await, vec!["a\\b"]);
+        assert_eq!(find("[x").await, vec!["[x]"]);
+        assert_eq!(find("%").await, vec!["50% w/w"]);
+        assert_eq!(find("_").await, vec!["Test_value"]);
+    }
+
+    #[test]
+    fn test_sanitize_fts_query() {
+        assert_eq!(sanitize_fts_query("hello world"), "\"hello\"* \"world\"*");
+        assert_eq!(sanitize_fts_query("hello (world)"), "\"hello\"* \"world\"*");
+        // Punctuation inside a word splits it the way unicode61 splits stored text
+        assert_eq!(sanitize_fts_query("64-17-5"), "\"64 17 5\"*");
+        assert_eq!(sanitize_fts_query("test*query"), "\"test query\"*");
+        assert_eq!(sanitize_fts_query("a+b-c"), "\"a b c\"*");
+        assert_eq!(sanitize_fts_query("test.value"), "\"test value\"*");
+        assert_eq!(sanitize_fts_query("N,N-Dimethylformamide"), "\"N N Dimethylformamide\"*");
+        assert_eq!(sanitize_fts_query("H2SO4!"), "\"H2SO4\"*");
+        assert_eq!(sanitize_fts_query("Этанол"), "\"Этанол\"*");
+        // Nothing searchable
+        assert_eq!(sanitize_fts_query(""), "");
+        assert_eq!(sanitize_fts_query("!"), "");
+        assert_eq!(sanitize_fts_query("@#$% \"\" ()"), "");
+        // FTS5 syntax can't get through: operators are quoted terms
+        assert_eq!(sanitize_fts_query("NOT"), "\"NOT\"*");
+        assert_eq!(sanitize_fts_query("acid OR NEAR"), "\"acid\"* \"OR\"* \"NEAR\"*");
+        assert_eq!(sanitize_fts_query("name:x ^y"), "\"name x\"* \"y\"*");
+        assert_eq!(sanitize_fts_query("\"a\" OR \"b"), "\"a\"* \"OR\"* \"b\"*");
+        assert_eq!(sanitize_fts_query("name='x'; DROP TABLE--"), "\"name x\"* \"DROP\"* \"TABLE\"*");
+        // Term cap
+        let long = "w ".repeat(100);
+        assert_eq!(sanitize_fts_query(&long).matches('*').count(), MAX_FTS_TERMS);
+    }
+
+    /// Every query must parse in FTS5 and find what a person expects.
+    #[tokio::test]
+    async fn test_fts_query_in_sqlite() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE VIRTUAL TABLE f USING fts5(name, cas_number, formula, \
+             tokenize='unicode61 remove_diacritics 1')",
+        ).execute(&pool).await.unwrap();
+        for (n, c, f) in [
+            ("Ethanol absolute", "64-17-5", "C2H6O"),
+            ("Sodium chloride", "7647-14-5", "NaCl"),
+            ("Sulfuric acid 95-97%", "7664-93-9", "H2SO4"),
+            ("N,N-Dimethylformamide", "68-12-2", "C3H7NO"),
+            ("Not a real reagent", "", ""),
+        ] {
+            sqlx::query("INSERT INTO f VALUES (?, ?, ?)")
+                .bind(n).bind(c).bind(f).execute(&pool).await.unwrap();
+        }
+        let find = |q: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT name FROM f WHERE f MATCH ? ORDER BY name")
+                    .bind(sanitize_fts_query(q))
+                    .fetch_all(&pool).await
+                    .unwrap_or_else(|e| panic!("{:?} failed: {}", q, e))
+            }
+        };
+        assert_eq!(find("64-17-5").await, vec!["Ethanol absolute"]);
+        assert_eq!(find("64-17").await, vec!["Ethanol absolute"]);
+        assert_eq!(find("7647").await, vec!["Sodium chloride"]);
+        assert_eq!(find("chloride sod").await, vec!["Sodium chloride"]);
+        assert_eq!(find("95-97%").await, vec!["Sulfuric acid 95-97%"]);
+        assert_eq!(find("h2so4").await, vec!["Sulfuric acid 95-97%"]);
+        assert_eq!(find("N,N-Dimethyl").await, vec!["N,N-Dimethylformamide"]);
+        assert_eq!(find("NOT").await, vec!["Not a real reagent"]);
+        for q in ["OR", "AND", "NEAR", "acid OR", "a\"b", "x:y", "^a", "(a", "NEAR(a b)", "a*b-"] {
+            find(q).await; // parses
+        }
+        // Nothing searchable: callers skip the MATCH
+        assert_eq!(sanitize_fts_query("\" * ( ) -"), "");
+    }
 
     #[test]
     fn test_field_validation() {

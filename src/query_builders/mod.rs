@@ -133,12 +133,11 @@ impl<'a> SafeQueryBuilder<'a> {
         self
     }
 
-    pub fn add_like(&mut self, field: &str, pattern: impl Into<String>) -> &mut Self {
+    /// `field` contains `value` literally (`%` and `_` in it are not wildcards).
+    pub fn add_like(&mut self, field: &str, value: impl Into<String>) -> &mut Self {
         if self.is_field_allowed(field) {
-            let p = pattern.into();
-            let escaped = if p.contains('%') { p } else { format!("%{}%", p) };
-            self.conditions.push(format!("{} LIKE ?", field));
-            self.params.push(escaped);
+            self.conditions.push(utils::like_sql(field));
+            self.params.push(utils::like_contains(&value.into()));
         }
         self
     }
@@ -305,12 +304,11 @@ impl<'a> CountQueryBuilder<'a> {
         self
     }
 
-    pub fn add_like(&mut self, field: &str, pattern: impl Into<String>) -> &mut Self {
+    /// `field` contains `value` literally (`%` and `_` in it are not wildcards).
+    pub fn add_like(&mut self, field: &str, value: impl Into<String>) -> &mut Self {
         if self.is_field_allowed(field) {
-            let p = pattern.into();
-            let escaped = if p.contains('%') { p } else { format!("%{}%", p) };
-            self.conditions.push(format!("{} LIKE ?", field));
-            self.params.push(escaped);
+            self.conditions.push(utils::like_sql(field));
+            self.params.push(utils::like_contains(&value.into()));
         }
         self
     }

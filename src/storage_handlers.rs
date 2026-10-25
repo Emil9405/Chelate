@@ -574,22 +574,30 @@ pub async fn search_storage_locations(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<HttpResponse> {
-    let search = query.get("q").map(|s| s.as_str()).unwrap_or("");
+    let search = query.get("q").map(|s| s.trim()).unwrap_or("");
     if search.is_empty() { return Err(ApiError::bad_request("Search query 'q' is required")); }
 
-    let pattern = format!("%{}%", search);
-    let results: Vec<serde_json::Value> = sqlx::query_as::<_, (
-        String, String, Option<String>, String, String, String, String, String,
-    )>(
+    let (condition, params) = crate::query_builders::utils::like_any(
+        &["sp.name", "sp.position_label", "sz.name", "r.name"],
+        search,
+    );
+    let sql = format!(
         r#"SELECT sp.id, sp.name, sp.position_label, sz.name, sz.zone_type,
                   r.name, r.id, sz.id
            FROM storage_positions sp
            JOIN storage_zones sz ON sp.zone_id = sz.id
            JOIN rooms r ON sz.room_id = r.id
-           WHERE sp.name LIKE ? OR sp.position_label LIKE ? OR sz.name LIKE ? OR r.name LIKE ?
-           ORDER BY r.name, sz.sort_order, sp.sort_order LIMIT 20"#
-    )
-    .bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern)
+           WHERE {}
+           ORDER BY r.name, sz.sort_order, sp.sort_order LIMIT 20"#,
+        condition
+    );
+    let mut db_query = sqlx::query_as::<_, (
+        String, String, Option<String>, String, String, String, String, String,
+    )>(&sql);
+    for p in &params {
+        db_query = db_query.bind(p);
+    }
+    let results: Vec<serde_json::Value> = db_query
     .fetch_all(&app_state.db_pool).await?.into_iter()
     .map(|(pos_id, pos_name, pos_label, zone_name, zone_type, room_name, room_id, zone_id)| {
         let full_path = format!("{} → {} → {}", room_name, zone_name, pos_name);

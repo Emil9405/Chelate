@@ -536,12 +536,13 @@ fn build_report_filter_condition(filter: &ReportFilter) -> (String, Vec<String>)
         }
         ComparisonOperator::Like => {
             let pattern = match &filter.value {
-                ReportFilterValue::Contains(s) => format!("%{}%", s),
-                ReportFilterValue::Exact(s) => format!("%{}%", s),
+                ReportFilterValue::Contains(s) | ReportFilterValue::Exact(s) => {
+                    crate::query_builders::utils::like_contains(s)
+                }
                 _ => return (String::new(), Vec::new()),
             };
             params.push(pattern);
-            format!("{} LIKE ?", filter.field)
+            crate::query_builders::utils::like_sql(&filter.field)
         }
         _ => {
             // Params are bound as text. Computed report columns (unplaced_count,
