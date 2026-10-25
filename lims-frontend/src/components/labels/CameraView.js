@@ -6,9 +6,11 @@ import React from 'react';
 import Button from '../Button';
 import { GUIDE } from './useCameraScanner';
 
-const CameraView = ({ scanner, hidden = false, flash = null }) => (
+// `compact` shows a smaller square (same decoded area) once there is a list below it.
+const CameraView = ({ scanner, hidden = false, flash = null, compact = false }) => (
   <div style={{
-    position: 'relative', width: '100%', aspectRatio: '1 / 1', background: '#1a202c',
+    position: 'relative', width: compact ? 'min(56%, 240px)' : '100%', margin: compact ? '0 auto' : undefined,
+    aspectRatio: '1 / 1', background: '#1a202c',
     borderRadius: '16px', overflow: 'hidden', display: hidden ? 'none' : 'block',
   }}>
     <video ref={scanner.videoRef} playsInline muted autoPlay
