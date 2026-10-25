@@ -230,15 +230,11 @@ pub async fn get_all_batches(
     if let Some(ref search) = query.search {
         let trimmed = search.trim();
         if !trimmed.is_empty() {
-            // Для сложного OR условия используем add_condition
-            let pattern = format!("%{}%", trimmed);
-            let or_condition = "(b.batch_number LIKE ? OR r.name LIKE ? OR b.cat_number LIKE ? OR b.supplier LIKE ?)";
-            builder.add_condition(or_condition, vec![
-                pattern.clone(), 
-                pattern.clone(), 
-                pattern.clone(), 
-                pattern
-            ]);
+            let (or_condition, params) = crate::query_builders::utils::like_any(
+                &["b.batch_number", "r.name", "b.cat_number", "b.supplier"],
+                trimmed,
+            );
+            builder.add_condition(&or_condition, params);
         }
     }
 

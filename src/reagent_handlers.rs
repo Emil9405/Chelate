@@ -31,8 +31,11 @@ async fn check_fts_available(pool: &sqlx::SqlitePool) -> bool {
 
 /// Построение FTS запроса (очистка спецсимволов + prefix search)
 fn build_fts_query(search: &str) -> String {
-    crate::query_builders::utils::sanitize_fts_query(search)
+    crate::query_builders::FtsQueryBuilder::build_fts_query(search)
 }
+
+/// LIKE fallback columns when the FTS table is missing (the ones FTS indexes)
+const LIKE_SEARCH_FIELDS: &[&str] = &["name", "cas_number", "formula"];
 
 /// Добавляет условие поиска с FTS или LIKE fallback
 /// Поля поиска: name, cas_number, formula
@@ -60,21 +63,12 @@ fn add_search_condition_with_fts(
         );
     } else {
         // Fallback на LIKE (медленнее, но работает без FTS)
-        let pattern = format!("%{}%", search_trimmed);
-        builder.add_search(
-            "(name LIKE ? OR cas_number LIKE ? OR formula LIKE ?)",
-            vec![pattern.clone(), pattern.clone(), pattern]
-        );
+        let (condition, params) =
+            crate::query_builders::utils::like_any(LIKE_SEARCH_FIELDS, search_trimmed);
+        if !condition.is_empty() {
+            builder.add_search(&condition, params);
+        }
     }
-}
-
-/// Legacy: простой LIKE поиск (для обратной совместимости)
-fn add_search_condition(builder: &mut CtePaginationBuilder, pattern: &str) {
-    // Добавляем условие поиска с 4 параметрами
-    builder.add_search(
-        "(name LIKE ? OR formula LIKE ? OR cas_number LIKE ? OR manufacturer LIKE ?)",
-        vec![pattern.to_string(); 4]
-    );
 }
 
 // ==================== RESPONSE STRUCTURES ====================
@@ -293,7 +287,7 @@ pub async fn search_reagents(
         return Ok(HttpResponse::Ok().json(ApiResponse::success(Vec::<ReagentListItem>::new())));
     }
 
-    let limit = query.limit.unwrap_or(10).min(50);
+    let limit = query.limit.unwrap_or(10).clamp(1, 50); // LIMIT -1 is "no limit" in SQLite
     let pool = &app_state.db_pool;
 
     // Проверяем FTS
@@ -322,25 +316,25 @@ pub async fn search_reagents(
             .fetch_all(pool)
             .await?
     } else {
-        let pattern = format!("%{}%", q);
-        sqlx::query_as::<_, ReagentListItem>(
+        let (condition, params) = crate::query_builders::utils::like_any(LIKE_SEARCH_FIELDS, q);
+        let sql = format!(
             r#"SELECT id, name, formula, cas_number, manufacturer, molecular_weight,
                       physical_state, description, storage_conditions, appearance,
                       hazard_pictograms, status, visibility, created_by, updated_by, created_at,
                       updated_at, total_quantity, batches_count, primary_unit
                FROM reagents
-               WHERE (name LIKE ? OR cas_number LIKE ? OR formula LIKE ?)
+               WHERE {}
                AND deleted_at IS NULL
                AND visibility = 'public'
                ORDER BY total_quantity DESC
-               LIMIT ?"#
-        )
-            .bind(&pattern)
-            .bind(&pattern)
-            .bind(&pattern)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?
+               LIMIT ?"#,
+            condition
+        );
+        let mut db_query = sqlx::query_as::<_, ReagentListItem>(&sql);
+        for p in &params {
+            db_query = db_query.bind(p);
+        }
+        db_query.bind(limit).fetch_all(pool).await?
     };
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(reagents)))

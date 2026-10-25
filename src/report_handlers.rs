@@ -33,12 +33,7 @@ fn validate_sort_field(field: &str) -> Option<&'static str> {
         .copied()
 }
 
-fn escape_like_pattern(pattern: &str) -> String {
-    pattern
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
+use crate::query_builders::utils::escape_like_value as escape_like_pattern;
 
 fn escape_csv_field(field: &str) -> String {
     if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {

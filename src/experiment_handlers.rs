@@ -67,13 +67,13 @@ pub async fn get_all_experiments(
 
     // Поиск
     if let Some(ref search) = query.search {
-        if !search.trim().is_empty() {
-            let pattern = format!("%{}%", search.trim());
-            conditions.push("(title LIKE ? OR description LIKE ? OR instructor LIKE ? OR student_group LIKE ?)".to_string());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern.clone());
-            params.push(pattern);
+        let (condition, search_params) = crate::query_builders::utils::like_any(
+            &["title", "description", "instructor", "student_group"],
+            search,
+        );
+        if !condition.is_empty() {
+            conditions.push(condition);
+            params.extend(search_params);
         }
     }
     

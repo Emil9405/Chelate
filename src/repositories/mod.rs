@@ -92,20 +92,10 @@ where
 
         // Apply search using LIKE conditions
         if let Some(ref search) = query.search {
-            if !search.trim().is_empty() && !search_fields.is_empty() {
-                let like_conditions: Vec<String> = search_fields
-                    .iter()
-                    .map(|f| format!("{} LIKE ?", f))
-                    .collect();
-                let search_pattern = format!("%{}%", search);
-                let params: Vec<String> = search_fields
-                    .iter()
-                    .map(|_| search_pattern.clone())
-                    .collect();
-                count_builder.add_condition(
-                    &format!("({})", like_conditions.join(" OR ")),
-                    params,
-                );
+            let (condition, params) =
+                crate::query_builders::utils::like_any(&search_fields, search);
+            if !condition.is_empty() {
+                count_builder.add_condition(&condition, params);
             }
         }
 
@@ -129,20 +119,10 @@ where
 
         // Apply search using LIKE conditions
         if let Some(ref search) = query.search {
-            if !search.trim().is_empty() && !search_fields.is_empty() {
-                let like_conditions: Vec<String> = search_fields
-                    .iter()
-                    .map(|f| format!("{} LIKE ?", f))
-                    .collect();
-                let search_pattern = format!("%{}%", search);
-                let params: Vec<String> = search_fields
-                    .iter()
-                    .map(|_| search_pattern.clone())
-                    .collect();
-                data_builder.add_condition(
-                    &format!("({})", like_conditions.join(" OR ")),
-                    params,
-                );
+            let (condition, params) =
+                crate::query_builders::utils::like_any(&search_fields, search);
+            if !condition.is_empty() {
+                data_builder.add_condition(&condition, params);
             }
         }
 

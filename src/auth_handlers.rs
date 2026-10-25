@@ -1416,11 +1416,9 @@ pub async fn get_user_activity(
 
     if let Some(ref action_type) = query.action_type {
         if action_type != "all" {
-            sql.push_str(" AND LOWER(action) LIKE ?");
-            let escaped = crate::query_builders::utils::escape_like_value(
-                &action_type.to_lowercase()
-            );
-            params.push(format!("%{}%", escaped));
+            sql.push_str(" AND ");
+            sql.push_str(&crate::query_builders::utils::like_sql("LOWER(action)"));
+            params.push(crate::query_builders::utils::like_contains(&action_type.to_lowercase()));
         }
     }
     if let Some(ref date_from) = query.date_from {

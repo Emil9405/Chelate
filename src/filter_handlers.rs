@@ -39,13 +39,8 @@ fn validate_sort_field<'a>(field: &'a str, allowed: &[&str]) -> Option<&'a str> 
     }
 }
 
-/// Экранирование спецсимволов LIKE
-fn escape_like_pattern(pattern: &str) -> String {
-    pattern
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
+// Экранирование спецсимволов LIKE (shared with query_builders)
+use crate::query_builders::utils::escape_like_value as escape_like_pattern;
 
 // === Структура для чтения из БД ===
 #[derive(Debug, sqlx::FromRow)]

@@ -9,7 +9,7 @@ use sqlx::{QueryBuilder, Sqlite};
 use log::warn;
 
 use super::{Filter, FilterGroup, FilterItem, FilterOperator, FilterValue, FieldWhitelist};
-use crate::query_builders::utils::{escape_like_value, is_safe_report_field};
+use crate::query_builders::utils::{like_contains, like_prefix, like_suffix, like_sql, is_safe_report_field};
 
 /// Построитель фильтров с защитой от SQL-инъекций
 pub struct FilterBuilder<'a> {
@@ -91,22 +91,19 @@ impl<'a> FilterBuilder<'a> {
             FilterOperator::Like => {
                 let value = filter.value.as_ref().ok_or("Value required for LIKE")?;
                 let param = value.to_string_value().map_err(|e| e.to_string())?;
-                let escaped = escape_like_value(&param);
-                Ok((format!("{} LIKE ?", field), vec![format!("%{}%", escaped)]))
+                Ok((like_sql(field), vec![like_contains(&param)]))
             }
             
             FilterOperator::StartsWith => {
                 let value = filter.value.as_ref().ok_or("Value required for STARTS_WITH")?;
                 let param = value.to_string_value().map_err(|e| e.to_string())?;
-                let escaped = escape_like_value(&param);
-                Ok((format!("{} LIKE ?", field), vec![format!("{}%", escaped)]))
+                Ok((like_sql(field), vec![like_prefix(&param)]))
             }
             
             FilterOperator::EndsWith => {
                 let value = filter.value.as_ref().ok_or("Value required for ENDS_WITH")?;
                 let param = value.to_string_value().map_err(|e| e.to_string())?;
-                let escaped = escape_like_value(&param);
-                Ok((format!("{} LIKE ?", field), vec![format!("%{}", escaped)]))
+                Ok((like_sql(field), vec![like_suffix(&param)]))
             }
             
             FilterOperator::In | FilterOperator::NotIn => {
@@ -261,21 +258,24 @@ impl<'a> FilterBuilder<'a> {
                 let param = value.to_string_value().map_err(|e| e.to_string())?;
                 builder.push(field);
                 builder.push(" LIKE ");
-                builder.push_bind(format!("%{}%", escape_like_value(&param)));
+                builder.push_bind(like_contains(&param));
+                builder.push(" ESCAPE '\\'");
             }
             FilterOperator::StartsWith => {
                 let value = filter.value.as_ref().ok_or("Value required")?;
                 let param = value.to_string_value().map_err(|e| e.to_string())?;
                 builder.push(field);
                 builder.push(" LIKE ");
-                builder.push_bind(format!("{}%", escape_like_value(&param)));
+                builder.push_bind(like_prefix(&param));
+                builder.push(" ESCAPE '\\'");
             }
             FilterOperator::EndsWith => {
                 let value = filter.value.as_ref().ok_or("Value required")?;
                 let param = value.to_string_value().map_err(|e| e.to_string())?;
                 builder.push(field);
                 builder.push(" LIKE ");
-                builder.push_bind(format!("%{}", escape_like_value(&param)));
+                builder.push_bind(like_suffix(&param));
+                builder.push(" ESCAPE '\\'");
             }
             FilterOperator::In | FilterOperator::NotIn => {
                 let values = filter.value.as_ref()

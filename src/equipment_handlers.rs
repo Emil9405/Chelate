@@ -1116,45 +1116,28 @@ pub async fn search_equipment(
         return Err(ApiError::bad_request("Search query cannot be empty"));
     }
 
-    let limit = query.limit.unwrap_or(20).min(100);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100); // LIMIT -1 is "no limit" in SQLite
 
-    // Проверяем доступность FTS
-    let fts_available: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='equipment_fts'"
-    )
-        .fetch_one(&app_state.db_pool)
-        .await
-        .unwrap_or(false);
-
-    let equipment: Vec<Equipment> = if fts_available {
-        // FTS поиск
-        let escaped_term = search_term.replace("\"", "\"\"");
-        let sql = format!(
-            r#"SELECT e.* FROM equipment e
-               JOIN equipment_fts f ON e.id = f.equipment_id
-               WHERE equipment_fts MATCH '"{}"'
-               ORDER BY rank
-               LIMIT ?"#,
-            escaped_term
-        );
-
-        sqlx::query_as::<_, Equipment>(&sql)
-            .bind(limit)
-            .fetch_all(&app_state.db_pool)
-            .await?
-    } else {
-        // Fallback на LIKE
-        let pattern = format!("%{}%", search_term);
-        sqlx::query_as::<_, Equipment>(
-            "SELECT * FROM equipment WHERE name LIKE ? OR description LIKE ? OR location LIKE ? ORDER BY name LIMIT ?"
-        )
-            .bind(&pattern)
-            .bind(&pattern)
-            .bind(&pattern)
-            .bind(limit)
-            .fetch_all(&app_state.db_pool)
-            .await?
-    };
+    // LIKE over the equipment columns. The old FTS branch put the search text
+    // into the SQL with format! (a quote broke out of the MATCH string) and
+    // read equipment_fts, which the schema never creates; it also listed
+    // archived equipment.
+    let (condition, params) = crate::query_builders::utils::like_any(
+        &["name", "manufacturer", "model", "serial_number", "location", "description"],
+        search_term,
+    );
+    let sql = format!(
+        "SELECT * FROM equipment WHERE deleted_at IS NULL AND {} ORDER BY name LIMIT ?",
+        condition
+    );
+    let mut db_query = sqlx::query_as::<_, Equipment>(&sql);
+    for p in &params {
+        db_query = db_query.bind(p);
+    }
+    let equipment: Vec<Equipment> = db_query
+        .bind(limit)
+        .fetch_all(&app_state.db_pool)
+        .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(equipment)))
 }
