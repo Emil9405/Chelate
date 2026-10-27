@@ -30,6 +30,8 @@ const fmtWhen = (v) => {
   });
 };
 
+const shelfLabel = (p) => (p ? (p.zone_name ? `${p.zone_name} / ${p.name}` : p.name) : '');
+
 const shortCode = (id) => (id ? id.replace(/-/g, '').slice(0, 8).toUpperCase() : '');
 
 const bottleTitle = (i) => (i.container_id
@@ -114,6 +116,15 @@ const InventorySession = ({ id, user, onBack }) => {
   const [notes, setNotes] = useState('');
   const [showFound, setShowFound] = useState(false);
   const [shelfNote, setShelfNote] = useState('');
+  // Another shelf's QR seen by the camera while a shelf is being checked:
+  // asked before switching, so a label caught by accident moves nothing.
+  const [pendingShelf, setPendingShelf] = useState(null); // { id, path }
+  // false until the shelf is picked (list, shelf QR, or a bottle scanned on
+  // it): the first shelf QR of a check just picks the shelf.
+  const shelfChosenRef = useRef(false);
+  // "Stay" answered: the same label is ignored for a while or until a bottle
+  // is scanned, so a label left in view does not ask again every 3 s.
+  const declinedRef = useRef({ id: null, until: 0 });
 
   const load = useCallback(async () => {
     try {
@@ -129,8 +140,23 @@ const InventorySession = ({ id, user, onBack }) => {
 
   const open = detail?.session?.status === 'open';
 
-  // A shelf's QR label picks the shelf being checked (when it is part of this check)
-  const switchShelf = useCallback(async (code, positions) => {
+  const applyShelf = useCallback((shelf) => {
+    setShelfId(shelf.id);
+    setLast(null);
+    setShelfNote(shelf.path);
+    setPendingShelf(null);
+    shelfChosenRef.current = true;
+    declinedRef.current = { id: null, until: 0 };
+  }, []);
+
+  const stayOnShelf = useCallback(() => {
+    if (pendingShelf) declinedRef.current = { id: pendingShelf.id, until: Date.now() + 15000 };
+    setPendingShelf(null);
+  }, [pendingShelf]);
+
+  // A shelf's QR label picks the shelf being checked (when it is part of this
+  // check). `ask`: the code came from the camera or a photo, not typed.
+  const switchShelf = useCallback(async (code, positions, ask) => {
     const r = await api.resolveCode(code);
     const loc = r.location;
     if (!loc) throw new Error('Not a location label');
@@ -140,12 +166,22 @@ const InventorySession = ({ id, user, onBack }) => {
     if (!positions.some(p => p.id === loc.id)) {
       throw new Error(`${loc.path} is not part of this check.`);
     }
-    setShelfId(loc.id);
-    setLast(null);
-    setShelfNote(loc.path);
-  }, []);
+    if (loc.id === shelfId) {
+      shelfChosenRef.current = true;
+      setShelfNote(`${loc.path} (already this shelf)`);
+      return 'same';
+    }
+    if (ask && shelfChosenRef.current) {
+      const d = declinedRef.current;
+      if (d.id === loc.id && Date.now() < d.until) return 'ignored';
+      setPendingShelf({ id: loc.id, path: loc.path });
+      return 'asked';
+    }
+    applyShelf({ id: loc.id, path: loc.path });
+    return 'switched';
+  }, [shelfId, applyShelf]);
 
-  const submitCode = useCallback(async (code) => {
+  const submitCode = useCallback(async (code, { typed = false } = {}) => {
     if (busyRef.current || !shelfId) return;
     busyRef.current = true;
     setBusy(true);
@@ -153,11 +189,14 @@ const InventorySession = ({ id, user, onBack }) => {
     setShelfNote('');
     try {
       if (looksLikeLocationCode(code)) {
-        await switchShelf(code, detail ? detail.positions : []);
-        if (navigator.vibrate) navigator.vibrate(60);
+        const outcome = await switchShelf(code, detail ? detail.positions : [], !typed);
+        if (navigator.vibrate && outcome === 'asked') navigator.vibrate([120, 60, 120]);
+        else if (navigator.vibrate && outcome !== 'ignored') navigator.vibrate(60);
         return;
       }
       const r = await api.inventoryScan(id, code, shelfId);
+      shelfChosenRef.current = true;
+      declinedRef.current = { id: null, until: 0 };
       setLast(r);
       if (navigator.vibrate && r.result !== 'found') navigator.vibrate([60, 80, 60]);
       await load();
@@ -171,7 +210,18 @@ const InventorySession = ({ id, user, onBack }) => {
   }, [id, shelfId, load, detail, switchShelf]);
 
   const scanner = useCameraScanner({ onCode: submitCode, continuous: true, cooldownMs: 3000 });
-  const { liveSupported, start, stop, cameraOn } = scanner;
+  const { liveSupported, start, stop, cameraOn, pause } = scanner;
+
+  // Nothing is decoded while the shelf question is open
+  useEffect(() => { pause(!!pendingShelf); }, [pendingShelf, pause]);
+
+  // The question sits under the centred camera: bring its buttons above the tab bar
+  const questionRef = useRef(null);
+  useEffect(() => {
+    if (pendingShelf && questionRef.current && questionRef.current.scrollIntoView) {
+      questionRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [pendingShelf]);
 
   useEffect(() => {
     if (open && liveSupported && isMobile && canAct) start();
@@ -355,7 +405,10 @@ const InventorySession = ({ id, user, onBack }) => {
           <label htmlFor="inv-shelf" style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#4a5568', marginBottom: '4px' }}>
             Shelf you are checking
           </label>
-          <select id="inv-shelf" value={shelfId} onChange={e => { setShelfId(e.target.value); setLast(null); setShelfNote(''); }}
+          <select id="inv-shelf" value={shelfId} onChange={e => {
+            setShelfId(e.target.value); setLast(null); setShelfNote(''); setPendingShelf(null);
+            shelfChosenRef.current = true; declinedRef.current = { id: null, until: 0 };
+          }}
             disabled={detail.positions.length === 1}
             style={{ width: '100%', height: '44px', padding: '0 10px', border: '1px solid #e2e8f0', borderRadius: '10px', background: 'white' }}>
             {detail.positions.map(p => (
@@ -382,7 +435,31 @@ const InventorySession = ({ id, user, onBack }) => {
         <>
           <canvas ref={scanner.canvasRef} style={{ display: 'none' }} />
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} style={{ display: 'none' }} />
-          {liveSupported && <CameraView scanner={scanner} hidden={!isMobile && !cameraOn} flash={lastStyle ? lastStyle.flash : null} />}
+          {liveSupported && <CameraView scanner={scanner} hidden={!isMobile && !cameraOn} flash={pendingShelf ? '#3182ce' : lastStyle ? lastStyle.flash : null} />}
+
+          {pendingShelf && (
+            <div ref={questionRef} role="alertdialog" aria-labelledby="inv-switch-title"
+              style={{
+                ...card, marginTop: '10px', borderColor: '#3182ce', borderWidth: '2px', background: '#ebf8ff',
+                scrollMarginTop: '64px', scrollMarginBottom: 'calc(72px + env(safe-area-inset-bottom))',
+              }}>
+              <div id="inv-switch-title" style={{ fontWeight: 800, color: '#1a365d', overflowWrap: 'anywhere' }}>
+                Switch to {shelfLabel(detail.positions.find(p => p.id === pendingShelf.id)) || pendingShelf.path}?
+              </div>
+              <div style={{ fontSize: '0.82rem', color: '#2a4365', marginTop: '4px', overflowWrap: 'anywhere' }}>
+                The camera saw another shelf&apos;s label. You are checking <b>{shelfLabel(shelf) || 'this shelf'}</b>.
+                Scanning is paused until you answer.
+              </div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
+                <Button variant="primary" onClick={() => applyShelf(pendingShelf)} style={{ height: '44px', flex: '1 1 140px' }}>
+                  Switch shelf
+                </Button>
+                <Button variant="secondary" onClick={stayOnShelf} style={{ height: '44px', flex: '1 1 140px' }}>
+                  Stay here
+                </Button>
+              </div>
+            </div>
+          )}
           {!liveSupported && (
             <div style={{ background: '#ebf8ff', border: '1px solid #bee3f8', color: '#2a4365', borderRadius: '12px', padding: '10px 12px', fontSize: '0.82rem' }}>
               Live scanning needs HTTPS. Take a photo of each label instead.
@@ -420,7 +497,7 @@ const InventorySession = ({ id, user, onBack }) => {
             <Button variant={liveSupported ? 'secondary' : 'primary'} onClick={() => fileRef.current && fileRef.current.click()} style={{ height: '44px' }} disabled={busy}>
               {liveSupported ? (isMobile ? 'Take a photo instead' : 'Read a photo of the label') : 'Take a photo of the label'}
             </Button>
-            <form onSubmit={e => { e.preventDefault(); if (manual.trim()) { submitCode(manual.trim()); setManual(''); } }} style={{ display: 'flex', gap: '8px' }}>
+            <form onSubmit={e => { e.preventDefault(); if (manual.trim()) { submitCode(manual.trim(), { typed: true }); setManual(''); } }} style={{ display: 'flex', gap: '8px' }}>
               <input value={manual} onChange={e => setManual(e.target.value)} placeholder="Code under the symbol"
                 aria-label="Label code" autoFocus={!isMobile} autoComplete="off" spellCheck={false}
                 style={{ flex: 1, minWidth: 0, height: '44px', padding: '0 12px', border: '1px solid #e2e8f0', borderRadius: '10px', fontFamily: 'monospace' }} />
