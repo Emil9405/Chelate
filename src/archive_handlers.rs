@@ -217,9 +217,10 @@ pub async fn hard_delete_item(
             crate::soft_delete::hard_delete_record(pool, "reagents", &body.id).await?
         }
         "equipment" => {
-            // Удаляем физические файлы с диска перед hard delete
-            cleanup_equipment_files(pool, &body.id).await;
-            crate::soft_delete::hard_delete_record(pool, "equipment", &body.id).await?
+            // Record first (archived only), then its files and folder. Files
+            // used to go first, so an id that was not in the archive lost its
+            // files and kept its records.
+            crate::equipment_files::purge_equipment(pool, &body.id).await?
         }
         other => {
             return Err(ApiError::bad_request(&format!(
@@ -286,23 +287,6 @@ async fn check_name_conflict(
     }
 
     Ok(())
-}
-
-/// Удалить физические файлы оборудования с диска
-async fn cleanup_equipment_files(pool: &SqlitePool, equipment_id: &str) {
-    if let Ok(files) = sqlx::query_as::<_, (String,)>(
-        "SELECT file_path FROM equipment_files WHERE equipment_id = ?"
-    )
-    .bind(equipment_id)
-    .fetch_all(pool)
-    .await
-    {
-        for (path,) in files {
-            if let Err(e) = std::fs::remove_file(&path) {
-                log::warn!("Failed to remove file {}: {}", path, e);
-            }
-        }
-    }
 }
 
 fn capitalize(s: &str) -> String {

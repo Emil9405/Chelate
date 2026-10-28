@@ -56,6 +56,7 @@ mod label_handlers;
 mod location_labels;
 mod supplier_codes;
 mod supplier_intake;
+mod equipment_files;
 mod reagent_stock;
 mod routes;
 pub mod soft_delete;
@@ -101,6 +102,15 @@ async fn main() -> anyhow::Result<()> {
     let pool = create_database_pool(&config.database).await?;
     db::run_migrations(&pool).await?;
     jwt_rotation::init_rotation_table(&pool).await?;
+    match equipment_files::reorganize_all(&pool).await {
+        Ok(r) if r.moved + r.orphaned + r.missing > 0 => log::info!(
+            "Equipment files: {} moved into equipment/<name>/(photos|documents|parts), \
+             {} photos of deleted parts set aside in parts/_deleted, {} missing on disk",
+            r.moved, r.orphaned, r.missing
+        ),
+        Ok(_) => {}
+        Err(e) => log::warn!("Equipment files not reorganised: {}", e),
+    }
     match consumption::sync_low_stock_statuses(&pool).await {
         Ok(n) => log::info!(
             "Low-stock threshold: {}% of original quantity ({} batch statuses updated)",

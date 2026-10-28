@@ -317,7 +317,7 @@ Configuration is read from the environment and from a `.env` file in the working
 | `AUTH_TOKEN_EXPIRATION_HOURS` | `24` | Token lifetime |
 | `AUTH_MAX_LOGIN_ATTEMPTS` / `AUTH_LOCKOUT_DURATION_MINUTES` | `5` / `15` | Login lockout |
 | `AUTH_ALLOW_SELF_REGISTRATION` | `false` | Open registration |
-| `EQUIPMENT_FILES_DIR` | `./uploads/equipment` | Where equipment files are stored |
+| `EQUIPMENT_FILES_DIR` | `./uploads/equipment` | Where equipment files are stored: `<equipment>_<id8>/photos`, `/documents`, `/parts/<part>_<id8>/photos` (files from older layouts are moved at startup) |
 | `RUST_LOG` | – | Log level |
 
 Example `.env` for a server:

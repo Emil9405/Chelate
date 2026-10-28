@@ -23,6 +23,14 @@ pub struct Equipment {
     pub model: Option<String>,
     pub purchase_date: Option<String>,
     pub warranty_until: Option<String>,
+    /// Date of the last completed maintenance (YYYY-MM-DD)
+    #[sqlx(default)]
+    pub last_maintenance: Option<String>,
+    /// Nearest planned maintenance, or last + interval when none is planned
+    #[sqlx(default)]
+    pub next_maintenance: Option<String>,
+    #[sqlx(default)]
+    pub maintenance_interval_days: Option<i32>,
     pub created_by: Option<String>,
     pub updated_by: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -62,6 +70,10 @@ pub struct CreateEquipmentRequest {
 
     pub purchase_date: Option<String>,
     pub warranty_until: Option<String>,
+
+    /// Days between maintenances; 0 = no regular maintenance
+    #[validate(range(min = 0, max = 3650, message = "Maintenance interval must be 0-3650 days"))]
+    pub maintenance_interval_days: Option<i32>,
 }
 
 /// Расширенный запрос на создание (с большим списком допустимых типов)
@@ -128,6 +140,12 @@ pub struct UpdateEquipmentRequest {
 
     pub purchase_date: Option<String>,
     pub warranty_until: Option<String>,
+
+    #[serde(rename = "type_")]
+    pub type_: Option<String>,
+
+    #[validate(range(min = 0, max = 3650, message = "Maintenance interval must be 0-3650 days"))]
+    pub maintenance_interval_days: Option<i32>,
 }
 
 pub type UpdateEquipmentRequestExtended = UpdateEquipmentRequest;
@@ -273,6 +291,11 @@ pub struct CreateMaintenanceRequest {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateMaintenanceRequest {
+    #[validate(length(min = 1, max = 50, message = "Maintenance type is required"))]
+    pub maintenance_type: Option<String>,
+
+    pub scheduled_date: Option<String>,
+
     #[validate(length(max = 50, message = "Status cannot exceed 50 characters"))]
     pub status: Option<String>,
 
