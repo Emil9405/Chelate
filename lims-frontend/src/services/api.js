@@ -844,7 +844,8 @@ export const api = {
     },
 
     downloadEquipmentFile: async (equipmentId, fileId, filename) => {
-        const blob = await apiBlobCall(`${API_V1_BASE}/equipment/${equipmentId}/files/${fileId}/download`);
+        // ?download=1: saved even when the browser could show it (PDF, images)
+        const blob = await apiBlobCall(`${API_V1_BASE}/equipment/${equipmentId}/files/${fileId}?download=1`);
         api.triggerDownload(blob, filename || 'download');
     },
 
@@ -1267,7 +1268,9 @@ export const api = {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
+        // Revoked at once, the browser may not have started the download yet
+        // and saves it as "download" without the file name.
+        setTimeout(() => window.URL.revokeObjectURL(url), 30000);
     }
 };
 

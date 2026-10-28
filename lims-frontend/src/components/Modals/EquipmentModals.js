@@ -37,8 +37,41 @@ const EQUIPMENT_STATUSES = {
   retired: { label: 'Retired', color: 'secondary' }
 };
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
+// Same base as services/api.js: in a production build the API is on this origin
+const API_BASE_URL = process.env.REACT_APP_API_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const getFileUrl = (equipmentId, fileId) => `${API_BASE_URL}/api/v1/public/equipment/${equipmentId}/files/${fileId}`;
+
+// Files the browser shows itself (the server sends them inline)
+const isViewable = (mime) => !!mime && (mime.startsWith('image/') || mime === 'application/pdf' || mime === 'text/plain');
+
+// Values of the equipment_maintenance CHECK constraints
+const MAINTENANCE_TYPES = {
+  calibration: 'Calibration',
+  inspection: 'Inspection',
+  cleaning: 'Cleaning',
+  repair: 'Repair',
+  replacement: 'Part replacement',
+  other: 'Other',
+};
+
+const MAINTENANCE_STATUSES = {
+  scheduled: { label: 'Scheduled', color: 'info' },
+  in_progress: { label: 'In progress', color: 'warning' },
+  completed: { label: 'Completed', color: 'success' },
+  cancelled: { label: 'Cancelled', color: 'secondary' },
+  overdue: { label: 'Overdue', color: 'danger' },
+};
+
+const pad2 = (n) => String(n).padStart(2, '0');
+/** Today as YYYY-MM-DD in the user's time zone (what <input type="date"> uses) */
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+/** YYYY-MM-DD shown as a local date without a time-zone shift */
+const fmtDay = (v) => {
+  if (!v) return '-';
+  const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString() : String(v);
+};
+const isOverdue = (m) => (m.status === 'scheduled' || m.status === 'in_progress') && (m.scheduled_date || '').slice(0, 10) < todayStr();
 
 // ==================== STYLES ====================
 
@@ -262,7 +295,7 @@ const EquipmentFormModal = ({ isOpen, onClose, title, equipment = null, existing
         manufacturer: equipment.manufacturer || '', model: equipment.model || '',
         purchase_date: equipment.purchase_date?.split('T')[0] || '',
         warranty_until: equipment.warranty_until?.split('T')[0] || '',
-        maintenance_interval_days: equipment.maintenance_interval_days || 90
+        maintenance_interval_days: equipment.maintenance_interval_days ?? 90
       });
     } else {
       setFormData({
@@ -287,7 +320,7 @@ const EquipmentFormModal = ({ isOpen, onClose, title, equipment = null, existing
       Object.keys(payload).forEach(key => {
         if (payload[key] === '' || payload[key] === null) delete payload[key];
       });
-      if (payload.maintenance_interval_days) payload.maintenance_interval_days = parseInt(payload.maintenance_interval_days);
+      if (payload.maintenance_interval_days !== undefined) payload.maintenance_interval_days = parseInt(payload.maintenance_interval_days, 10) || 0;
       if (payload.quantity) payload.quantity = parseInt(payload.quantity);
       
       let response;
@@ -380,6 +413,7 @@ const EquipmentFormModal = ({ isOpen, onClose, title, equipment = null, existing
           <div style={styles.row}>
             <FormField label="Purchase Date"><input type="date" name="purchase_date" value={formData.purchase_date} onChange={handleChange} style={styles.input} /></FormField>
             <FormField label="Warranty Until"><input type="date" name="warranty_until" value={formData.warranty_until} onChange={handleChange} style={styles.input} /></FormField>
+            <FormField label="Maintenance every (days)"><input type="number" name="maintenance_interval_days" aria-label="Maintenance every (days)" min="0" max="3650" value={formData.maintenance_interval_days} onChange={handleChange} style={styles.input} /></FormField>
           </div>
           <div style={styles.fullRow}>
             <FormField label="Location"><input type="text" name="location" value={formData.location} onChange={handleChange} style={styles.input} /></FormField>
@@ -515,53 +549,108 @@ export const PartFormModal = ({ equipmentId, part, existingImageUrl, onClose, on
 
 // ==================== MAINTENANCE FORM MODAL ====================
 
-export const MaintenanceFormModal = ({ equipmentId, onClose, onSave }) => {
-  const [formData, setFormData] = useState({ 
-    maintenance_type: 'scheduled', 
-    scheduled_date: new Date().toISOString().split('T')[0], 
-    description: '', 
-    cost: '' 
+export const MaintenanceFormModal = ({ equipmentId, record = null, onClose, onSave }) => {
+  const isEdit = !!record;
+  const [formData, setFormData] = useState({
+    maintenance_type: record?.maintenance_type && MAINTENANCE_TYPES[record.maintenance_type] ? record.maintenance_type : 'calibration',
+    scheduled_date: (record?.scheduled_date || todayStr()).slice(0, 10),
+    description: record?.description || '',
+    cost: record?.cost ?? '',
+    notes: record?.notes || '',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const set = (k) => (e) => setFormData({ ...formData, [k]: e.target.value });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.scheduled_date) { setError('Date is required'); return; }
     try {
-      setLoading(true); 
+      setLoading(true);
       setError('');
-      const payload = { maintenance_type: formData.maintenance_type, scheduled_date: formData.scheduled_date };
-      if (formData.description?.trim()) payload.description = formData.description.trim();
-      if (formData.cost && parseFloat(formData.cost) > 0) payload.cost = parseFloat(formData.cost);
-      await api.createMaintenance(equipmentId, payload);
+      const payload = {
+        maintenance_type: formData.maintenance_type,
+        scheduled_date: formData.scheduled_date,
+        description: formData.description.trim(),
+        notes: formData.notes.trim(),
+      };
+      const cost = parseFloat(formData.cost);
+      if (!Number.isNaN(cost) && cost >= 0) payload.cost = cost;
+      if (!isEdit) {
+        if (!payload.description) delete payload.description;
+        if (!payload.notes) delete payload.notes;
+        await api.createMaintenance(equipmentId, payload);
+      } else {
+        await api.updateMaintenance(equipmentId, record.id, payload);
+      }
       onSave();
-    } catch (err) { 
-      setError(err.message); 
-    } finally { 
-      setLoading(false); 
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <Modal isOpen={true} onClose={onClose} title="Schedule Maintenance">
-      {error && <div style={styles.error}>{error}</div>}
+    <Modal isOpen={true} onClose={onClose} title={isEdit ? 'Edit Maintenance' : 'Schedule Maintenance'}>
+      {error && <div role="alert" style={styles.error}>{error}</div>}
       <form onSubmit={handleSubmit}>
         <div style={styles.row}>
-          <FormSelect label="Type" value={formData.maintenance_type} onChange={(e) => setFormData({...formData, maintenance_type: e.target.value})}>
-            <option value="scheduled">Scheduled</option>
-            <option value="calibration">Calibration</option>
-            <option value="repair">Repair</option>
-            <option value="inspection">Inspection</option>
-            <option value="cleaning">Cleaning</option>
-            <option value="part_replacement">Part Replacement</option>
+          <FormSelect label="Type" aria-label="Maintenance type" value={formData.maintenance_type} onChange={set('maintenance_type')}>
+            {Object.entries(MAINTENANCE_TYPES).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </FormSelect>
-          <FormInput label="Date" required type="date" value={formData.scheduled_date} onChange={(e) => setFormData({...formData, scheduled_date: e.target.value})} />
+          <FormInput label="Date" aria-label="Maintenance date" required type="date" value={formData.scheduled_date} onChange={set('scheduled_date')} />
         </div>
-        <FormInput label="Cost" type="number" step="0.01" min="0" value={formData.cost} onChange={(e) => setFormData({...formData, cost: e.target.value})} />
-        <FormTextarea label="Description" value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} />
+        <FormInput label="Cost" aria-label="Cost" type="number" step="0.01" min="0" value={formData.cost} onChange={set('cost')} />
+        <FormTextarea label="Description" aria-label="Description" value={formData.description} onChange={set('description')} maxLength={2000} />
+        <FormTextarea label="Notes" aria-label="Notes" value={formData.notes} onChange={set('notes')} maxLength={1000} />
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
           <Button variant="secondary" type="button" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" type="submit" disabled={loading}>{loading ? 'Scheduling...' : 'Schedule'}</Button>
+          <Button variant="primary" type="submit" disabled={loading}>{loading ? 'Saving...' : isEdit ? 'Save' : 'Schedule'}</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+/** Mark maintenance as done: who, when, notes */
+const CompleteMaintenanceModal = ({ equipmentId, record, defaultBy, onClose, onSave }) => {
+  const [form, setForm] = useState({ performed_by: record.performed_by || defaultBy || '', completed_date: todayStr(), notes: record.notes || '' });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.performed_by.trim()) { setError('Who did the maintenance?'); return; }
+    try {
+      setLoading(true);
+      setError('');
+      await api.completeMaintenance(equipmentId, record.id, {
+        performed_by: form.performed_by.trim(),
+        completed_date: form.completed_date || undefined,
+        notes: form.notes.trim() || undefined,
+      });
+      onSave();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title={`Complete: ${MAINTENANCE_TYPES[record.maintenance_type] || record.maintenance_type}`}>
+      {error && <div role="alert" style={styles.error}>{error}</div>}
+      <form onSubmit={submit}>
+        <FormInput label="Performed by" aria-label="Performed by" required value={form.performed_by} maxLength={255}
+          onChange={(e) => setForm({ ...form, performed_by: e.target.value })} />
+        <FormInput label="Date done" aria-label="Date done" type="date" value={form.completed_date}
+          onChange={(e) => setForm({ ...form, completed_date: e.target.value })} />
+        <FormTextarea label="Notes" aria-label="Completion notes" value={form.notes} maxLength={1000}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+        <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+          <Button variant="secondary" type="button" onClick={onClose}>Cancel</Button>
+          <Button variant="success" type="submit" disabled={loading}>{loading ? 'Saving...' : 'Mark as done'}</Button>
         </div>
       </form>
     </Modal>
@@ -575,6 +664,7 @@ export const EquipmentDetailsModal = ({ equipment, user, onClose, onUpdate }) =>
   const [parts, setParts] = useState([]);
   const [maintenance, setMaintenance] = useState([]);
   const [files, setFiles] = useState([]);
+  const [current, setCurrent] = useState(equipment);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -583,14 +673,17 @@ export const EquipmentDetailsModal = ({ equipment, user, onClose, onUpdate }) =>
   const loadAll = useCallback(async () => {
     try {
       setLoading(true);
-      const [p, m, f] = await Promise.all([
+      const [p, m, f, e] = await Promise.all([
         api.getEquipmentParts(equipment.id),
         api.getEquipmentMaintenance(equipment.id),
-        api.getEquipmentFiles(equipment.id)
+        api.getEquipmentFiles(equipment.id),
+        api.getEquipmentItem(equipment.id).catch(() => null),
       ]);
       setParts(Array.isArray(p) ? p : []);
       setMaintenance(Array.isArray(m) ? m : []);
       setFiles(Array.isArray(f) ? f : []);
+      const fresh = e && (e.equipment || e);
+      if (fresh && fresh.id) setCurrent(fresh);
     } catch (err) { 
       setError(err.message); 
     } finally { 
@@ -648,7 +741,8 @@ export const EquipmentDetailsModal = ({ equipment, user, onClose, onUpdate }) =>
           </div>
 
           {/* Tabs */}
-          <div style={{ display: 'flex', borderBottom: '2px solid #e2e8f0', marginBottom: '1.5rem' }}>
+          {/* wraps on a phone, so Files is not pushed off screen */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', borderBottom: '2px solid #e2e8f0', marginBottom: '1.5rem' }}>
             {tabs.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
                 padding: '0.75rem 1.5rem', border: 'none', background: 'none', cursor: 'pointer',
@@ -663,9 +757,9 @@ export const EquipmentDetailsModal = ({ equipment, user, onClose, onUpdate }) =>
 
           {loading && <Loading />}
 
-          {activeTab === 'details' && !loading && <DetailsTab equipment={equipment} />}
+          {activeTab === 'details' && !loading && <DetailsTab equipment={current} />}
           {activeTab === 'parts' && !loading && <PartsTab equipmentId={equipment.id} parts={parts} files={files} canEdit={canEdit()} onRefresh={handleRefresh} />}
-          {activeTab === 'maintenance' && !loading && <MaintenanceTab equipmentId={equipment.id} maintenance={maintenance} canEdit={canEdit()} onRefresh={handleRefresh} />}
+          {activeTab === 'maintenance' && !loading && <MaintenanceTab equipment={current} maintenance={maintenance} canEdit={canEdit()} userName={user?.name || user?.username || ''} onRefresh={handleRefresh} />}
           {activeTab === 'files' && !loading && <FilesTab equipmentId={equipment.id} files={files} canEdit={canEdit()} onRefresh={handleRefresh} />}
         </div>
       </div>
@@ -686,8 +780,11 @@ const DetailsTab = ({ equipment }) => {
     { key: 'manufacturer', label: 'Manufacturer' },
     { key: 'model', label: 'Model' },
     { key: 'location', label: 'Location' },
-    { key: 'purchase_date', label: 'Purchase Date', render: (v) => v ? new Date(v).toLocaleDateString() : '-' },
-    { key: 'warranty_until', label: 'Warranty Until', render: (v) => v ? new Date(v).toLocaleDateString() : '-' },
+    { key: 'purchase_date', label: 'Purchase Date', render: fmtDay },
+    { key: 'warranty_until', label: 'Warranty Until', render: fmtDay },
+    { key: 'maintenance_interval_days', label: 'Maintenance Every', render: (v) => (v ? `${v} days` : '-') },
+    { key: 'last_maintenance', label: 'Last Maintenance', render: fmtDay },
+    { key: 'next_maintenance', label: 'Next Maintenance', render: fmtDay },
     { key: 'description', label: 'Description' },
   ];
 
@@ -785,59 +882,96 @@ const PartsTab = ({ equipmentId, parts, files, canEdit, onRefresh }) => {
   );
 };
 
-const MaintenanceTab = ({ equipmentId, maintenance, canEdit, onRefresh }) => {
-  const [showAddModal, setShowAddModal] = useState(false);
-  
-  const handleDelete = async (id) => { 
-    if (window.confirm('Delete?')) { 
-      await api.deleteMaintenance(equipmentId, id); 
-      onRefresh(); 
-    } 
+const MaintenanceTab = ({ equipment, maintenance, canEdit, userName, onRefresh }) => {
+  const equipmentId = equipment.id;
+  const [editing, setEditing] = useState(null);     // record, or {} for a new one
+  const [completing, setCompleting] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const run = async (fn) => {
+    setBusy(true);
+    setError('');
+    try { await fn(); onRefresh(); } catch (err) { setError(err.message || 'Failed'); } finally { setBusy(false); }
   };
-  
-  const handleComplete = async (id) => { 
-    const by = prompt('Performed by:'); 
-    if (by) { 
-      await api.completeMaintenance(equipmentId, id, { performed_by: by }); 
-      onRefresh(); 
-    } 
+  const setStatus = (m, status) => run(() => api.updateMaintenance(equipmentId, m.id, { status }));
+  const remove = (m) => {
+    if (!window.confirm(`Delete this ${MAINTENANCE_TYPES[m.maintenance_type] || 'maintenance'} record?`)) return;
+    run(() => api.deleteMaintenance(equipmentId, m.id));
   };
-  
-  const statusColors = { scheduled: 'info', in_progress: 'warning', completed: 'success', cancelled: 'secondary', overdue: 'danger' };
+
+  // planned first (soonest on top), then history (latest on top)
+  const active = maintenance.filter(m => m.status === 'scheduled' || m.status === 'in_progress')
+    .sort((a, b) => (a.scheduled_date || '').localeCompare(b.scheduled_date || ''));
+  const done = maintenance.filter(m => !(m.status === 'scheduled' || m.status === 'in_progress'))
+    .sort((a, b) => (b.completed_date || b.scheduled_date || '').localeCompare(a.completed_date || a.scheduled_date || ''));
+  const nextOverdue = equipment.next_maintenance && equipment.next_maintenance.slice(0, 10) < todayStr();
+
+  const card = (m) => {
+    const status = isOverdue(m) ? 'overdue' : m.status;
+    const st = MAINTENANCE_STATUSES[status] || { label: status, color: 'secondary' };
+    const typeLabel = MAINTENANCE_TYPES[m.maintenance_type] || m.maintenance_type;
+    const act = (label, onClick, variant = 'secondary') => (
+      <Button size="small" variant={variant} onClick={onClick} disabled={busy} aria-label={`${label} ${typeLabel} ${fmtDay(m.scheduled_date)}`}>{label}</Button>
+    );
+    return (
+      <li key={m.id} data-maintenance={m.id} style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '0.75rem 1rem', marginBottom: '0.75rem', background: status === 'overdue' ? '#fff5f5' : 'white' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 600, color: '#2d3748' }}>{typeLabel}</div>
+            <div style={{ fontSize: '0.8rem', color: '#718096' }}>
+              {m.status === 'completed'
+                ? <>Done {fmtDay(m.completed_date)}{m.performed_by ? ` by ${m.performed_by}` : ''} · planned {fmtDay(m.scheduled_date)}</>
+                : <>Planned {fmtDay(m.scheduled_date)}{m.performed_by ? ` · ${m.performed_by}` : ''}</>}
+              {m.cost != null && m.cost > 0 && <> · cost {m.cost}</>}
+            </div>
+          </div>
+          <Badge variant={st.color}>{st.label}</Badge>
+        </div>
+        {m.description && <div style={{ fontSize: '0.85rem', color: '#4a5568', marginTop: '0.35rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.description}</div>}
+        {m.notes && <div style={{ fontSize: '0.8rem', color: '#718096', marginTop: '0.25rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>Notes: {m.notes}</div>}
+        {canEdit && (
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.6rem' }}>
+            {m.status === 'scheduled' && act('Start', () => setStatus(m, 'in_progress'))}
+            {(m.status === 'scheduled' || m.status === 'in_progress') && act('Complete', () => setCompleting(m), 'success')}
+            {m.status !== 'cancelled' && act('Edit', () => setEditing(m))}
+            {(m.status === 'scheduled' || m.status === 'in_progress') && act('Cancel', () => setStatus(m, 'cancelled'))}
+            {m.status === 'cancelled' && act('Reschedule', () => setStatus(m, 'scheduled'))}
+            {act('Delete', () => remove(m), 'danger')}
+          </div>
+        )}
+      </li>
+    );
+  };
 
   return (
     <div>
-      {canEdit && <div style={{ marginBottom: '1rem' }}><Button variant="primary" onClick={() => setShowAddModal(true)}><i className="fas fa-plus"></i> Schedule</Button></div>}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1.5rem', alignItems: 'center', padding: '0.75rem 1rem', background: '#f8fafc', borderRadius: '8px', marginBottom: '1rem', fontSize: '0.875rem', color: '#4a5568' }}>
+        <span>Every: <b>{equipment.maintenance_interval_days ? `${equipment.maintenance_interval_days} days` : '-'}</b></span>
+        <span>Last: <b>{fmtDay(equipment.last_maintenance)}</b></span>
+        <span>Next: <b style={{ color: nextOverdue ? '#c53030' : undefined }}>{fmtDay(equipment.next_maintenance)}{nextOverdue ? ' (overdue)' : ''}</b></span>
+        {canEdit && <span style={{ marginLeft: 'auto' }}><Button variant="primary" size="small" onClick={() => setEditing({})} disabled={busy}><i className="fas fa-plus"></i> Schedule</Button></span>}
+      </div>
+      {error && <div role="alert" style={styles.error}>{error}</div>}
       {maintenance.length === 0 ? <p style={{ textAlign: 'center', color: '#718096', padding: '2rem' }}>No maintenance records</p> : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ borderBottom: '2px solid #e2e8f0' }}>
-              <th style={{ textAlign: 'left', padding: '0.75rem' }}>Type</th>
-              <th style={{ textAlign: 'left', padding: '0.75rem' }}>Scheduled</th>
-              <th style={{ textAlign: 'left', padding: '0.75rem' }}>Status</th>
-              <th style={{ textAlign: 'left', padding: '0.75rem' }}>Performed By</th>
-              {canEdit && <th style={{ textAlign: 'right', padding: '0.75rem' }}>Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {maintenance.map(m => (
-              <tr key={m.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                <td style={{ padding: '0.75rem' }}>{m.maintenance_type?.replace('_', ' ').toUpperCase()}</td>
-                <td style={{ padding: '0.75rem' }}>{m.scheduled_date ? new Date(m.scheduled_date).toLocaleDateString() : '-'}</td>
-                <td style={{ padding: '0.75rem' }}><Badge variant={statusColors[m.status] || 'secondary'}>{m.status?.toUpperCase()}</Badge></td>
-                <td style={{ padding: '0.75rem', color: '#718096' }}>{m.performed_by || '-'}</td>
-                {canEdit && (
-                  <td style={{ padding: '0.75rem', textAlign: 'right' }}>
-                    {m.status === 'scheduled' && <Button variant="success" size="small" onClick={() => handleComplete(m.id)} style={{ marginRight: '0.5rem' }}><i className="fas fa-check"></i></Button>}
-                    <Button variant="danger" size="small" onClick={() => handleDelete(m.id)}><i className="fas fa-trash"></i></Button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          {active.length > 0 && <ul aria-label="Planned maintenance" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{active.map(card)}</ul>}
+          {done.length > 0 && (
+            <>
+              <h4 style={{ margin: '1rem 0 0.5rem', color: '#4a5568', fontSize: '0.875rem' }}>History</h4>
+              <ul aria-label="Maintenance history" style={{ listStyle: 'none', margin: 0, padding: 0 }}>{done.map(card)}</ul>
+            </>
+          )}
+        </>
       )}
-      {showAddModal && <MaintenanceFormModal equipmentId={equipmentId} onClose={() => setShowAddModal(false)} onSave={() => { setShowAddModal(false); onRefresh(); }} />}
+      {editing && (
+        <MaintenanceFormModal equipmentId={equipmentId} record={editing.id ? editing : null}
+          onClose={() => setEditing(null)} onSave={() => { setEditing(null); onRefresh(); }} />
+      )}
+      {completing && (
+        <CompleteMaintenanceModal equipmentId={equipmentId} record={completing} defaultBy={userName}
+          onClose={() => setCompleting(null)} onSave={() => { setCompleting(null); onRefresh(); }} />
+      )}
     </div>
   );
 };
@@ -865,19 +999,26 @@ const FilesTab = ({ equipmentId, files, canEdit, onRefresh }) => {
     }
   };
 
-  const handleDownload = async (file) => { 
-    try { 
-      await api.downloadEquipmentFile(equipmentId, file.id, file.original_filename); 
-    } catch (err) { 
-      alert(err.message); 
-    } 
+  // A plain link: the server names the file (UTF-8 names intact) and phones
+  // save it reliably, which blob downloads do not always do.
+  const handleDownload = (file) => {
+    const a = document.createElement('a');
+    a.href = `${getFileUrl(equipmentId, file.id)}?download=1`;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   };
   
   const handleDelete = async (fileId) => { 
-    if (window.confirm('Delete?')) { 
+    if (!window.confirm('Delete this file?')) return;
+    try {
+      setUploadError('');
       await api.deleteEquipmentFile(equipmentId, fileId); 
       onRefresh(); 
-    } 
+    } catch (err) {
+      setUploadError(err.message || 'Delete failed');
+    }
   };
 
   const equipmentImages = files.filter(f => f.file_type === 'photo' && !f.part_id);
@@ -938,13 +1079,26 @@ const FilesTab = ({ equipmentId, files, canEdit, onRefresh }) => {
                 <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.5rem' }}>
                   <i className={`fas ${fileTypeIcons[file.file_type] || 'fa-file'}`} style={{ fontSize: '1.5rem', marginRight: '0.75rem', color: '#667eea' }}></i>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ margin: 0, fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.original_filename}</p>
+                    {isViewable(file.mime_type) ? (
+                      <a href={getFileUrl(equipmentId, file.id)} target="_blank" rel="noopener noreferrer"
+                        style={{ display: 'block', margin: 0, fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#2b6cb0' }}>
+                        {file.original_filename}
+                      </a>
+                    ) : (
+                      <p style={{ margin: 0, fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.original_filename}</p>
+                    )}
                     <p style={{ margin: 0, fontSize: '0.75rem', color: '#718096' }}>{FILE_TYPES[file.file_type]} • {(file.file_size / 1024).toFixed(1)} KB</p>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <Button variant="secondary" size="small" onClick={() => handleDownload(file)}><i className="fas fa-download"></i></Button>
-                  {canEdit && <Button variant="danger" size="small" onClick={() => handleDelete(file.id)}><i className="fas fa-trash"></i></Button>}
+                  {isViewable(file.mime_type) && (
+                    <Button variant="primary" size="small" aria-label={`Open ${file.original_filename}`}
+                      onClick={() => window.open(getFileUrl(equipmentId, file.id), '_blank', 'noopener,noreferrer')}>
+                      <i className="fas fa-external-link-alt"></i> Open
+                    </Button>
+                  )}
+                  <Button variant="secondary" size="small" aria-label={`Download ${file.original_filename}`} onClick={() => handleDownload(file)}><i className="fas fa-download"></i></Button>
+                  {canEdit && <Button variant="danger" size="small" aria-label={`Delete ${file.original_filename}`} onClick={() => handleDelete(file.id)}><i className="fas fa-trash"></i></Button>}
                 </div>
               </div>
             ))}

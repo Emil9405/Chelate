@@ -31,7 +31,7 @@ use crate::handlers::{ApiResponse, PaginatedResponse};
 use crate::query_builders::{
     SafeQueryBuilder, CountQueryBuilder, FieldWhitelist,
     EquipmentType, MaintenanceType, MaintenanceStatus,
-    MaintenanceValidator, validate_file_size, validate_mime_type,
+    validate_file_size, validate_mime_type,
 };
 use crate::equipment_files;
 
@@ -194,8 +194,9 @@ pub async fn create_equipment(
         r#"INSERT INTO equipment
            (id, name, type_, quantity, unit, status, location, description, 
             serial_number, manufacturer, model, purchase_date, warranty_until,
+            maintenance_interval_days,
             created_by, updated_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+           VALUES (?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 90), ?, ?, ?, ?)"#
     )
         .bind(&id)
         .bind(&equipment.name)
@@ -209,6 +210,7 @@ pub async fn create_equipment(
         .bind(&equipment.model)
         .bind(&equipment.purchase_date)
         .bind(&equipment.warranty_until)
+        .bind(equipment.maintenance_interval_days)
         .bind(&_user_id)
         .bind(&_user_id)
         .bind(&now)
@@ -257,7 +259,18 @@ pub async fn update_equipment(
         };
     }
 
+    if let Some(ref t) = update.type_ {
+        if EquipmentType::from_str(t).is_err() {
+            return Err(ApiError::bad_request(&format!(
+                "Invalid type: {}. Valid: instrument, glassware, safety, storage, consumable, other", t
+            )));
+        }
+    }
+
     add_field!(name, "name");
+    add_field!(type_, "type_");
+    add_field!(purchase_date, "purchase_date");
+    add_field!(warranty_until, "warranty_until");
     add_field!(unit, "unit");
     add_field!(location, "location");
     add_field!(description, "description");
@@ -269,6 +282,10 @@ pub async fn update_equipment(
     if let Some(quantity) = update.quantity {
         updates.push("quantity = ?");
         values.push(quantity.to_string());
+    }
+    if let Some(days) = update.maintenance_interval_days {
+        updates.push("maintenance_interval_days = ?");
+        values.push(days.to_string());
     }
 
     if updates.is_empty() {
@@ -289,6 +306,10 @@ pub async fn update_equipment(
     query = query.bind(&equipment_id);
 
     query.execute(&app_state.db_pool).await?;
+
+    if update.maintenance_interval_days.is_some() {
+        refresh_maintenance_dates(&app_state.db_pool, &equipment_id).await?;
+    }
 
     // Renamed: its folder (named after it) moves with it
     if update.name.as_deref().map_or(false, |n| n != existing.name) {
@@ -516,6 +537,60 @@ pub async fn delete_equipment_part(
 
 // ==================== ОБСЛУЖИВАНИЕ ====================
 
+/// A day as the date inputs send it (YYYY-MM-DD); an ISO timestamp keeps its day
+fn parse_day(value: &str, field: &str) -> ApiResult<String> {
+    let v = value.trim();
+    let day = v.get(..10).unwrap_or(v);
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .map_err(|_| ApiError::bad_request(&format!("{} must be a date (YYYY-MM-DD), got '{}'", field, value)))
+}
+
+fn check_maintenance_type(t: &str) -> ApiResult<()> {
+    MaintenanceType::from_str(t).map(|_| ()).map_err(|_| ApiError::bad_request(&format!(
+        "Invalid maintenance type: {}. Valid: calibration, repair, inspection, cleaning, replacement, other", t
+    )))
+}
+
+fn check_maintenance_status(s: &str) -> ApiResult<()> {
+    MaintenanceStatus::from_str(s).map(|_| ()).map_err(|_| ApiError::bad_request(&format!(
+        "Invalid status: {}. Valid: scheduled, in_progress, completed, cancelled", s
+    )))
+}
+
+fn today() -> String {
+    Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// Keep `last_maintenance` / `next_maintenance` of the equipment in step with
+/// its records: last = latest completed; next = nearest planned (scheduled or
+/// in progress), else last + interval. Equipment with no records at all keeps
+/// an imported last date.
+pub async fn refresh_maintenance_dates(pool: &SqlitePool, equipment_id: &str) -> ApiResult<()> {
+    let (records, last_done, planned): (i64, Option<String>, Option<String>) = sqlx::query_as(
+        r#"SELECT COUNT(*),
+                  MAX(CASE WHEN status = 'completed' THEN substr(completed_date, 1, 10) END),
+                  MIN(CASE WHEN status IN ('scheduled', 'in_progress') THEN substr(scheduled_date, 1, 10) END)
+           FROM equipment_maintenance WHERE equipment_id = ?"#
+    ).bind(equipment_id).fetch_one(pool).await?;
+    let Some((current_last, interval)) = sqlx::query_as::<_, (Option<String>, Option<i32>)>(
+        "SELECT last_maintenance, maintenance_interval_days FROM equipment WHERE id = ?"
+    ).bind(equipment_id).fetch_optional(pool).await? else { return Ok(()) };
+
+    let last = if records == 0 { current_last.map(|d| d.chars().take(10).collect::<String>()) } else { last_done };
+    let next = planned.or_else(|| {
+        let days = interval.unwrap_or(0);
+        let last = last.as_deref()?;
+        if days <= 0 { return None; }
+        chrono::NaiveDate::parse_from_str(last, "%Y-%m-%d").ok()
+            .map(|d| (d + chrono::Duration::days(days as i64)).format("%Y-%m-%d").to_string())
+    });
+    sqlx::query("UPDATE equipment SET last_maintenance = ?, next_maintenance = ? WHERE id = ?")
+        .bind(&last).bind(&next).bind(equipment_id)
+        .execute(pool).await?;
+    Ok(())
+}
+
 /// Получение списка обслуживания оборудования
 pub async fn get_equipment_maintenance(
     app_state: web::Data<Arc<AppState>>,
@@ -549,24 +624,28 @@ pub async fn create_maintenance(
 
     check_equipment_exists(&app_state.db_pool, &equipment_id).await?;
 
-    // FIXED: FromStr trait is now in scope
-    if MaintenanceType::from_str(&maintenance.maintenance_type).is_err() {
-        return Err(ApiError::bad_request(&format!(
-            "Invalid maintenance type: {}",
-            maintenance.maintenance_type
-        )));
+    check_maintenance_type(&maintenance.maintenance_type)?;
+    let scheduled_date = parse_day(&maintenance.scheduled_date, "Date")?;
+    let mut completed_date = match maintenance.completed_date.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(d) => Some(parse_day(d, "Completed date")?),
+        None => None,
+    };
+    // A record with a completion date is a completed one (work done earlier
+    // than planned is fine: no order between the two dates is required)
+    let status = match maintenance.status.as_deref() {
+        Some(s) => { check_maintenance_status(s)?; s }
+        None if completed_date.is_some() => "completed",
+        None => "scheduled",
+    };
+    if status == "completed" && completed_date.is_none() {
+        completed_date = Some(today());
     }
-
-    // Валидация временных интервалов
-    if let Some(ref end) = maintenance.completed_date {
-        if MaintenanceValidator::validate_time_range(&maintenance.scheduled_date, end).is_err() {
-            return Err(ApiError::bad_request("Completed date cannot be before scheduled date"));
-        }
+    if status != "completed" {
+        completed_date = None;
     }
 
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
-    let status = maintenance.status.as_deref().unwrap_or("scheduled");
 
     sqlx::query(
         r#"INSERT INTO equipment_maintenance
@@ -579,8 +658,8 @@ pub async fn create_maintenance(
         .bind(&equipment_id)
         .bind(&maintenance.maintenance_type)
         .bind(status)
-        .bind(&maintenance.scheduled_date)
-        .bind(&maintenance.completed_date)
+        .bind(&scheduled_date)
+        .bind(&completed_date)
         .bind(&maintenance.performed_by)
         .bind(&maintenance.description)
         .bind(maintenance.cost)
@@ -591,6 +670,7 @@ pub async fn create_maintenance(
         .bind(&now)
         .execute(&app_state.db_pool)
         .await?;
+    refresh_maintenance_dates(&app_state.db_pool, &equipment_id).await?;
 
     let created: EquipmentMaintenance = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ?"
@@ -622,24 +702,41 @@ pub async fn update_maintenance(
         .fetch_optional(&app_state.db_pool)
         .await?;
 
-    if existing.is_none() {
-        return Err(ApiError::not_found("Maintenance record"));
-    }
+    let existing = existing.ok_or_else(|| ApiError::not_found("Maintenance record"))?;
 
     let mut updates = Vec::new();
     let mut values: Vec<String> = Vec::new();
 
+    if let Some(ref t) = update.maintenance_type {
+        check_maintenance_type(t)?;
+        updates.push("maintenance_type = ?");
+        values.push(t.clone());
+    }
+    if let Some(ref d) = update.scheduled_date {
+        updates.push("scheduled_date = ?");
+        values.push(parse_day(d, "Date")?);
+    }
+    let completed_given = match update.completed_date.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(d) => Some(parse_day(d, "Completed date")?),
+        None => None,
+    };
     if let Some(ref status) = update.status {
-        // FIXED: FromStr trait is now in scope
-        if MaintenanceStatus::from_str(status).is_err() {
-            return Err(ApiError::bad_request(&format!("Invalid status: {}", status)));
-        }
+        check_maintenance_status(status)?;
         updates.push("status = ?");
         values.push(status.clone());
+        if status == "completed" {
+            if completed_given.is_none() && existing.completed_date.is_none() {
+                updates.push("completed_date = ?");
+                values.push(today());
+            }
+        } else if completed_given.is_none() {
+            // back to planned / cancelled: no completion date
+            updates.push("completed_date = NULL");
+        }
     }
-    if let Some(ref completed_date) = update.completed_date {
+    if let Some(d) = completed_given {
         updates.push("completed_date = ?");
-        values.push(completed_date.clone());
+        values.push(d);
     }
     if let Some(ref performed_by) = update.performed_by {
         updates.push("performed_by = ?");
@@ -680,6 +777,7 @@ pub async fn update_maintenance(
     }
     query = query.bind(&maintenance_id);
     query.execute(&app_state.db_pool).await?;
+    refresh_maintenance_dates(&app_state.db_pool, &equipment_id).await?;
 
     let updated: EquipmentMaintenance = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ?"
@@ -714,22 +812,33 @@ pub async fn complete_maintenance(
         return Err(ApiError::not_found("Maintenance record"));
     }
 
-    let completed_date = body.completed_date.clone()
-        .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
+    let completed_date = match body.completed_date.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(d) => parse_day(d, "Completed date")?,
+        None => today(),
+    };
+    let performed_by = body.performed_by.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if performed_by.map_or(false, |s| s.chars().count() > 255) {
+        return Err(ApiError::bad_request("Performed by cannot exceed 255 characters"));
+    }
+    let notes = body.notes.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if notes.map_or(false, |s| s.chars().count() > 1000) {
+        return Err(ApiError::bad_request("Notes cannot exceed 1000 characters"));
+    }
 
     sqlx::query(
         r#"UPDATE equipment_maintenance 
-           SET status = 'completed', completed_date = ?, performed_by = ?, 
+           SET status = 'completed', completed_date = ?, performed_by = COALESCE(?, performed_by), 
                notes = COALESCE(?, notes), updated_at = ?
            WHERE id = ?"#
     )
         .bind(&completed_date)
-        .bind(&body.performed_by)
-        .bind(&body.notes)
+        .bind(performed_by)
+        .bind(notes)
         .bind(Utc::now())
         .bind(&maintenance_id)
         .execute(&app_state.db_pool)
         .await?;
+    refresh_maintenance_dates(&app_state.db_pool, &equipment_id).await?;
 
     let updated: EquipmentMaintenance = sqlx::query_as(
         "SELECT * FROM equipment_maintenance WHERE id = ?"
@@ -761,6 +870,7 @@ pub async fn delete_maintenance(
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found("Maintenance record"));
     }
+    refresh_maintenance_dates(&app_state.db_pool, &equipment_id).await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         (),
@@ -988,9 +1098,39 @@ pub async fn upload_equipment_file(
 }
 
 /// Скачивание файла оборудования
+/// `?download=1` saves the file instead of showing it
+#[derive(Debug, serde::Deserialize)]
+pub struct FileViewQuery {
+    pub download: Option<String>,
+}
+
+/// Content-Disposition for a stored file: PDFs, images and plain text open in
+/// the browser (inline), other documents download. The name is sent as UTF-8
+/// (`filename*`), with an ASCII `filename` for old clients, so Cyrillic names
+/// arrive intact and a quote in a name cannot break the header.
+fn file_disposition(original_filename: &str, mime: &str, force_download: bool) -> actix_web::http::header::ContentDisposition {
+    use actix_web::http::header::{Charset, ContentDisposition, DispositionParam, DispositionType, ExtendedValue};
+    let viewable = mime.starts_with("image/") || mime == "application/pdf" || mime == "text/plain";
+    let ascii: String = original_filename.chars()
+        .map(|c| if (c.is_ascii_graphic() || c == ' ') && c != '"' && c != '\\' { c } else { '_' })
+        .collect();
+    ContentDisposition {
+        disposition: if viewable && !force_download { DispositionType::Inline } else { DispositionType::Attachment },
+        parameters: vec![
+            DispositionParam::Filename(ascii),
+            DispositionParam::FilenameExt(ExtendedValue {
+                charset: Charset::Ext("UTF-8".to_string()),
+                language_tag: None,
+                value: original_filename.as_bytes().to_vec(),
+            }),
+        ],
+    }
+}
+
 pub async fn download_equipment_file(
     app_state: web::Data<Arc<AppState>>,
     path: web::Path<(String, String)>,
+    query: web::Query<FileViewQuery>,
 ) -> ApiResult<HttpResponse> {
     let (equipment_id, file_id) = path.into_inner();
 
@@ -1008,17 +1148,14 @@ pub async fn download_equipment_file(
     let contents = std::fs::read(&file.file_path)
         .map_err(|e| ApiError::InternalServerError(format!("Failed to read file: {}", e)))?;
 
-    // Определяем Content-Disposition: inline для изображений, attachment для остальных
-    let disposition = if file.mime_type.starts_with("image/") {
-        format!("inline; filename=\"{}\"", file.original_filename)
-    } else {
-        format!("attachment; filename=\"{}\"", file.original_filename)
-    };
+    let force_download = query.download.as_deref().map_or(false, |v| v != "0" && v != "false");
+    let disposition = file_disposition(&file.original_filename, &file.mime_type, force_download);
 
     Ok(HttpResponse::Ok()
         .content_type(file.mime_type)
-        .insert_header(("Content-Disposition", disposition))
-        .insert_header(("Cache-Control", "public, max-age=3600"))
+        .insert_header(disposition)
+        // private: lab documents are not for shared caches
+        .insert_header(("Cache-Control", "private, max-age=3600"))
         .body(contents))
 }
 
@@ -1290,5 +1427,42 @@ mod tests {
         assert!(valid_statuses.contains(&"missing"));
         assert!(!valid_statuses.contains(&"invalid"));
         assert!(!valid_statuses.contains(&"available")); // Old value - should fail
+    }
+
+    #[test]
+    fn maintenance_dates_and_types() {
+        assert_eq!(parse_day("2026-10-28", "Date").unwrap(), "2026-10-28");
+        assert_eq!(parse_day(" 2026-10-28T09:00:00Z ", "Date").unwrap(), "2026-10-28");
+        assert!(parse_day("not a date", "Date").is_err());
+        assert!(parse_day("2026-02-30", "Date").is_err());
+        assert!(parse_day("", "Date").is_err());
+        for t in ["calibration", "repair", "inspection", "cleaning", "replacement", "other"] {
+            assert!(check_maintenance_type(t).is_ok(), "{}", t);
+        }
+        // what the old form sent
+        assert!(check_maintenance_type("scheduled").is_err());
+        assert!(check_maintenance_type("part_replacement").is_err());
+        for s in ["scheduled", "in_progress", "completed", "cancelled"] {
+            assert!(check_maintenance_status(s).is_ok(), "{}", s);
+        }
+        assert!(check_maintenance_status("overdue").is_err());
+    }
+
+    #[test]
+    fn documents_open_in_the_browser() {
+        use actix_web::http::header::{DispositionType, TryIntoHeaderValue};
+        let pdf = file_disposition("Руководство HPLC.pdf", "application/pdf", false);
+        assert_eq!(pdf.disposition, DispositionType::Inline);
+        let v = pdf.clone().try_into_value().unwrap();
+        let v = v.to_str().unwrap();
+        assert!(v.starts_with("inline"), "{}", v);
+        assert!(v.contains("filename*=UTF-8''%D0%A0%D1%83%D0%BA"), "{}", v);
+        assert!(v.contains("filename=\"___________ HPLC.pdf\""), "{}", v);
+        assert_eq!(file_disposition("a.pdf", "application/pdf", true).disposition, DispositionType::Attachment);
+        assert_eq!(file_disposition("a.png", "image/png", false).disposition, DispositionType::Inline);
+        assert_eq!(file_disposition("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", false).disposition, DispositionType::Attachment);
+        // a quote or line break in a name cannot break the header
+        let odd = file_disposition("a\"b\r\nX: y.pdf", "application/pdf", false).try_into_value().unwrap();
+        assert!(!odd.to_str().unwrap().contains('\n'));
     }
 }
