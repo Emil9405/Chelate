@@ -52,7 +52,6 @@ const KNOWN_TABLES: &[&str] = &[
     "equipment_parts",
     "equipment_maintenance",
     "equipment_files",
-    "equipment_fts",
     "experiments",
     "experiment_reagents",
     "storage_positions",
@@ -688,22 +687,20 @@ pub async fn delete_batch(
 // они становятся невидимыми через JOIN на equipment.deleted_at IS NULL.
 // При restore (deleted_at = NULL) вся история возвращается.
 //
-// Единственное исключение — equipment_fts: FTS-поиск не фильтрует
-// по deleted_at, поэтому записи удаляются hard.
+// There is no equipment FTS table (search is LIKE over equipment); the old
+// first step `DELETE FROM equipment_fts` failed every delete with
+// "no such table: equipment_fts".
 
-/// Soft delete оборудования (в транзакции):
-/// fts(hard) → equipment(deleted+retired)
+/// Soft delete оборудования: equipment(deleted+retired).
 ///
-/// Дочерние parts/maintenance/files сохраняются для возможного restore.
-/// ⚠️ Физические файлы с диска нужно удалять отдельно, если restore не планируется.
+/// Дочерние parts/maintenance/files и файлы на диске сохраняются для restore;
+/// окончательное удаление — `equipment_files::purge_equipment`.
 pub async fn delete_equipment(
     pool: &SqlitePool,
     equipment_id: &str,
     user_id: &str,
 ) -> ApiResult<CascadeResult> {
     let result = SoftDeleteChain::new(pool)
-        // FTS — hard delete, чтобы удалённое не появлялось в поиске
-        .cascade_hard_delete("equipment_fts", "equipment_id", equipment_id)
         // equipment → soft delete + retired
         .mark_deleted_with_status("equipment", equipment_id, user_id, "retired")
         .execute()
@@ -898,17 +895,6 @@ pub async fn restore_equipment(
     if rows == 0 {
         return Err(ApiError::not_found("Archived equipment"));
     }
-
-    // FTS пересоздаётся автоматически через триггеры при изменении equipment,
-    // но запись была удалена hard — нужна ре-индексация.
-    // Безопасный вариант: пересоздать FTS-запись из текущих данных
-    let _ = sqlx::query(
-        "INSERT OR REPLACE INTO equipment_fts(equipment_id, name, type_, manufacturer, model, serial_number, location, description) \
-         SELECT id, name, type_, manufacturer, model, serial_number, location, description \
-         FROM equipment WHERE id = ?"
-    )
-    .bind(equipment_id)
-    .execute(pool).await; // .ok() — FTS может не существовать
 
     log::info!("♻️ Equipment {} restored by {}", equipment_id, user_id);
     Ok(rows)

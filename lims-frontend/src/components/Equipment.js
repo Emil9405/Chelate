@@ -322,7 +322,7 @@ const ExpandedPartsPanel = ({ equipmentId, parts, files, searchTerm, canEdit, on
   const [showAddModal, setShowAddModal] = useState(false);
 
   const handleDelete = async (partId) => {
-    if (window.confirm('Delete this part?')) {
+    if (window.confirm('Delete this part and its photos and files?')) {
       try {
         await api.deleteEquipmentPart(equipmentId, partId);
         onRefresh();

@@ -31,8 +31,9 @@ use crate::handlers::{ApiResponse, PaginatedResponse};
 use crate::query_builders::{
     SafeQueryBuilder, CountQueryBuilder, FieldWhitelist,
     EquipmentType, MaintenanceType, MaintenanceStatus,
-    MaintenanceValidator, generate_unique_filename, validate_file_size, validate_mime_type,
+    MaintenanceValidator, validate_file_size, validate_mime_type,
 };
+use crate::equipment_files;
 
 // ==================== КОНСТАНТЫ ====================
 
@@ -84,16 +85,6 @@ const ALLOWED_DOC_TYPES: &[&str] = &[
     "text/plain",
 ];
 
-/// Возвращает путь к директории файлов оборудования (кроссплатформенно)
-fn get_equipment_files_dir() -> std::path::PathBuf {
-    std::env::var("EQUIPMENT_FILES_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(".")
-                .join("uploads")
-                .join("equipment")
-        })
-}
 
 // ==================== ОСНОВНЫЕ CRUD ОПЕРАЦИИ ====================
 
@@ -225,9 +216,6 @@ pub async fn create_equipment(
         .execute(&app_state.db_pool)
         .await?;
 
-    // Обновляем FTS индекс
-    update_equipment_fts(&app_state.db_pool, &id).await?;
-
     let created: Equipment = sqlx::query_as("SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL")
         .bind(&id)
         .fetch_one(&app_state.db_pool)
@@ -254,9 +242,7 @@ pub async fn update_equipment(
         .fetch_optional(&app_state.db_pool)
         .await?;
 
-    if existing.is_none() {
-        return Err(ApiError::not_found("Equipment"));
-    }
+    let existing = existing.ok_or_else(|| ApiError::not_found("Equipment"))?;
 
     // Строим динамический UPDATE
     let mut updates = Vec::new();
@@ -304,8 +290,12 @@ pub async fn update_equipment(
 
     query.execute(&app_state.db_pool).await?;
 
-    // Обновляем FTS индекс
-    update_equipment_fts(&app_state.db_pool, &equipment_id).await?;
+    // Renamed: its folder (named after it) moves with it
+    if update.name.as_deref().map_or(false, |n| n != existing.name) {
+        if let Err(e) = equipment_files::relocate_equipment(&app_state.db_pool, &equipment_id).await {
+            log::warn!("Equipment {} renamed, files not moved: {}", equipment_id, e);
+        }
+    }
 
     let updated: Equipment = sqlx::query_as("SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL")
         .bind(&equipment_id)
@@ -429,9 +419,7 @@ pub async fn update_equipment_part(
         .fetch_optional(&app_state.db_pool)
         .await?;
 
-    if existing.is_none() {
-        return Err(ApiError::not_found("Equipment part"));
-    }
+    let existing = existing.ok_or_else(|| ApiError::not_found("Equipment part"))?;
 
     let mut updates = Vec::new();
     let mut values: Vec<String> = Vec::new();
@@ -489,6 +477,12 @@ pub async fn update_equipment_part(
     query = query.bind(&part_id);
     query.execute(&app_state.db_pool).await?;
 
+    if update.name.as_deref().map_or(false, |n| n != existing.name) {
+        if let Err(e) = equipment_files::relocate_equipment(&app_state.db_pool, &equipment_id).await {
+            log::warn!("Part {} renamed, files not moved: {}", part_id, e);
+        }
+    }
+
     let updated: EquipmentPart = sqlx::query_as(
         "SELECT * FROM equipment_parts WHERE id = ?"
     )
@@ -508,15 +502,9 @@ pub async fn delete_equipment_part(
 
     check_equipment_exists(&app_state.db_pool, &equipment_id).await?;
 
-    let result = sqlx::query(
-        "DELETE FROM equipment_parts WHERE id = ? AND equipment_id = ?"
-    )
-        .bind(&part_id)
-        .bind(&equipment_id)
-        .execute(&app_state.db_pool)
-        .await?;
-
-    if result.rows_affected() == 0 {
+    // The part's photos and documents go with it. Left behind, the foreign
+    // key (ON DELETE SET NULL) made them equipment photos.
+    if equipment_files::delete_part(&app_state.db_pool, &equipment_id, &part_id).await? == 0 {
         return Err(ApiError::not_found("Equipment part"));
     }
 
@@ -869,7 +857,8 @@ pub async fn upload_equipment_file(
                 }
                 if let Ok(value) = String::from_utf8(bytes) {
                     let value = value.trim().to_string();
-                    let valid_types = ["manual", "image", "certificate", "specification", "maintenance_log", "other"];
+                    // the values the equipment_files CHECK constraint accepts
+                    let valid_types = ["manual", "photo", "certificate", "other"];
                     if valid_types.contains(&value.as_str()) {
                         form_file_type = Some(value);
                     }
@@ -917,47 +906,34 @@ pub async fn upload_equipment_file(
         }
     });
 
-    // Создаём древовидную структуру папок
-    let sanitized_equip_name = sanitize_folder_name(&equipment.name);
-    let type_folder = get_type_folder(&file_type);
-
-    let file_path = if let Some(ref part_id) = form_part_id {
-        // Получаем имя запчасти
-        let part: EquipmentPart = sqlx::query_as(
-            "SELECT * FROM equipment_parts WHERE id = ? AND equipment_id = ?"
-        )
-            .bind(part_id)
-            .bind(&equipment_id)
-            .fetch_optional(&app_state.db_pool)
-            .await?
-            .ok_or_else(|| ApiError::not_found("Part"))?;
-
-        let sanitized_part_name = sanitize_folder_name(&part.name);
-
-        // Структура: equipment/{equip_name}/parts/{part_name}/{type}/
-        let type_dir = get_equipment_files_dir()
-            .join(&sanitized_equip_name)
-            .join("parts")
-            .join(&sanitized_part_name)
-            .join(type_folder);
-
-        std::fs::create_dir_all(&type_dir)
-            .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
-
-        let unique_filename = generate_unique_filename(&original_filename);
-        type_dir.join(&unique_filename).to_string_lossy().to_string()
-    } else {
-        // Структура: equipment/{equip_name}/{type}/
-        let type_dir = get_equipment_files_dir()
-            .join(&sanitized_equip_name)
-            .join(type_folder);
-
-        std::fs::create_dir_all(&type_dir)
-            .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
-
-        let unique_filename = generate_unique_filename(&original_filename);
-        type_dir.join(&unique_filename).to_string_lossy().to_string()
+    // equipment/<equipment>/{photos,documents}/, parts/<part>/{photos,documents}/
+    let part = match form_part_id {
+        Some(ref part_id) => {
+            let part: EquipmentPart = sqlx::query_as(
+                "SELECT * FROM equipment_parts WHERE id = ? AND equipment_id = ?"
+            )
+                .bind(part_id)
+                .bind(&equipment_id)
+                .fetch_optional(&app_state.db_pool)
+                .await?
+                .ok_or_else(|| ApiError::not_found("Part"))?;
+            Some(part)
+        }
+        None => None,
     };
+    let type_dir = equipment_files::file_dir(
+        &equipment_files::files_root(),
+        &equipment.name,
+        &equipment.id,
+        part.as_ref().map(|p| (p.name.as_str(), p.id.as_str())),
+        &file_type,
+    );
+    std::fs::create_dir_all(&type_dir)
+        .map_err(|e| ApiError::InternalServerError(format!("Failed to create directory: {}", e)))?;
+    let file_path = type_dir
+        .join(equipment_files::stored_file_name(&original_filename))
+        .to_string_lossy()
+        .to_string();
 
     // Извлекаем stored_filename из полного пути
     let stored_filename = std::path::Path::new(&file_path)
@@ -976,7 +952,7 @@ pub async fn upload_equipment_file(
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
 
-    sqlx::query(
+    let inserted = sqlx::query(
         r#"INSERT INTO equipment_files
            (id, equipment_id, part_id, file_type, original_filename, stored_filename,
             file_path, file_size, mime_type, description, uploaded_by, created_at)
@@ -995,7 +971,11 @@ pub async fn upload_equipment_file(
         .bind(&user_id)
         .bind(&now)
         .execute(&app_state.db_pool)
-        .await?;
+        .await;
+    if let Err(e) = inserted {
+        equipment_files::remove_stored_file(&file_path); // no record, no file
+        return Err(e.into());
+    }
 
     let created: EquipmentFile = sqlx::query_as(
         "SELECT * FROM equipment_files WHERE id = ?"
@@ -1005,34 +985,6 @@ pub async fn upload_equipment_file(
         .await?;
 
     Ok(HttpResponse::Created().json(ApiResponse::success(created)))
-}
-
-/// Очистка имени папки от спецсимволов
-fn sanitize_folder_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim()
-        .replace(' ', "_")
-        .to_lowercase()
-}
-
-/// Получение имени папки для типа файла
-fn get_type_folder(file_type: &str) -> &'static str {
-    match file_type {
-        "photo" => "images",  // Changed from "image" to match DB constraint
-        "manual" => "manuals",
-        "certificate" => "certificates",
-        "specification" => "specifications",
-        "maintenance_log" => "maintenance_logs",
-        _ => "other"
-    }
 }
 
 /// Скачивание файла оборудования
@@ -1088,14 +1040,12 @@ pub async fn delete_equipment_file(
 
     let file = file.ok_or_else(|| ApiError::not_found("File"))?;
 
-    // Удаляем файл с диска
-    let _ = std::fs::remove_file(&file.file_path);
-
-    // Удаляем из БД
+    // Record first, then the file (and folders it leaves empty)
     sqlx::query("DELETE FROM equipment_files WHERE id = ?")
         .bind(&file_id)
         .execute(&app_state.db_pool)
         .await?;
+    equipment_files::remove_stored_file(&file.file_path);
 
     Ok(HttpResponse::Ok().json(ApiResponse::success_with_message(
         (),
@@ -1227,16 +1177,6 @@ pub async fn get_part_files(
         .await?;
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(files)))
-}
-
-/// Обновление FTS индекса для оборудования
-/// ПРИМЕЧАНИЕ: FTS5 с content table синхронизируется автоматически через триггеры.
-/// Эта функция оставлена для совместимости, но фактически ничего не делает,
-/// так как триггеры equipment_ai/equipment_au/equipment_ad обрабатывают синхронизацию.
-async fn update_equipment_fts(_pool: &SqlitePool, _equipment_id: &str) -> ApiResult<()> {
-    // FTS5 с content='equipment' синхронизируется автоматически через триггеры
-    // Ручное обновление не требуется и может вызвать ошибки
-    Ok(())
 }
 
 /// Применение фильтров к CountQueryBuilder

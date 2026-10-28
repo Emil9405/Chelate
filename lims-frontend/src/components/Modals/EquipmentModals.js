@@ -713,7 +713,7 @@ const PartsTab = ({ equipmentId, parts, files, canEdit, onRefresh }) => {
   const [searchTerm, setSearchTerm] = useState('');
 
   const handleDelete = async (partId) => {
-    if (window.confirm('Delete this part?')) {
+    if (window.confirm('Delete this part and its photos and files?')) {
       await api.deleteEquipmentPart(equipmentId, partId);
       onRefresh();
     }
