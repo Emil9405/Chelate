@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "Laboratory Information Management System"
 license = "PolyForm-Noncommercial-1.0.0"
-repository = "https://github.com/Emil9405/LIMSgen"
+repository = "https://github.com/Emil9405/Chelate"
 keywords = ["laboratory", "management", "inventory", "api", "web"]
 categories = ["science", "web-programming"]
 
