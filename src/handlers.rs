@@ -9,7 +9,6 @@ use crate::AppState;
 use crate::models::{Reagent, Batch};
 use crate::error::{ApiError, ApiResult, validate_quantity};
 use crate::auth::get_current_user;
-use std::env;
 
 // ==================== COMMON STRUCTURES ====================
 
@@ -415,6 +414,9 @@ pub async fn get_recent_activity(
                 a.description, u.username, a.created_at
             FROM audit_logs a
             LEFT JOIN users u ON a.user_id = u.id
+            -- sign-ins and sign-outs are kept in the audit log (user activity
+            -- history) but are noise on the dashboard
+            WHERE a.action NOT IN ('login', 'logout')
             ORDER BY a.created_at DESC
             LIMIT ?"#
         )
@@ -526,6 +528,7 @@ pub async fn get_jwt_rotation_status(
 
 pub async fn force_jwt_rotation(
     app_state: web::Data<Arc<AppState>>,
+    auth_service: web::Data<Arc<crate::auth::AuthService>>,
     http_request: HttpRequest,
 ) -> ApiResult<HttpResponse> {
     let claims = get_current_user(&http_request)?;
@@ -536,28 +539,27 @@ pub async fn force_jwt_rotation(
         ));
     }
 
-    let env_file = env::var("ENV_FILE").unwrap_or_else(|_| ".env".to_string());
-    let new_secret = rotate_jwt_secret(&app_state.db_pool, &env_file).await
-        .map_err(|e| ApiError::InternalServerError(format!("Failed to rotate JWT: {}", e)))?;
+    let env_file = crate::config::env_file_path();
+    let next_rotation = rotate_jwt_secret(&app_state.db_pool, &env_file, &auth_service).await
+        .map_err(|e| {
+            log::error!("Manual JWT rotation failed: {:#}", e);
+            ApiError::InternalServerError("Failed to rotate the JWT secret (see the server log)".to_string())
+        })?;
 
     log::warn!("Manual JWT rotation triggered by user: {}", claims.username);
-crate::audit::audit(
-    &app_state.db_pool, &claims.sub, "jwt_rotation", "system", "jwt",
-    "Manual JWT rotation triggered", &http_request
-).await;
+    crate::audit::audit(
+        &app_state.db_pool, &claims.sub, "jwt_rotation", "system", "jwt",
+        "Manual JWT rotation triggered", &http_request
+    ).await;
 
     #[derive(serde::Serialize)]
     struct RotationResponse {
         message: String,
-        secret_length: usize,
-        warning: String,
+        next_rotation: chrono::DateTime<chrono::Utc>,
     }
 
-    let response = RotationResponse {
-        message: "JWT secret rotated successfully".to_string(),
-        secret_length: new_secret.len(),
-        warning: "Application restart recommended to load new JWT secret".to_string(),
-    };
-
-    Ok(HttpResponse::Ok().json(ApiResponse::success(response)))
+    Ok(HttpResponse::Ok().json(ApiResponse::success(RotationResponse {
+        message: "JWT secret rotated and in use. Existing sessions stay valid until their tokens expire.".to_string(),
+        next_rotation,
+    })))
 }

@@ -300,21 +300,40 @@ pub struct Claims {
 
 // ======== AUTH SERVICE ========
 
-pub struct AuthService {
-    jwt_secret: String,
+/// Signing keys. Tokens are signed with `current`; tokens signed with
+/// `previous` (the secret before the last rotation) are still accepted until
+/// they expire, so a rotation does not sign anyone out.
+struct KeyRing {
+    current_secret: String,
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
+    previous: Option<DecodingKey>,
+}
+
+pub struct AuthService {
+    keys: std::sync::RwLock<KeyRing>,
     token_expiration_hours: i64,
 }
 
 impl AuthService {
     pub fn new(jwt_secret: &str) -> Self {
         Self {
-            jwt_secret: jwt_secret.to_string(),
-            encoding_key: EncodingKey::from_secret(jwt_secret.as_bytes()),
-            decoding_key: DecodingKey::from_secret(jwt_secret.as_bytes()),
+            keys: std::sync::RwLock::new(KeyRing {
+                current_secret: jwt_secret.to_string(),
+                encoding_key: EncodingKey::from_secret(jwt_secret.as_bytes()),
+                decoding_key: DecodingKey::from_secret(jwt_secret.as_bytes()),
+                previous: None,
+            }),
             token_expiration_hours: 24,
         }
+    }
+
+    /// Secret that was current before the last rotation (`JWT_SECRET_PREVIOUS`)
+    pub fn with_previous_secret(self, previous: Option<&str>) -> Self {
+        if let Some(prev) = previous.map(str::trim).filter(|p| !p.is_empty()) {
+            self.write_keys().previous = Some(DecodingKey::from_secret(prev.as_bytes()));
+        }
+        self
     }
 
     /// Token lifetime from `AUTH_TOKEN_EXPIRATION_HOURS` (at least one hour)
@@ -326,6 +345,30 @@ impl AuthService {
     /// Token lifetime in seconds, for `expires_in` in login responses
     pub fn token_ttl_seconds(&self) -> i64 {
         self.token_expiration_hours * 3600
+    }
+
+    // A poisoned lock only means another thread panicked while holding it;
+    // the keys themselves are always in a consistent state.
+    fn read_keys(&self) -> std::sync::RwLockReadGuard<'_, KeyRing> {
+        self.keys.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write_keys(&self) -> std::sync::RwLockWriteGuard<'_, KeyRing> {
+        self.keys.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn current_secret(&self) -> String {
+        self.read_keys().current_secret.clone()
+    }
+
+    /// Start signing with `new_secret` right away, without a restart. The
+    /// secret used until now stays valid for verification only.
+    pub fn rotate(&self, new_secret: &str) {
+        let mut keys = self.write_keys();
+        let old = std::mem::replace(&mut keys.current_secret, new_secret.to_string());
+        keys.previous = Some(DecodingKey::from_secret(old.as_bytes()));
+        keys.encoding_key = EncodingKey::from_secret(new_secret.as_bytes());
+        keys.decoding_key = DecodingKey::from_secret(new_secret.as_bytes());
     }
 
     pub fn hash_password(&self, password: &str) -> Result<String, bcrypt::BcryptError> {
@@ -352,24 +395,62 @@ impl AuthService {
             iat: now.timestamp(),
         };
 
-        encode(&Header::default(), &claims, &self.encoding_key)
+        encode(&Header::default(), &claims, &self.read_keys().encoding_key)
             .map_err(|_| ApiError::AuthError("Failed to generate token".to_string()))
     }
 
     pub fn verify_token(&self, token: &str) -> ApiResult<Claims> {
+        use jsonwebtoken::errors::ErrorKind;
         let validation = Validation::default();
-        decode::<Claims>(token, &self.decoding_key, &validation)
-            .map(|data| data.claims)
-            .map_err(|err| {
-                match err.kind() {
-                    jsonwebtoken::errors::ErrorKind::ExpiredSignature =>
-                        ApiError::AuthError("Token expired".to_string()),
-                    jsonwebtoken::errors::ErrorKind::InvalidToken =>
-                        ApiError::AuthError("Invalid token".to_string()),
-                    _ =>
-                        ApiError::AuthError("Token verification failed".to_string()),
-                }
-            })
+        let keys = self.read_keys();
+
+        let mut result = decode::<Claims>(token, &keys.decoding_key, &validation);
+        // Signed before the last rotation? The previous secret still verifies it.
+        if let (Err(err), Some(previous)) = (&result, &keys.previous) {
+            if matches!(err.kind(), ErrorKind::InvalidSignature) {
+                result = decode::<Claims>(token, previous, &validation);
+            }
+        }
+
+        result.map(|data| data.claims).map_err(|err| match err.kind() {
+            ErrorKind::ExpiredSignature => ApiError::AuthError("Token expired".to_string()),
+            ErrorKind::InvalidToken => ApiError::AuthError("Invalid token".to_string()),
+            _ => ApiError::AuthError("Token verification failed".to_string()),
+        })
+    }
+}
+
+// ======== FILE LINKS ========
+
+/// Claims of a short-lived link to one stored file. It has none of the fields
+/// of a session token (and a session token has no `file`), so neither can be
+/// used in place of the other.
+#[derive(Debug, Serialize, Deserialize)]
+struct FileLinkClaims {
+    file: String,
+    exp: i64,
+}
+
+impl AuthService {
+    /// Signs a link token for `file_id`, valid for `ttl_seconds`
+    pub fn sign_file_link(&self, file_id: &str, ttl_seconds: i64) -> ApiResult<String> {
+        let claims = FileLinkClaims {
+            file: file_id.to_string(),
+            exp: Utc::now().timestamp() + ttl_seconds,
+        };
+        encode(&Header::default(), &claims, &self.read_keys().encoding_key)
+            .map_err(|_| ApiError::InternalServerError("Failed to sign file link".to_string()))
+    }
+
+    /// True if `token` is an unexpired link token for exactly this file
+    pub fn verify_file_link(&self, token: &str, file_id: &str) -> bool {
+        let mut validation = Validation::default();
+        validation.leeway = 0;
+        let keys = self.read_keys();
+        std::iter::once(&keys.decoding_key)
+            .chain(keys.previous.iter())
+            .filter_map(|key| decode::<FileLinkClaims>(token, key, &validation).ok())
+            .any(|data| data.claims.file == file_id)
     }
 }
 
@@ -625,14 +706,19 @@ pub async fn jwt_middleware(
             return Err((ApiError::InternalServerError("App state not available".to_string()).into(), req));
         }
     };
-    let account: Result<Option<(String, bool)>, sqlx::Error> =
-        sqlx::query_as("SELECT role, is_active FROM users WHERE id = ?")
-            .bind(&claims.sub)
-            .fetch_optional(&pool)
-            .await;
-    match account {
-        Ok(Some((role, true))) => {
+    // One query: the account check plus the user's custom permissions
+    let account: Result<Option<(String, bool, Option<String>)>, sqlx::Error> = sqlx::query_as(
+        "SELECT u.role, u.is_active, p.permissions \
+         FROM users u LEFT JOIN user_permissions p ON p.user_id = u.id \
+         WHERE u.id = ?",
+    )
+        .bind(&claims.sub)
+        .fetch_optional(&pool)
+        .await;
+    let permissions = match account {
+        Ok(Some((role, true, custom))) => {
             claims.role = UserRole::from_str(&role).unwrap_or(UserRole::Viewer);
+            crate::permissions::EffectivePermissions::resolve(&claims.role, custom.as_deref())
         }
         Ok(_) => {
             log::warn!("Rejected token for inactive or deleted user {}", claims.username);
@@ -642,8 +728,21 @@ pub async fn jwt_middleware(
             log::error!("Account check failed: {}", e);
             return Err((ApiError::InternalServerError("Database error".to_string()).into(), req));
         }
+    };
+
+    // Reads and exports have no checks in their handlers: the "view" and
+    // "export" permissions are enforced here, by route
+    if let Some(key) = crate::permissions::route_permission(req.method(), req.path()) {
+        if !permissions.has(key) {
+            log::info!("User {} denied '{}' on {} {}", claims.username, key, req.method(), req.path());
+            return Err((
+                ApiError::Forbidden(format!("Insufficient permissions: '{}' is required", key)).into(),
+                req,
+            ));
+        }
     }
 
+    req.extensions_mut().insert(permissions);
     req.extensions_mut().insert(claims);
     Ok(req)
 }

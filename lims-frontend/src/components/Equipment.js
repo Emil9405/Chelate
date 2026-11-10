@@ -2,6 +2,7 @@
 // Version 3.4 - Modals moved to EquipmentModals.js, fixed file_type to 'photo'
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../services/api';
+import { can } from '../utils/permissions';
 import ErrorMessage from './ErrorMessage';
 import Loading from './Loading';
 import Badge from './Badge';
@@ -141,7 +142,7 @@ const Equipment = ({ user }) => {
     ).length;
   };
 
-  const canEdit = () => ['Admin', 'Researcher'].includes(user?.role);
+  const canEdit = () => can(user, 'edit_equipment');
   const equipmentTypes = [...new Set(equipment.map(e => e.type_).filter(Boolean))];
 
   return (

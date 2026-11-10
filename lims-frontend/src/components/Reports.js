@@ -25,7 +25,8 @@ const ALLOWED_SORT_FIELDS = new Set([
   'location_summary', 'room_names',
 ]);
 
-const BATCH_STATUSES = ['available', 'low_stock', 'reserved', 'expired', 'depleted'];
+const BATCH_STATUSES = ['available', 'low_stock', 'in_use', 'expired', 'depleted'];
+const EXPIRY_STATES = ['ok', 'warning', 'critical', 'expired', 'unknown'];
 
 // API base — у тебя в проекте обычно через relative paths и proxy/CRA.
 // Если в api.js есть getBaseURL — лучше использовать его.
@@ -136,7 +137,14 @@ const Reports = ({ user }) => {
     { field: 'status', label: 'Status', data_type: 'enum', operators: ['eq', 'ne', 'in'], values: BATCH_STATUSES },
     { field: 'quantity', label: 'Quantity', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
     { field: 'remaining_percent', label: 'Remaining %', data_type: 'number', operators: ['gt', 'gte', 'lt', 'lte'], values: null },
-    { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'lt', 'is_null'], values: null },
+    { field: 'expiry_date', label: 'Expiry Date', data_type: 'date', operators: ['eq', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null'], values: null },
+    { field: 'expiration_status', label: 'Expiry State', data_type: 'enum', operators: ['eq', 'ne', 'in'], values: EXPIRY_STATES },
+    { field: 'received_date', label: 'Received Date', data_type: 'date', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'cas_number', label: 'CAS Number', data_type: 'text', operators: ['eq', 'like', 'is_null', 'is_not_null'], values: null },
+    { field: 'batch_number', label: 'Batch Number', data_type: 'text', operators: ['eq', 'like'], values: null },
+    { field: 'cat_number', label: 'Catalog Number', data_type: 'text', operators: ['eq', 'like', 'is_null', 'is_not_null'], values: null },
+    { field: 'reserved_quantity', label: 'Reserved for Experiments', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
+    { field: 'unit', label: 'Unit', data_type: 'text', operators: ['eq', 'ne'], values: null },
     { field: 'location_summary', label: 'Location', data_type: 'text', operators: ['eq', 'like', 'is_null', 'is_not_null'], values: null },
     { field: 'room_names', label: 'Rooms', data_type: 'text', operators: ['like', 'is_null', 'is_not_null'], values: null },
     { field: 'container_count', label: 'Containers (total)', data_type: 'number', operators: ['eq', 'gt', 'gte', 'lt', 'lte'], values: null },
@@ -167,6 +175,7 @@ const Reports = ({ user }) => {
     { field: 'supplier', label: 'Supplier', data_type: 'text', visible: false, sortable: true },
     { field: 'manufacturer', label: 'Manufacturer', data_type: 'text', visible: false, sortable: true },
     { field: 'cat_number', label: 'Cat #', data_type: 'text', visible: false, sortable: true },
+    { field: 'cas_number', label: 'CAS', data_type: 'text', visible: false, sortable: true },
     { field: 'received_date', label: 'Received', data_type: 'date', visible: false, sortable: true },
     { field: 'notes', label: 'Notes', data_type: 'text', visible: false, sortable: false },
   ], []);
@@ -660,7 +669,7 @@ const Reports = ({ user }) => {
                   </select>
                 ) : (
                   <input
-                    type={currentFieldConfig?.data_type === 'number' ? 'number' : 'text'}
+                    type={currentFieldConfig?.data_type === 'number' ? 'number' : (currentFieldConfig?.data_type === 'date' ? 'date' : 'text')}
                     value={newFilter.value}
                     onChange={(e) => setNewFilter(prev => ({ ...prev, value: e.target.value }))}
                     placeholder="Enter value..."

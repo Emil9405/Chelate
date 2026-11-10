@@ -9,6 +9,7 @@ import Input from '../Input';
 import Select from '../Select';
 import ReagentAccordionItem from './ReagentAccordionItem';
 import useIsMobile from '../hooks/useIsMobile';
+import { can } from '../../utils/permissions';
 import { COLUMN_WIDTHS } from './styles';
 import LocationPicker from '../storage/LocationPicker'; // <-- ИМПОРТ LOCATION PICKER
 
@@ -110,20 +111,10 @@ const Reagents = ({ user }) => {
     loadReferenceData();
   }, []);
 
-  const userRole = (user?.role || '').toString().toLowerCase();
-  const isAdmin = userRole === 'admin';
-  const isResearcher = userRole === 'researcher';
+  // The server's own answer (see utils/permissions.js), not the role
+  const hasPermission = (permissionKey) => can(user, permissionKey);
   
-  const hasPermission = (permissionKey) => {
-    if (isAdmin) return true;
-    const perms = user?.permissions;
-    if (!perms) return false;
-    if (Array.isArray(perms)) return perms.includes(permissionKey);
-    if (typeof perms === 'object') return perms[permissionKey] === true;
-    return false;
-  };
-  
-  const canEditReagents = () => isAdmin || isResearcher || hasPermission('edit_reagent');
+  const canEditReagents = () => hasPermission('edit_reagent');
   const canDeleteReagents = () => hasPermission('delete_reagent');
   const canDeleteBatches = () => hasPermission('delete_batch');
 

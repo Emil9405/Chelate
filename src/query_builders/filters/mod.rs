@@ -515,8 +515,15 @@ impl ReportConfig {
     }
 }
 
+/// Columns that hold a date-time. They are stored with a time of day
+/// ("2026-05-01T00:00:00+00:00") while a filter gives a day ("2026-05-01"),
+/// and the two were compared as text: "equals" never matched, and "on or
+/// before" / "after" were off by one day. Both sides are reduced to a day.
+const REPORT_DATE_FIELDS: &[&str] = &["expiry_date", "received_date", "created_at", "updated_at"];
+
 fn build_report_filter_condition(filter: &ReportFilter) -> (String, Vec<String>) {
     let mut params: Vec<String> = Vec::new();
+    let is_date = REPORT_DATE_FIELDS.contains(&filter.field.as_str());
     let condition = match &filter.operator {
         ComparisonOperator::IsNull => format!("{} IS NULL", filter.field),
         ComparisonOperator::IsNotNull => format!("{} IS NOT NULL", filter.field),
@@ -531,7 +538,11 @@ fn build_report_filter_condition(filter: &ReportFilter) -> (String, Vec<String>)
             if let ReportFilterValue::Range { from, to } = &filter.value {
                 params.push(from.clone());
                 params.push(to.clone());
-                format!("{} BETWEEN ? AND ?", filter.field)
+                if is_date {
+                    format!("date({}) BETWEEN date(?) AND date(?)", filter.field)
+                } else {
+                    format!("{} BETWEEN ? AND ?", filter.field)
+                }
             } else { return (String::new(), Vec::new()); }
         }
         ComparisonOperator::Like => {
@@ -556,7 +567,11 @@ fn build_report_filter_condition(filter: &ReportFilter) -> (String, Vec<String>)
                 _ => return (String::new(), Vec::new()),
             };
             params.push(val);
-            format!("{} {} {}", filter.field, filter.operator.to_sql(), placeholder)
+            if is_date {
+                format!("date({}) {} date(?)", filter.field, filter.operator.to_sql())
+            } else {
+                format!("{} {} {}", filter.field, filter.operator.to_sql(), placeholder)
+            }
         }
     };
     (condition, params)

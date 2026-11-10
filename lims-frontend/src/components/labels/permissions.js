@@ -1,9 +1,5 @@
 // components/labels/permissions.js
+import { can } from '../../utils/permissions';
 
-/** May write off, move and inventory bottles (backend: batch edit permission) */
-export const canActOnStock = (user) => {
-  const role = (user?.role || '').toString().toLowerCase();
-  const perms = user?.permissions;
-  const hasPerm = (k) => (Array.isArray(perms) ? perms.includes(k) : !!(perms && perms[k] === true));
-  return role === 'admin' || role === 'researcher' || hasPerm('edit_batch');
-};
+/** May write off, move and inventory bottles (backend: `edit_batch`) */
+export const canActOnStock = (user) => can(user, 'edit_batch');

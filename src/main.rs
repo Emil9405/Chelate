@@ -49,6 +49,7 @@ mod batch_handlers;
 mod equipment_handlers;
 mod import_export;
 mod pagination;
+mod permissions;
 mod consumption;
 mod container_history;
 mod inventory_handlers;
@@ -123,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
 
     let auth_service = Arc::new(
         AuthService::new(&config.auth.jwt_secret)
+            .with_previous_secret(config.auth.jwt_secret_previous.as_deref())
             .with_token_expiration_hours(config.auth.token_expiration_hours),
     );
     create_default_admin_if_needed(&pool, &auth_service).await?;
@@ -172,8 +174,9 @@ async fn main() -> anyhow::Result<()> {
 
     // JWT rotation
     let rotation_pool = pool.clone();
-    let env_file = env::var("ENV_FILE").unwrap_or_else(|_| ".env".to_string());
-    tokio::spawn(async move { jwt_rotation::start_rotation_task(rotation_pool, env_file).await; });
+    let env_file = config::env_file_path();
+    let rotation_auth = auth_service.clone();
+    tokio::spawn(async move { jwt_rotation::start_rotation_task(rotation_pool, env_file, rotation_auth).await; });
 
     let bind_address = format!("{}:{}", config.server.host, config.server.port);
     log::info!("Starting server at http://{}", bind_address);
@@ -209,10 +212,13 @@ async fn main() -> anyhow::Result<()> {
                     .route("/register", web::post().to(register))
             )
 
-            // Public file access
+            // File links for plain navigation (open in a new tab, save). Outside
+            // the session middleware, but each request needs a short-lived
+            // token for that one file; without it this route used to hand out
+            // every equipment document to anyone who had the URL.
             .service(
                 web::scope("/api/v1/public")
-                    .route("/equipment/{id}/files/{file_id}", web::get().to(equipment_handlers::download_equipment_file))
+                    .route("/equipment/{id}/files/{file_id}", web::get().to(equipment_handlers::download_equipment_file_by_link))
             )
 
             // All protected API routes (MUST come before static files)

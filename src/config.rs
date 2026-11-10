@@ -48,6 +48,9 @@ pub struct DatabaseConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct AuthConfig {
     pub jwt_secret: String,
+    /// Secret before the last rotation; its tokens stay valid until they expire
+    #[serde(default)]
+    pub jwt_secret_previous: Option<String>,
     pub token_expiration_hours: i64,
     pub bcrypt_cost: u32,
     pub max_login_attempts: u32,
@@ -79,6 +82,7 @@ impl Default for AuthConfig {
         Self {
             // Auto-generate a secure secret if none provided via .env
             jwt_secret: generate_jwt_secret(),
+            jwt_secret_previous: None,
             token_expiration_hours: 24,
             bcrypt_cost: 10,
             max_login_attempts: 5,
@@ -256,16 +260,7 @@ pub fn load_config() -> Result<Config> {
 
 /// Persists JWT secret to the .env file
 fn persist_jwt_secret(secret: &str) -> Result<()> {
-    let env_path = env::var("ENV_FILE").unwrap_or_else(|_| {
-        // Find existing .env or use CWD
-        let candidates = get_env_candidate_paths();
-        for candidate in &candidates {
-            if Path::new(candidate).exists() {
-                return candidate.clone();
-            }
-        }
-        ".env".to_string()
-    });
+    let env_path = env_file_path();
 
     let path = Path::new(&env_path);
     let mut content = fs::read_to_string(path).unwrap_or_default();
@@ -308,6 +303,9 @@ fn override_with_env(config: &mut Config) -> Result<()> {
     }
     if let Ok(jwt_secret) = env::var("JWT_SECRET") {
         config.auth.jwt_secret = jwt_secret;
+    }
+    if let Ok(previous) = env::var("JWT_SECRET_PREVIOUS") {
+        config.auth.jwt_secret_previous = Some(previous).filter(|p| !p.trim().is_empty());
     }
     if let Ok(expiration_str) = env::var("AUTH_TOKEN_EXPIRATION_HOURS") {
         if let Ok(expiration) = expiration_str.parse::<i64>() {
@@ -418,6 +416,20 @@ fn is_root_user() -> bool {
     }
 }
 
+static LOADED_ENV_FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The env file settings were loaded from, i.e. the file a new JWT secret
+/// must be written to. Writing to "./.env" regardless (as before) created a
+/// second .env holding only JWT_SECRET whenever the real one lives elsewhere
+/// (next to the executable, in the parent directory); on the next start that
+/// new file was found first and every other setting was silently lost.
+pub fn env_file_path() -> String {
+    if let Some(path) = LOADED_ENV_FILE.get() {
+        return path.clone();
+    }
+    env::var("ENV_FILE").unwrap_or_else(|_| ".env".to_string())
+}
+
 pub fn load_env_file() -> Result<()> {
     // 1. Explicit ENV_FILE variable — highest priority
     if let Ok(env_file) = env::var("ENV_FILE") {
@@ -426,6 +438,7 @@ pub fn load_env_file() -> Result<()> {
             dotenvy::from_filename(&env_file)
                 .with_context(|| format!("Failed to load environment file: {}", env_file))?;
             log::info!("✓ Loaded env from ENV_FILE: {}", env_file);
+            let _ = LOADED_ENV_FILE.set(env_file.clone());
             return Ok(());
         } else {
             log::warn!("ENV_FILE set to '{}' but file not found", env_file);
@@ -441,6 +454,7 @@ pub fn load_env_file() -> Result<()> {
             match dotenvy::from_filename(candidate) {
                 Ok(_) => {
                     log::info!("✓ Loaded env from: {}", candidate);
+                    let _ = LOADED_ENV_FILE.set(candidate.clone());
                     return Ok(());
                 }
                 Err(e) => {

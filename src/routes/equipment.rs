@@ -121,21 +121,21 @@ async fn delete_equipment_part_protected(app_state: web::Data<Arc<AppState>>, pa
 // Maintenance
 async fn create_maintenance_protected(app_state: web::Data<Arc<AppState>>, path: web::Path<String>, maintenance: web::Json<CreateMaintenanceRequest>, http_request: HttpRequest) -> ApiResult<HttpResponse> {
     let claims = auth_handlers::get_claims_from_request(&http_request)?;
-    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Edit, &app_state.db_pool).await?;
+    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Maintenance, &app_state.db_pool).await?;
     equipment_handlers::create_maintenance(app_state, path, maintenance, claims.sub).await
 }
 async fn update_maintenance_protected(app_state: web::Data<Arc<AppState>>, path: web::Path<(String, String)>, update: web::Json<UpdateMaintenanceRequest>, http_request: HttpRequest) -> ApiResult<HttpResponse> {
     let claims = auth_handlers::get_claims_from_request(&http_request)?;
-    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Edit, &app_state.db_pool).await?;
+    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Maintenance, &app_state.db_pool).await?;
     equipment_handlers::update_maintenance(app_state, path, update, claims.sub).await
 }
 async fn complete_maintenance_protected(app_state: web::Data<Arc<AppState>>, path: web::Path<(String, String)>, body: web::Json<CompleteMaintenanceRequest>, http_request: HttpRequest) -> ApiResult<HttpResponse> {
     let claims = auth_handlers::get_claims_from_request(&http_request)?;
-    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Edit, &app_state.db_pool).await?;
+    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Maintenance, &app_state.db_pool).await?;
     equipment_handlers::complete_maintenance(app_state, path, body, claims.sub).await
 }
 async fn delete_maintenance_protected(app_state: web::Data<Arc<AppState>>, path: web::Path<(String, String)>, http_request: HttpRequest) -> ApiResult<HttpResponse> {
-    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Delete, &app_state.db_pool).await?;
+    auth_handlers::check_equipment_permission(&http_request, auth_handlers::EquipmentAction::Maintenance, &app_state.db_pool).await?;
     equipment_handlers::delete_maintenance(app_state, path).await
 }
 
@@ -179,5 +179,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/{id}/files", web::post().to(upload_equipment_file_protected))
             .route("/{id}/files/{file_id}", web::get().to(equipment_handlers::download_equipment_file))
             .route("/{id}/files/{file_id}", web::delete().to(delete_equipment_file_protected))
+            .route("/{id}/files/{file_id}/link", web::post().to(equipment_handlers::create_equipment_file_link))
     );
 }

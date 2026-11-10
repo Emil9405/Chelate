@@ -13,6 +13,11 @@ async fn can_edit_layout(http_request: &HttpRequest, app_state: &web::Data<Arc<A
     auth_handlers::check_room_permission(http_request, auth_handlers::RoomAction::Edit, &app_state.db_pool).await
 }
 
+/// Deleting a zone or a position follows deleting a room (`delete_room`: admin by default)
+async fn can_delete_layout(http_request: &HttpRequest, app_state: &web::Data<Arc<AppState>>) -> ApiResult<()> {
+    auth_handlers::check_room_permission(http_request, auth_handlers::RoomAction::Delete, &app_state.db_pool).await
+}
+
 async fn create_storage_zone_protected(http_request: HttpRequest, app_state: web::Data<Arc<AppState>>, data: web::Json<crate::models::CreateStorageZoneRequest>) -> ApiResult<HttpResponse> {
     can_edit_layout(&http_request, &app_state).await?;
     let claims = auth::get_current_user(&http_request)?;
@@ -24,7 +29,7 @@ async fn update_storage_zone_protected(http_request: HttpRequest, app_state: web
     storage_handlers::update_storage_zone(app_state, path, data, claims.sub).await
 }
 async fn delete_storage_zone_protected(http_request: HttpRequest, app_state: web::Data<Arc<AppState>>, path: web::Path<String>) -> ApiResult<HttpResponse> {
-    can_edit_layout(&http_request, &app_state).await?;
+    can_delete_layout(&http_request, &app_state).await?;
     let _claims = auth::get_current_user(&http_request)?;
     storage_handlers::delete_storage_zone(app_state, path).await
 }
@@ -39,7 +44,7 @@ async fn update_storage_position_protected(http_request: HttpRequest, app_state:
     storage_handlers::update_storage_position(app_state, path, data, claims.sub).await
 }
 async fn delete_storage_position_protected(http_request: HttpRequest, app_state: web::Data<Arc<AppState>>, path: web::Path<String>) -> ApiResult<HttpResponse> {
-    can_edit_layout(&http_request, &app_state).await?;
+    can_delete_layout(&http_request, &app_state).await?;
     let _claims = auth::get_current_user(&http_request)?;
     storage_handlers::delete_storage_position(app_state, path).await
 }

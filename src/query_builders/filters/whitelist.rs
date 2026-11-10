@@ -175,8 +175,8 @@ impl FieldWhitelist {
 
     pub fn for_reports() -> Self {
         Self::with_config(&[
-            "id", "reagent_id", "reagent_name", "batch_number", "cat_number", "quantity",
-            "original_quantity", "reserved_quantity", "unit", "expiry_date", "supplier",
+            "id", "reagent_id", "reagent_name", "batch_number", "cat_number", "cas_number", "quantity",
+            "original_quantity", "reserved_quantity", "remaining_percent", "unit", "expiry_date", "supplier",
             "manufacturer", "received_date", "status", "notes", "days_until_expiry",
             "expiration_status", "created_at", "updated_at",
             // Container-aware поля (вычисляются из CTE container_stats)
