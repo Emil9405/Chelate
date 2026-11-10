@@ -280,7 +280,11 @@ async fn update_batch_statuses(pool: SqlitePool) {
 
             match q.execute(&pool).await {
                 Ok(_) => { total_updated += batch_ids.len(); },
-                Err(e) => { log::error!("Failed to update batch chunk: {}", e); }
+                Err(e) => {
+                    // The same ids would be selected again: stop until the next hourly run
+                    log::error!("Failed to update batch chunk: {}", e);
+                    break;
+                }
             }
 
             sleep(Duration::from_millis(50)).await;

@@ -4,6 +4,7 @@
 use actix_web::{web, HttpResponse, HttpRequest};
 use actix_multipart::Multipart;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::sync::Arc;
 use calamine::{Reader, open_workbook, RangeDeserializerBuilder, Xlsx, XlsxError};
 use std::fs;
@@ -95,34 +96,71 @@ async fn import_equipment_logic(pool: &SqlitePool, items: Vec<EquipmentImportDto
     
     log::info!("📋 Prepared {} equipment items for bulk insert", prepared.len());
     
-    // === PRAGMA BEFORE TRANSACTION ===
-    sqlx::query("PRAGMA synchronous = OFF").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
     // === SINGLE TRANSACTION ===
     let mut tx = pool.begin().await
         .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-    
+
+    // An item whose serial number already exists updates that record instead
+    // of creating a duplicate. This is resolved here, not with
+    // `ON CONFLICT(serial_number)`: the table has no unique index on
+    // serial_number, so SQLite rejected that statement and every equipment
+    // import failed.
+    let existing: Vec<(String, String)> = sqlx::query_as(
+        "SELECT serial_number, id FROM equipment \
+         WHERE serial_number IS NOT NULL AND serial_number != '' AND deleted_at IS NULL"
+    )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+    let mut by_serial: HashMap<String, String> = existing.into_iter().collect();
+
+    let mut to_insert: Vec<PrepEquip> = Vec::new();
+    for mut e in prepared {
+        // an empty serial number is "no serial number", never a key
+        e.serial_number = e.serial_number.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        match e.serial_number.as_ref().and_then(|sn| by_serial.get(sn)).cloned() {
+            Some(id) => {
+                // in the database already, or earlier in this file: the name is refreshed
+                match to_insert.iter_mut().find(|p| p.id == id) {
+                    Some(pending) => pending.name = e.name,
+                    None => {
+                        sqlx::query("UPDATE equipment SET name = ?, updated_at = datetime('now') WHERE id = ?")
+                            .bind(&e.name)
+                            .bind(&id)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| ApiError::InternalServerError(format!("Equipment update failed: {}", e)))?;
+                    }
+                }
+            }
+            None => {
+                if let Some(sn) = &e.serial_number {
+                    by_serial.insert(sn.clone(), e.id.clone());
+                }
+                to_insert.push(e);
+            }
+        }
+    }
+
     const CHUNK_SIZE: usize = 100;
     let mut processed = 0;
-    
-    for chunk in prepared.chunks(CHUNK_SIZE) {
+
+    for chunk in to_insert.chunks(CHUNK_SIZE) {
         let values_clause: String = chunk.iter()
             .map(|_| "(?,?,?,?,?,'available',?,?,datetime('now'),datetime('now'))")
             .collect::<Vec<_>>()
             .join(",");
-        
+
         let sql = format!(
             r#"INSERT INTO equipment (
-                id, name, type_, serial_number, manufacturer, 
-                status, location, description, 
+                id, name, type_, serial_number, manufacturer,
+                status, location, description,
                 created_at, updated_at
-            ) VALUES {}
-            ON CONFLICT(serial_number) WHERE serial_number IS NOT NULL 
-            DO UPDATE SET name = excluded.name, updated_at = datetime('now')"#,
+            ) VALUES {}"#,
             values_clause
         );
-        
+
         let mut query = sqlx::query(&sql);
         for e in chunk {
             query = query
@@ -134,23 +172,20 @@ async fn import_equipment_logic(pool: &SqlitePool, items: Vec<EquipmentImportDto
                 .bind(&e.location)
                 .bind(&e.description);
         }
-        
+
         query.execute(&mut *tx).await
             .map_err(|e| ApiError::InternalServerError(format!("Bulk equipment insert failed: {}", e)))?;
-        
+
         processed += chunk.len();
         if processed % 50000 == 0 {
-            log::info!("📥 Equipment: {}/{}", processed, prepared.len());
+            log::info!("📥 Equipment: {}/{}", processed, to_insert.len());
         }
     }
-    
+
     // === SINGLE COMMIT ===
     tx.commit().await
         .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
-    // Restore safe mode
-    sqlx::query("PRAGMA synchronous = NORMAL").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
     let elapsed = start_time.elapsed();
     let rate = if elapsed.as_secs_f64() > 0.0 { 

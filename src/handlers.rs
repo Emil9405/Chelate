@@ -192,7 +192,11 @@ pub async fn use_reagent(
     let (reagent_id, batch_id) = path.into_inner();
     request.validate()?;
 
-    let claims = get_current_user(&http_request)?;
+    // `use_batch` is on for every role by default, but an admin can switch it
+    // off per user; the UI hides the button and the server must refuse too.
+    let claims = crate::auth_handlers::require_permission_key(
+        &http_request, &app_state.db_pool, "use_batch", crate::auth::UserRole::can_use_batches,
+    ).await?;
     validate_quantity(request.quantity_used)?;
 
     let belongs: Option<(i64,)> = sqlx::query_as(

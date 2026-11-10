@@ -202,15 +202,10 @@ impl From<Reagent> for ReagentWithStock {
 // Если base_unit не распознан — возвращаем значение как есть (без конвертации).
 
 fn format_smart_number(value: f64) -> String {
-    // Отсекаем "почти целые": 99.995 тоже целое при 2 знаках
+    // Up to 2 decimals, without trailing zeros: 100 -> "100", 1.5 -> "1.5", 99.55 -> "99.55"
     let rounded = (value * 100.0).round() / 100.0;
-    if (rounded.fract()).abs() < 0.005 {
-        format!("{:.0}", rounded)
-    } else {
-        // Убираем хвостовой ноль: "99.50" → оставляем, "99.5" тоже ок;
-        // но для консистентности лучше 2 знака
-        format!("{:.2}", rounded)
-    }
+    let s = format!("{:.2}", rounded);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 pub fn smart_format_quantity(value: f64, base_unit: &str) -> String {

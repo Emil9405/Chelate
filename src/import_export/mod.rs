@@ -477,12 +477,16 @@ pub(crate) async fn ensure_storage_locations(
 // PRAGMA OPTIMIZATION (for bulk imports)
 // ==========================================
 
-/// Apply SQLite PRAGMA settings for faster bulk imports
+/// Apply SQLite PRAGMA settings for faster bulk imports.
+///
+/// Only cache/temp settings belong here. `journal_mode` and `synchronous` are
+/// set once per connection in `create_database_pool` and must not be changed
+/// through the pool: a PRAGMA sent to the pool lands on an arbitrary pooled
+/// connection, so `synchronous = OFF` used to stay on a connection that later
+/// served ordinary requests (and was never reset when an import failed),
+/// which risks a corrupted database on power loss. A bulk import is a single
+/// transaction, i.e. one fsync, so turning sync off bought nothing anyway.
 pub(crate) async fn optimize_sqlite_for_bulk(pool: &SqlitePool) -> ApiResult<()> {
-    sqlx::query("PRAGMA journal_mode = WAL").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-    sqlx::query("PRAGMA synchronous = NORMAL").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     sqlx::query("PRAGMA cache_size = -64000").execute(pool).await
         .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     sqlx::query("PRAGMA temp_store = MEMORY").execute(pool).await

@@ -304,6 +304,7 @@ pub struct AuthService {
     jwt_secret: String,
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
+    token_expiration_hours: i64,
 }
 
 impl AuthService {
@@ -312,7 +313,19 @@ impl AuthService {
             jwt_secret: jwt_secret.to_string(),
             encoding_key: EncodingKey::from_secret(jwt_secret.as_bytes()),
             decoding_key: DecodingKey::from_secret(jwt_secret.as_bytes()),
+            token_expiration_hours: 24,
         }
+    }
+
+    /// Token lifetime from `AUTH_TOKEN_EXPIRATION_HOURS` (at least one hour)
+    pub fn with_token_expiration_hours(mut self, hours: i64) -> Self {
+        self.token_expiration_hours = hours.max(1);
+        self
+    }
+
+    /// Token lifetime in seconds, for `expires_in` in login responses
+    pub fn token_ttl_seconds(&self) -> i64 {
+        self.token_expiration_hours * 3600
     }
 
     pub fn hash_password(&self, password: &str) -> Result<String, bcrypt::BcryptError> {
@@ -328,7 +341,7 @@ impl AuthService {
 
     pub fn generate_token(&self, user: &User) -> ApiResult<String> {
         let now = Utc::now();
-        let exp = now + Duration::hours(24);
+        let exp = now + Duration::hours(self.token_expiration_hours);
 
         let claims = Claims {
             sub: user.id.clone(),
@@ -480,7 +493,8 @@ impl User {
         if !auth_service.verify_password(current_password, &self.password_hash)
             .map_err(|_| ApiError::InternalServerError("Password verification failed".to_string()))?
         {
-            return Err(ApiError::AuthError("Current password is incorrect".to_string()));
+            // 400, not 401: a 401 makes the web client sign the user out
+            return Err(ApiError::BadRequest("Current password is incorrect".to_string()));
         }
 
         // Validate new password strength

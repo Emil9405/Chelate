@@ -103,8 +103,6 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
     if !new_reagents.is_empty() {
         log::info!("📦 Creating {} new reagents...", new_reagents.len());
         
-        sqlx::query("PRAGMA synchronous = OFF").execute(pool).await
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
         
         let mut tx = pool.begin().await
             .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
@@ -177,9 +175,6 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
     
     log::info!("📋 Prepared {} batches for bulk insert", prepared.len());
     
-    // === PRAGMA BEFORE TRANSACTION ===
-    sqlx::query("PRAGMA synchronous = OFF").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
     // === SINGLE TRANSACTION FOR ENTIRE IMPORT ===
     let mut tx = pool.begin().await
@@ -191,7 +186,7 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
     
     for chunk in prepared.chunks(BATCH_CHUNK) {
         let values_clause: String = chunk.iter()
-            .map(|_| "(?,?,?,?,?,?,?,?,0.0,?,?,?,?,?,?,datetime('now'),'available')")
+            .map(|_| "(?,?,?,?,?,?,?,?,0.0,?,?,?,?,?,?,datetime('now'),datetime('now'),'available')")
             .collect::<Vec<_>>()
             .join(",");
         
@@ -200,7 +195,7 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
                 id, reagent_id, batch_number, cat_number, manufacturer, supplier, 
                 quantity, original_quantity, reserved_quantity,
                 unit, pack_size, expiry_date, received_date,
-                location, notes, updated_at, status
+                location, notes, created_at, updated_at, status
             ) VALUES {}
             ON CONFLICT(reagent_id, batch_number) DO UPDATE SET 
                 quantity = quantity + excluded.quantity,
@@ -244,9 +239,6 @@ async fn import_batches_logic(pool: &SqlitePool, batches: Vec<BatchImportDto>) -
     tx.commit().await
         .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
-    // Restore safe mode
-    sqlx::query("PRAGMA synchronous = NORMAL").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
     let elapsed = start_time.elapsed();
     let rate = if elapsed.as_secs_f64() > 0.0 { 

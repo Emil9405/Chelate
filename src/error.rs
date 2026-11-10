@@ -1,5 +1,5 @@
 // src/error.rs
-use actix_web::{HttpResponse, ResponseError};
+use actix_web::{http::StatusCode, HttpResponse, ResponseError};
 use serde::Serialize;
 use std::fmt;
 
@@ -38,23 +38,53 @@ impl fmt::Display for ApiError {
     }
 }
 
+impl ApiError {
+    /// How a database error is reported. Constraint violations are caused by
+    /// the submitted data, so they are client errors and their message (which
+    /// only names the column or rule) is useful to the user. Everything else
+    /// is a server fault whose details (SQL text, file paths) stay in the log.
+    fn database_error_parts(err: &sqlx::Error) -> (StatusCode, String) {
+        use sqlx::error::ErrorKind;
+        match err.as_database_error().map(|d| (d.kind(), d.message().to_string())) {
+            Some((ErrorKind::UniqueViolation, msg)) | Some((ErrorKind::ForeignKeyViolation, msg)) => {
+                (StatusCode::CONFLICT, format!("Conflict: {}", msg))
+            }
+            Some((ErrorKind::NotNullViolation, msg)) | Some((ErrorKind::CheckViolation, msg)) => {
+                (StatusCode::BAD_REQUEST, format!("Bad Request: {}", msg))
+            }
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, "Database Error".to_string()),
+        }
+    }
+}
+
 impl ResponseError for ApiError {
+    // Without this actix reports 500 for every variant to anything that asks
+    // the error (not the response) for its status, e.g. middleware and tests.
+    fn status_code(&self) -> StatusCode {
+        match self {
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Unauthorized(_) | ApiError::AuthError(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ApiError::ValidationError(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::DatabaseError(err) => Self::database_error_parts(err).0,
+            ApiError::InternalServerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
     fn error_response(&self) -> HttpResponse {
-        let error_response = ErrorResponse {
-            success: false,
-            message: self.to_string(),
+        let message = match self {
+            ApiError::DatabaseError(err) => {
+                let (status, message) = Self::database_error_parts(err);
+                if status.is_server_error() {
+                    log::error!("Database error: {}", err);
+                }
+                message
+            }
+            other => other.to_string(),
         };
 
-        match self {
-            ApiError::BadRequest(_) => HttpResponse::BadRequest().json(error_response),
-            ApiError::NotFound(_) => HttpResponse::NotFound().json(error_response),
-            ApiError::Unauthorized(_) => HttpResponse::Unauthorized().json(error_response),
-            ApiError::Forbidden(_) => HttpResponse::Forbidden().json(error_response),
-            ApiError::ValidationError(_) => HttpResponse::UnprocessableEntity().json(error_response),
-            ApiError::DatabaseError(_) => HttpResponse::InternalServerError().json(error_response),
-            ApiError::AuthError(_) => HttpResponse::Unauthorized().json(error_response),
-            ApiError::InternalServerError(_) => HttpResponse::InternalServerError().json(error_response),
-        }
+        HttpResponse::build(self.status_code()).json(ErrorResponse { success: false, message })
     }
 }
 

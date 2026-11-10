@@ -1,6 +1,5 @@
 // components/Select.js - CHELATE LIMS Style
 import React from 'react';
-import { ChevronDownIcon } from './Icons';
 
 const Select = React.forwardRef(({ 
   error,
