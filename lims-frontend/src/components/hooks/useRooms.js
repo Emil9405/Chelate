@@ -2,7 +2,7 @@
 // Shared hook для загрузки списка комнат
 // v2: модульный кэш — один fetch на все компоненты
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../services/api';
 
 // Модульный кэш: один промис/данные на всё приложение

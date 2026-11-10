@@ -1261,7 +1261,10 @@ pub async fn dispense_units(
 ) -> ApiResult<HttpResponse> {
     let (reagent_id, batch_id) = path.into_inner();
     request.validate().map_err(|e| ApiError::ValidationError(e.to_string()))?;
-    let claims = get_current_user(&http_request)?;
+    // Same rule as the batch-level "Use": honour a revoked `use_batch` permission
+    let claims = crate::auth_handlers::require_permission_key(
+        &http_request, &app_state.db_pool, "use_batch", crate::auth::UserRole::can_use_batches,
+    ).await?;
 
     let batch: Batch = sqlx::query_as(
         "SELECT * FROM batches WHERE id = ? AND reagent_id = ? AND deleted_at IS NULL"

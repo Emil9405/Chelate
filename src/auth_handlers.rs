@@ -248,7 +248,9 @@ pub async fn login(
 
     // Check if user is locked
     if user.is_locked() {
-        return Err(ApiError::AuthError("Account is temporarily locked. Try again later.".to_string()));
+        // 403, not 401: the web client treats 401 as "session expired" and
+        // reloads the login page, so the user never saw this message
+        return Err(ApiError::Forbidden("Account is temporarily locked. Try again later.".to_string()));
     }
 
     // Verify password
@@ -258,12 +260,15 @@ pub async fn login(
         // Increment failed attempts
         user.increment_failed_attempts(&app_state.db_pool).await?;
 
-        // Lock for 15 minutes after 5 failed attempts
-        if user.failed_login_attempts >= 5 {
-            user.lock_for_duration(&app_state.db_pool, Duration::minutes(15)).await?;
-            return Err(ApiError::AuthError(
-                "Account locked due to too many failed attempts. Try again in 15 minutes.".to_string()
-            ));
+        // Lock after too many failed attempts
+        // (AUTH_MAX_LOGIN_ATTEMPTS / AUTH_LOCKOUT_DURATION_MINUTES, default 5 / 15)
+        let max_attempts = app_state.config.auth.max_login_attempts.max(1);
+        let lockout_minutes = app_state.config.auth.lockout_duration_minutes.clamp(1, 7 * 24 * 60) as i64;
+        if user.failed_login_attempts >= max_attempts {
+            user.lock_for_duration(&app_state.db_pool, Duration::minutes(lockout_minutes)).await?;
+            return Err(ApiError::Forbidden(format!(
+                "Account locked due to too many failed attempts. Try again in {} minutes.", lockout_minutes
+            )));
         }
 
         return Err(ApiError::BadRequest("Invalid username or password".to_string()));
@@ -272,7 +277,7 @@ pub async fn login(
     // Deactivated accounts cannot sign in (checked after the password so the
     // response does not reveal which usernames exist)
     if !user.is_active {
-        return Err(ApiError::AuthError("Account is disabled. Contact an administrator.".to_string()));
+        return Err(ApiError::Forbidden("Account is disabled. Contact an administrator.".to_string()));
     }
 
     // Check if lock has expired and reset
@@ -293,7 +298,7 @@ pub async fn login(
 
     let response = LoginResponse {
         token,
-        expires_in: 24 * 3600, // 24 hours in seconds
+        expires_in: auth_service.token_ttl_seconds(),
         user: user.clone().into(),
     };
 
@@ -340,7 +345,7 @@ pub async fn register(
 
     let response = LoginResponse {
         token,
-        expires_in: 24 * 3600,
+        expires_in: auth_service.token_ttl_seconds(),
         user: user.into(),
     };
 

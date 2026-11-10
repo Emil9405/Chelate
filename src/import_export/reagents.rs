@@ -264,12 +264,6 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
         prepared_placements.len(),
     );
     
-    // =============================================
-    // === PRAGMA BEFORE TRANSACTION ===
-    // =============================================
-    sqlx::query("PRAGMA synchronous = OFF").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-    
     let mut tx = pool.begin().await
         .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
@@ -483,9 +477,6 @@ async fn import_reagents_logic(pool: &SqlitePool, reagents: Vec<ReagentImportDto
     tx.commit().await
         .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     
-    // Restore safe mode
-    sqlx::query("PRAGMA synchronous = NORMAL").execute(pool).await
-        .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
 
     let elapsed = start_time.elapsed();
     let rate = if elapsed.as_secs_f64() > 0.0 { 

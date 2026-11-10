@@ -530,14 +530,19 @@ pub async fn add_reagent_to_experiment(
     }
 
     // Check batch exists and has enough quantity
-    let batch: BatchInfo = sqlx::query_as("SELECT reagent_id, unit, quantity, reserved_quantity FROM batches WHERE id = ?")
+    let batch: BatchInfo = sqlx::query_as(
+        "SELECT reagent_id, unit, quantity, COALESCE(reserved_quantity, 0) AS reserved_quantity \
+         FROM batches WHERE id = ? AND deleted_at IS NULL"
+    )
         .bind(&body.batch_id)
         .fetch_one(&app_state.db_pool)
         .await
         .map_err(|_| ApiError::not_found("Batch"))?;
 
+    // 1e-9 tolerance: 0.3 - 0.1 is 0.19999999999999998 in f64, which used to
+    // refuse a request for exactly the 0.2 that is free
     let available = batch.quantity - batch.reserved_quantity;
-    if body.quantity_used > available {
+    if body.quantity_used > available + 1e-9 {
         return Err(ApiError::insufficient_quantity(available, body.quantity_used));
     }
 
@@ -545,6 +550,24 @@ pub async fn add_reagent_to_experiment(
     let now = Utc::now();
 
     let mut tx = app_state.db_pool.begin().await?;
+
+    // Reserve first, and only if the stock is still free. The check above ran
+    // outside the transaction, so two concurrent requests could both pass it
+    // and reserve more than the batch holds; the conditional UPDATE is atomic.
+    let reserved = sqlx::query(
+        "UPDATE batches SET reserved_quantity = COALESCE(reserved_quantity, 0) + ? \
+         WHERE id = ? AND deleted_at IS NULL \
+           AND quantity - COALESCE(reserved_quantity, 0) + 1e-9 >= ?"
+    )
+        .bind(body.quantity_used)
+        .bind(&body.batch_id)
+        .bind(body.quantity_used)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if reserved == 0 {
+        return Err(ApiError::insufficient_quantity(available, body.quantity_used));
+    }
 
     // Add reagent to experiment
 sqlx::query(r#"
@@ -563,13 +586,6 @@ sqlx::query(r#"
         .bind(&body.notes)
         .bind(&now)
         .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-
-    // Reserve quantity in batch
-    sqlx::query("UPDATE batches SET reserved_quantity = reserved_quantity + ? WHERE id = ?")
-        .bind(body.quantity_used)
-        .bind(&body.batch_id)
         .execute(&mut *tx)
         .await?;
 
@@ -610,11 +626,20 @@ pub async fn remove_reagent_from_experiment(
 
     let mut tx = app_state.db_pool.begin().await?;
 
-    // Remove link
-    sqlx::query("DELETE FROM experiment_reagents WHERE id = ?")
+    // Remove link. Release the reservation only if this request removed the
+    // row: a repeated or concurrent delete (or a link consumed meanwhile) must
+    // not release the same quantity twice.
+    let removed = sqlx::query(
+        "DELETE FROM experiment_reagents WHERE id = ? AND experiment_id = ? AND COALESCE(is_consumed, 0) = 0"
+    )
         .bind(&reagent_link_id)
+        .bind(&experiment_id)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+    if removed == 0 {
+        return Err(ApiError::not_found("Experiment reagent link"));
+    }
 
     // Unreserve quantity
     let qty = link.planned_quantity.unwrap_or(0.0);

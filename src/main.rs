@@ -19,7 +19,7 @@ use rand::{thread_rng, Rng, distributions::Alphanumeric};
 use rand::distributions::Distribution;
 use rand::seq::SliceRandom;
 use anyhow::Context;
-use sqlx::{sqlite::SqliteConnectOptions, migrate::MigrateDatabase, Sqlite, SqlitePool};
+use sqlx::{sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous}, migrate::MigrateDatabase, Sqlite, SqlitePool};
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -61,6 +61,8 @@ mod reagent_stock;
 mod routes;
 pub mod soft_delete;
 pub mod archive_handlers;
+#[cfg(test)]
+mod regression_tests;
 
 use config::Config;
 use auth::{AuthService, jwt_middleware};
@@ -119,7 +121,10 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => log::warn!("Low-stock status sync failed: {}", e),
     }
 
-    let auth_service = Arc::new(AuthService::new(&config.auth.jwt_secret));
+    let auth_service = Arc::new(
+        AuthService::new(&config.auth.jwt_secret)
+            .with_token_expiration_hours(config.auth.token_expiration_hours),
+    );
     create_default_admin_if_needed(&pool, &auth_service).await?;
 
     let app_state = Arc::new(AppState {
@@ -334,7 +339,15 @@ async fn setup_database(database_url: &str) -> anyhow::Result<()> {
 }
 
 async fn create_database_pool(db_config: &crate::config::DatabaseConfig) -> anyhow::Result<SqlitePool> {
-    let options = SqliteConnectOptions::new().filename(&db_config.url).create_if_missing(true);
+    // Per-connection settings go here, not through `PRAGMA` on the pool:
+    // a PRAGMA sent to the pool only reaches one arbitrary connection.
+    let options = SqliteConnectOptions::new()
+        .filename(&db_config.url)
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Full)
+        .busy_timeout(std::time::Duration::from_secs(5));
     let pool = SqlitePool::connect_with(options).await?;
     Ok(pool)
 }
