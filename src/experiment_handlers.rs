@@ -160,21 +160,28 @@ pub async fn create_experiment(
     let exp_date = experiment.experiment_date.unwrap_or(now);
     let start_date = experiment.start_date.unwrap_or(exp_date);
 
+    // The form sends the selected room as room_id; it used to be dropped here
+    // (only the room's name went into `location`), so a new experiment had no
+    // room link until it was edited. An empty value means "no room".
+    let room_id = experiment.room_id.as_deref().map(str::trim).filter(|r| !r.is_empty());
+
     sqlx::query(r#"
         INSERT INTO experiments 
         (id, title, description, experiment_date, experiment_type, 
-         instructor, student_group, location, protocol, start_date, end_date, notes,
+         instructor, student_group, location, room_id, protocol, start_date, end_date, notes,
          status, created_by, updated_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?)
     "#)
         .bind(&id)
         .bind(&experiment.title)
         .bind(&experiment.description)
         .bind(&exp_date)
-        .bind(&experiment.experiment_type)
+        // the column is NOT NULL: an explicit NULL does not fall back to its default
+        .bind(experiment.experiment_type.as_deref().unwrap_or("research"))
         .bind(&experiment.instructor)
         .bind(&experiment.student_group)
         .bind(&experiment.location)
+        .bind(room_id)
         .bind(&experiment.protocol)
         .bind(&start_date)
         .bind(&experiment.end_date)
