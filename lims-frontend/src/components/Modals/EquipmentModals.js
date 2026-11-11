@@ -3,6 +3,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../../services/api';
+import { can } from '../../utils/permissions';
+import useFileUrl from '../hooks/useFileUrl';
 import Modal from '../Modal';
 import Badge from '../Badge';
 import Button from '../Button';
@@ -39,7 +41,16 @@ const EQUIPMENT_STATUSES = {
 
 // Same base as services/api.js: in a production build the API is on this origin
 const API_BASE_URL = process.env.REACT_APP_API_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
-const getFileUrl = (equipmentId, fileId) => `${API_BASE_URL}/api/v1/public/equipment/${equipmentId}/files/${fileId}`;
+// Protected: loaded with the session token (useFileUrl / AuthImage), never as a plain <img src>
+const getFileUrl = (equipmentId, fileId) => `${API_BASE_URL}/api/v1/equipment/${equipmentId}/files/${fileId}`;
+
+/** <img> for a file behind the session token (local blob:/data: previews pass through) */
+const AuthImage = ({ src, alt, style, onError }) => {
+  const { url, failed } = useFileUrl(src);
+  useEffect(() => { if (failed && onError) onError(); }, [failed, onError]);
+  if (!url) return null;
+  return <img src={url} alt={alt} style={style} onError={onError} />;
+};
 
 // Files the browser shows itself (the server sends them inline)
 const isViewable = (mime) => !!mime && (mime.startsWith('image/') || mime === 'application/pdf' || mime === 'text/plain');
@@ -177,8 +188,12 @@ const ImagePreview = ({ file, onRemove }) => {
 
 // ==================== HOVER IMAGE (zoom on hover) ====================
 
-const HoverImage = ({ src, alt, size = 40, zoomSize = 200 }) => {
-  const [error, setError] = useState(false);
+const HoverImage = ({ src: source, alt, size = 40, zoomSize = 200 }) => {
+  const { url: src, failed } = useFileUrl(source);
+  const [imgError, setError] = useState(false);
+  const error = imgError || failed;
+  // a new file gets a fresh chance to load
+  useEffect(() => { setError(false); }, [source]);
   const [showZoom, setShowZoom] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
 
@@ -191,7 +206,7 @@ const HoverImage = ({ src, alt, size = 40, zoomSize = 200 }) => {
 
   if (error || !src) {
     return (
-      <div style={{ width: size, height: size, borderRadius: '6px', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#718096', flexShrink: 0 }}>
+      <div aria-busy={!!source && !error} style={{ width: size, height: size, borderRadius: '6px', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#718096', flexShrink: 0 }}>
         <i className="fas fa-image" style={{ fontSize: size * 0.4 }}></i>
       </div>
     );
@@ -245,7 +260,7 @@ const ImageUpload = ({ file, existingUrl, onFileSelect }) => {
       <div style={styles.sectionTitle}>Photo</div>
       <div style={styles.photoBox}>
         {imageUrl ? (
-          <img src={imageUrl} alt="Preview" style={styles.previewImage} />
+          <AuthImage src={imageUrl} alt="Preview" style={styles.previewImage} />
         ) : (
           <div style={styles.photoPlaceholder}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -518,7 +533,7 @@ export const PartFormModal = ({ equipmentId, part, existingImageUrl, onClose, on
                   <h4 style={{ margin: '0 0 0.75rem 0', color: '#374151', fontSize: '0.75rem', fontWeight: '600' }}>Photo</h4>
                   {existingImageUrl && !photo && (
                     <div style={{ marginBottom: '0.5rem' }}>
-                      <img src={existingImageUrl} alt="Current" style={{ width: '100%', maxWidth: '120px', borderRadius: '6px' }} />
+                      <AuthImage src={existingImageUrl} alt="Current" style={{ width: '100%', maxWidth: '120px', borderRadius: '6px' }} />
                       <p style={{ fontSize: '0.7rem', color: '#718096', margin: '0.25rem 0 0 0' }}>Current</p>
                     </div>
                   )}
@@ -668,7 +683,8 @@ export const EquipmentDetailsModal = ({ equipment, user, onClose, onUpdate }) =>
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const canEdit = useCallback(() => ['Admin', 'Researcher'].includes(user?.role), [user?.role]);
+  const canEdit = useCallback(() => can(user, 'edit_equipment'), [user]);
+  const canMaintain = can(user, 'manage_maintenance');
 
   const loadAll = useCallback(async () => {
     try {
@@ -759,7 +775,7 @@ export const EquipmentDetailsModal = ({ equipment, user, onClose, onUpdate }) =>
 
           {activeTab === 'details' && !loading && <DetailsTab equipment={current} />}
           {activeTab === 'parts' && !loading && <PartsTab equipmentId={equipment.id} parts={parts} files={files} canEdit={canEdit()} onRefresh={handleRefresh} />}
-          {activeTab === 'maintenance' && !loading && <MaintenanceTab equipment={current} maintenance={maintenance} canEdit={canEdit()} userName={user?.name || user?.username || ''} onRefresh={handleRefresh} />}
+          {activeTab === 'maintenance' && !loading && <MaintenanceTab equipment={current} maintenance={maintenance} canEdit={canMaintain} userName={user?.name || user?.username || ''} onRefresh={handleRefresh} />}
           {activeTab === 'files' && !loading && <FilesTab equipmentId={equipment.id} files={files} canEdit={canEdit()} onRefresh={handleRefresh} />}
         </div>
       </div>
@@ -999,15 +1015,31 @@ const FilesTab = ({ equipmentId, files, canEdit, onRefresh }) => {
     }
   };
 
-  // A plain link: the server names the file (UTF-8 names intact) and phones
-  // save it reliably, which blob downloads do not always do.
-  const handleDownload = (file) => {
-    const a = document.createElement('a');
-    a.href = `${getFileUrl(equipmentId, file.id)}?download=1`;
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  // Still a plain link (the server names the file, UTF-8 names intact, and
+  // phones save it reliably, which blob downloads do not always do), but the
+  // link is issued per file and expires in a few minutes.
+  const handleDownload = async (file) => {
+    try {
+      const url = await api.getEquipmentFileLink(equipmentId, file.id);
+      // Content-Disposition: attachment, so the page stays where it is
+      window.location.assign(`${url}&download=1`);
+    } catch (err) {
+      setUploadError(err.message || 'Could not download the file');
+    }
+  };
+
+  // The tab is opened inside the click (after an await the browser would
+  // block it as a pop-up) and pointed at the file once the link arrives.
+  const handleOpen = async (file) => {
+    const tab = window.open('', '_blank');
+    try {
+      const url = await api.getEquipmentFileLink(equipmentId, file.id);
+      if (tab) { tab.opener = null; tab.location.replace(url); }
+      else window.location.assign(url);
+    } catch (err) {
+      if (tab) tab.close();
+      setUploadError(err.message || 'Could not open the file');
+    }
   };
   
   const handleDelete = async (fileId) => { 
@@ -1080,10 +1112,10 @@ const FilesTab = ({ equipmentId, files, canEdit, onRefresh }) => {
                   <i className={`fas ${fileTypeIcons[file.file_type] || 'fa-file'}`} style={{ fontSize: '1.5rem', marginRight: '0.75rem', color: '#667eea' }}></i>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {isViewable(file.mime_type) ? (
-                      <a href={getFileUrl(equipmentId, file.id)} target="_blank" rel="noopener noreferrer"
-                        style={{ display: 'block', margin: 0, fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#2b6cb0' }}>
+                      <button type="button" onClick={() => handleOpen(file)}
+                        style={{ display: 'block', width: '100%', margin: 0, padding: 0, border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', font: 'inherit', fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#2b6cb0', textDecoration: 'underline' }}>
                         {file.original_filename}
-                      </a>
+                      </button>
                     ) : (
                       <p style={{ margin: 0, fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.original_filename}</p>
                     )}
@@ -1093,7 +1125,7 @@ const FilesTab = ({ equipmentId, files, canEdit, onRefresh }) => {
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   {isViewable(file.mime_type) && (
                     <Button variant="primary" size="small" aria-label={`Open ${file.original_filename}`}
-                      onClick={() => window.open(getFileUrl(equipmentId, file.id), '_blank', 'noopener,noreferrer')}>
+                      onClick={() => handleOpen(file)}>
                       <i className="fas fa-external-link-alt"></i> Open
                     </Button>
                   )}

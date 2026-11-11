@@ -271,13 +271,6 @@ export const api = {
             body: JSON.stringify({ permissions }),
         });
         
-        // Если обновляем permissions текущего пользователя - обновляем localStorage
-        const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-        if (currentUser.id === userId) {
-            currentUser.permissions = permissions;
-            localStorage.setItem('user', JSON.stringify(currentUser));
-        }
-        
         return result;
     },
 
@@ -841,6 +834,16 @@ export const api = {
     getPartFiles: async (equipmentId, partId) => {
         const response = await apiCall(`${API_V1_BASE}/equipment/${equipmentId}/parts/${partId}/files`);
         return response.data || response;
+    },
+
+    // A file behind the session token, as a Blob (for <img>, see hooks/useFileUrl)
+    fetchFileBlob: async (url) => apiBlobCall(url),
+
+    // Short-lived link to one file, for opening in a new tab or saving
+    getEquipmentFileLink: async (equipmentId, fileId) => {
+        const response = await apiCall(`${API_V1_BASE}/equipment/${equipmentId}/files/${fileId}/link`, { method: 'POST' });
+        const data = response.data || response;
+        return `${API_BASE_URL}${data.url}`;
     },
 
     downloadEquipmentFile: async (equipmentId, fileId, filename) => {

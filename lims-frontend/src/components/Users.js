@@ -152,12 +152,11 @@ const PermissionsModal = ({ isOpen, onClose, user, onSave }) => {
       { key: 'import_data', label: 'Import Data' },
       { key: 'export_data', label: 'Export Data' },
     ],
-    'System': [
-      { key: 'view_audit_log', label: 'View Audit Log' },
-      { key: 'manage_users', label: 'Manage Users' },
-      { key: 'manage_system', label: 'System Settings' },
-    ],
   };
+  // User management, the audit log and system settings come with the
+  // Administrator role and cannot be switched on for one user: whoever manages
+  // users can make themselves an administrator. Admins always have everything.
+  const targetIsAdmin = String(user?.role || '').toLowerCase() === 'admin';
 
   const rolePresets = {
     admin: Object.values(permissionGroups).flat().reduce((acc, p) => ({ ...acc, [p.key]: true }), {}),
@@ -214,10 +213,15 @@ const PermissionsModal = ({ isOpen, onClose, user, onSave }) => {
       {loading ? <Loading text="Loading permissions..." /> : (
         <>
           {error && <ErrorMessage message={error} onDismiss={() => setError('')} />}
+          <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', backgroundColor: targetIsAdmin ? '#fffaf0' : '#ebf8ff', border: `1px solid ${targetIsAdmin ? '#fbd38d' : '#bee3f8'}`, borderRadius: '8px', fontSize: '13px', color: '#2d3748', lineHeight: 1.5 }}>
+            {targetIsAdmin
+              ? 'Administrators always have every permission. To restrict this user, change the role first.'
+              : 'These switches replace the defaults of the role: what is off here is refused by the server, including viewing. Managing users, the audit log and system settings belong to the Administrator role only. Changing the user\'s role resets this list to the defaults of the new role.'}
+          </div>
           <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f7fafc', borderRadius: '8px' }}>
             <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '0.5rem', color: '#4a5568' }}>Quick Presets:</div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <Button variant="secondary" size="small" onClick={() => handleApplyPreset('admin')}>🔑 Full Admin</Button>
+              <Button variant="secondary" size="small" onClick={() => handleApplyPreset('admin')}>🔑 Everything</Button>
               <Button variant="secondary" size="small" onClick={() => handleApplyPreset('researcher')}>🔬 Researcher</Button>
               <Button variant="secondary" size="small" onClick={() => handleApplyPreset('viewer')}>👁️ Viewer Only</Button>
               <Button variant="secondary" size="small" onClick={() => setPermissions({})}>❌ Clear All</Button>
@@ -240,7 +244,7 @@ const PermissionsModal = ({ isOpen, onClose, user, onSave }) => {
           </div>
           <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
             <Button variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button variant="primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save Permissions'}</Button>
+            <Button variant="primary" onClick={handleSave} disabled={saving || targetIsAdmin}>{saving ? 'Saving...' : 'Save Permissions'}</Button>
           </div>
         </>
       )}

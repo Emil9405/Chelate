@@ -292,3 +292,137 @@ fn token_lifetime_follows_configuration() {
     // a zero or negative setting must not produce tokens that are born expired
     assert_eq!(AuthService::new(secret).with_token_expiration_hours(0).token_ttl_seconds(), 3600);
 }
+
+// ==================== JWT ROTATION ====================
+
+fn test_user() -> crate::auth::User {
+    crate::auth::User {
+        id: "u-res".to_string(),
+        username: "user-researcher".to_string(),
+        email: "researcher@lims.local".to_string(),
+        password_hash: String::new(),
+        name: None,
+        role: "researcher".to_string(),
+        is_active: true,
+        last_login: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        failed_login_attempts: 0,
+        locked_until: None,
+    }
+}
+
+#[test]
+fn rotation_keeps_current_sessions_and_drops_older_ones() {
+    let auth = AuthService::new("first-secret-0123456789abcdef0123456789");
+    let before = auth.generate_token(&test_user()).unwrap();
+
+    auth.rotate("second-secret-0123456789abcdef012345678");
+    assert!(auth.verify_token(&before).is_ok(), "a token issued before the rotation still works");
+    let after = auth.generate_token(&test_user()).unwrap();
+    assert!(auth.verify_token(&after).is_ok());
+
+    // A restart with both secrets from the env file keeps both generations
+    let restarted = AuthService::new("second-secret-0123456789abcdef012345678")
+        .with_previous_secret(Some("first-secret-0123456789abcdef0123456789"));
+    assert!(restarted.verify_token(&before).is_ok());
+    assert!(restarted.verify_token(&after).is_ok());
+
+    // Only one previous secret is kept
+    auth.rotate("third-secret-0123456789abcdef0123456789");
+    assert!(auth.verify_token(&after).is_ok());
+    assert!(auth.verify_token(&before).is_err(), "two rotations back is no longer accepted");
+    assert!(auth.verify_token("not-a-token").is_err());
+}
+
+#[actix_rt::test]
+async fn rotation_updates_env_file_and_running_service() {
+    let state = setup().await;
+    let pool = &state.db_pool;
+    crate::jwt_rotation::init_rotation_table(pool).await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join(".env");
+    std::fs::write(&env_path, "DATABASE_URL=lims.db\nJWT_SECRET=first-secret-0123456789abcdef0123456789\nLIMS_PORT=8080\n").unwrap();
+    let env_path = env_path.to_string_lossy().to_string();
+
+    let auth = AuthService::new("first-secret-0123456789abcdef0123456789");
+    let before = auth.generate_token(&test_user()).unwrap();
+
+    crate::jwt_rotation::rotate_jwt_secret(pool, &env_path, &auth).await.unwrap();
+
+    let new_secret = auth.current_secret();
+    assert_ne!(new_secret, "first-secret-0123456789abcdef0123456789");
+    let written = std::fs::read_to_string(&env_path).unwrap();
+    assert!(written.contains(&format!("JWT_SECRET={}\n", new_secret)));
+    assert!(written.contains("JWT_SECRET_PREVIOUS=first-secret-0123456789abcdef0123456789\n"));
+    assert!(written.contains("DATABASE_URL=lims.db\n") && written.contains("LIMS_PORT=8080\n"), "other settings untouched");
+    assert!(auth.verify_token(&before).is_ok());
+
+    let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jwt_rotation_log WHERE is_active = 1")
+        .fetch_one(pool).await.unwrap();
+    assert_eq!(active, 1);
+}
+
+#[actix_rt::test]
+async fn failed_env_write_leaves_the_secret_unchanged() {
+    let state = setup().await;
+    let pool = &state.db_pool;
+    crate::jwt_rotation::init_rotation_table(pool).await.unwrap();
+    let auth = AuthService::new("first-secret-0123456789abcdef0123456789");
+
+    let result = crate::jwt_rotation::rotate_jwt_secret(pool, "/nonexistent-dir/for-test/.env", &auth).await;
+    assert!(result.is_err());
+    assert_eq!(auth.current_secret(), "first-secret-0123456789abcdef0123456789");
+}
+
+// ==================== FILE LINKS ====================
+
+#[test]
+fn file_link_is_bound_to_one_file_and_is_not_a_session() {
+    let auth = AuthService::new("first-secret-0123456789abcdef0123456789");
+    let link = auth.sign_file_link("file-1", 300).unwrap();
+
+    assert!(auth.verify_file_link(&link, "file-1"));
+    assert!(!auth.verify_file_link(&link, "file-2"), "a link opens only its own file");
+    assert!(auth.verify_token(&link).is_err(), "a file link is not a session token");
+
+    let session = auth.generate_token(&test_user()).unwrap();
+    assert!(!auth.verify_file_link(&session, "file-1"), "a session token is not a file link");
+
+    let expired = auth.sign_file_link("file-1", -10).unwrap();
+    assert!(!auth.verify_file_link(&expired, "file-1"));
+
+    // links issued just before a rotation still open
+    auth.rotate("second-secret-0123456789abcdef012345678");
+    assert!(auth.verify_file_link(&link, "file-1"));
+}
+
+// ==================== PERMISSIONS: ONE SOURCE ====================
+
+#[actix_rt::test]
+async fn view_and_maintenance_keys_are_enforced() {
+    use crate::auth_handlers::{check_batch_permission_async, check_equipment_permission, BatchAction, EquipmentAction};
+    let state = setup().await;
+    let pool = &state.db_pool;
+    let viewer = request_as("u-view", UserRole::Viewer);
+
+    assert!(check_batch_permission_async(&viewer, BatchAction::View, pool).await.is_ok());
+    assert!(check_equipment_permission(&viewer, EquipmentAction::Maintenance, pool).await.is_err());
+
+    // viewing switched off, maintenance switched on
+    set_permissions(pool, "u-view", r#"{"view_batch": false, "manage_maintenance": true}"#).await;
+    assert!(check_batch_permission_async(&viewer, BatchAction::View, pool).await.is_err());
+    assert!(check_equipment_permission(&viewer, EquipmentAction::Maintenance, pool).await.is_ok());
+    assert!(check_equipment_permission(&viewer, EquipmentAction::Edit, pool).await.is_err());
+}
+
+#[actix_rt::test]
+async fn storage_delete_needs_delete_room() {
+    let state = setup().await;
+    let pool = &state.db_pool;
+    let researcher = request_as("u-res", UserRole::Researcher);
+    assert!(check_room_permission(&researcher, RoomAction::Edit, pool).await.is_ok());
+    assert!(check_room_permission(&researcher, RoomAction::Delete, pool).await.is_err());
+    assert!(check_room_permission(&request_as("u-admin", UserRole::Admin), RoomAction::Delete, pool).await.is_ok());
+}

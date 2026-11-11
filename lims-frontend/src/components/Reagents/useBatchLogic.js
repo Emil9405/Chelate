@@ -240,6 +240,26 @@ const handleQuantityUse = useCallback(async (batch, expiredOpts = null) => {
       return;
     }
 
+    // --- Nothing selected while the bottles stand in different places ---
+    // Auto-distribution takes opened bottles first, then by number, wherever
+    // they are: a user standing in room 201 would write off a bottle that is
+    // in room 401. The choice must be explicit. (The only warning used to be
+    // a hover tooltip on the Use button, which does not exist on a phone.)
+    if (selectedIds.length === 0) {
+      const usable = containers.filter(c => {
+        const status = c.container_status ?? c.status ?? 'full';
+        return status !== 'empty' && status !== 'disposed';
+      });
+      const places = new Set(usable.map(c => c.position_id || c.placement_id || 'unplaced'));
+      if (usable.length > 1 && places.size > 1) {
+        setUsageError(prev => ({
+          ...prev,
+          [batch.id]: `Choose the container: this batch is stored in ${places.size} places`,
+        }));
+        return;
+      }
+    }
+
     // --- Group selected (≥2 IDs) OR no selection: auto-distribute ---
     // Group selection narrows the candidate pool to those specific containers;
     // empty selection uses all containers in the batch.

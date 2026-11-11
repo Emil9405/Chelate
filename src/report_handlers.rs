@@ -18,7 +18,7 @@ use crate::query_builders::{
 // ==================== SECURITY CONSTANTS ====================
 
 const ALLOWED_SORT_FIELDS: &[&str] = &[
-    "id", "reagent_id", "reagent_name", "batch_number", "cat_number",
+    "id", "reagent_id", "reagent_name", "batch_number", "cat_number", "cas_number",
     "quantity", "original_quantity", "reserved_quantity", "remaining_percent", "unit",
     "expiry_date", "supplier", "manufacturer", "received_date",
     "status", "created_at", "updated_at", "days_until_expiry",
@@ -52,6 +52,7 @@ pub struct BatchReportRow {
     pub reagent_name: String,
     pub batch_number: String,
     pub cat_number: Option<String>,
+    pub cas_number: Option<String>,
     pub quantity: f64,
     pub original_quantity: f64,
     pub reserved_quantity: f64,
@@ -302,6 +303,7 @@ const BASE_REPORT_QUERY: &str = r#"
     batch_data AS (
         SELECT
             b.id, b.reagent_id, r.name as reagent_name, b.batch_number, b.cat_number,
+            r.cas_number as cas_number,
             b.quantity, b.original_quantity, b.reserved_quantity,
             -- CAST gives the column REAL affinity, so text-bound filter
             -- params compare numerically
@@ -384,111 +386,51 @@ pub async fn get_report_presets(
 pub async fn get_report_fields(
     _app_state: web::Data<Arc<AppState>>,
 ) -> ApiResult<HttpResponse> {
+    fn field(field: &str, label: &str, data_type: &str, operators: &[&str], values: Option<&[&str]>) -> AvailableField {
+        AvailableField {
+            field: field.to_string(),
+            label: label.to_string(),
+            data_type: data_type.to_string(),
+            operators: operators.iter().map(|o| o.to_string()).collect(),
+            values: values.map(|v| v.iter().map(|x| x.to_string()).collect()),
+        }
+    }
+    const NUMBER: &[&str] = &["eq", "gt", "gte", "lt", "lte"];
+    const TEXT: &[&str] = &["eq", "like"];
+    const TEXT_OPTIONAL: &[&str] = &["eq", "like", "is_null", "is_not_null"];
+    const DATE: &[&str] = &["eq", "gt", "gte", "lt", "lte"];
+    const DATE_OPTIONAL: &[&str] = &["eq", "gt", "gte", "lt", "lte", "is_null", "is_not_null"];
+
     let fields = vec![
-        AvailableField {
-            field: "status".to_string(),
-            label: "Status".to_string(),
-            data_type: "enum".to_string(),
-            operators: vec!["eq".to_string(), "ne".to_string(), "in".to_string()],
-            values: Some(vec![
-                "available".to_string(),
-                "low_stock".to_string(),
-                "reserved".to_string(),
-                "expired".to_string(),
-                "depleted".to_string()
-            ]),
-        },
-        AvailableField {
-            field: "quantity".to_string(),
-            label: "Quantity".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "remaining_percent".to_string(),
-            label: "Remaining %".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "expiry_date".to_string(),
-            label: "Expiry Date".to_string(),
-            data_type: "date".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "lt".to_string(), "is_null".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "days_until_expiry".to_string(),
-            label: "Days Until Expiry".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "location_summary".to_string(),
-            label: "Location".to_string(),
-            data_type: "text".to_string(),
-            operators: vec!["eq".to_string(), "like".to_string(), "is_null".to_string(), "is_not_null".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "room_names".to_string(),
-            label: "Rooms".to_string(),
-            data_type: "text".to_string(),
-            operators: vec!["like".to_string(), "is_null".to_string(), "is_not_null".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "container_count".to_string(),
-            label: "Containers (total)".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "opened_count".to_string(),
-            label: "Containers (opened)".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "placed_count".to_string(),
-            label: "Containers (placed)".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "unplaced_count".to_string(),
-            label: "Containers (unplaced)".to_string(),
-            data_type: "number".to_string(),
-            operators: vec!["eq".to_string(), "gt".to_string(), "gte".to_string(), "lt".to_string(), "lte".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "supplier".to_string(),
-            label: "Supplier".to_string(),
-            data_type: "text".to_string(),
-            operators: vec!["eq".to_string(), "like".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "manufacturer".to_string(),
-            label: "Manufacturer".to_string(),
-            data_type: "text".to_string(),
-            operators: vec!["eq".to_string(), "like".to_string()],
-            values: None,
-        },
-        AvailableField {
-            field: "reagent_name".to_string(),
-            label: "Reagent Name".to_string(),
-            data_type: "text".to_string(),
-            operators: vec!["eq".to_string(), "like".to_string()],
-            values: None,
-        },
+        // What it is
+        field("reagent_name", "Reagent Name", "text", TEXT, None),
+        field("cas_number", "CAS Number", "text", TEXT_OPTIONAL, None),
+        field("batch_number", "Batch Number", "text", TEXT, None),
+        field("cat_number", "Catalog Number", "text", TEXT_OPTIONAL, None),
+        field("supplier", "Supplier", "text", TEXT_OPTIONAL, None),
+        field("manufacturer", "Manufacturer", "text", TEXT_OPTIONAL, None),
+        // How much is left
+        // The statuses a batch can actually have ("reserved" was listed here
+        // but is not one of them, and "in_use" was missing)
+        field("status", "Status", "enum", &["eq", "ne", "in"],
+              Some(&["available", "low_stock", "in_use", "expired", "depleted"])),
+        field("quantity", "Quantity", "number", NUMBER, None),
+        field("remaining_percent", "Remaining %", "number", &["gt", "gte", "lt", "lte"], None),
+        field("reserved_quantity", "Reserved for Experiments", "number", NUMBER, None),
+        field("unit", "Unit", "text", &["eq", "ne"], None),
+        // Dates
+        field("expiry_date", "Expiry Date", "date", DATE_OPTIONAL, None),
+        field("days_until_expiry", "Days Until Expiry", "number", NUMBER, None),
+        field("expiration_status", "Expiry State", "enum", &["eq", "ne", "in"],
+              Some(&["ok", "warning", "critical", "expired", "unknown"])),
+        field("received_date", "Received Date", "date", DATE, None),
+        // Where it is
+        field("room_names", "Rooms", "text", &["like", "is_null", "is_not_null"], None),
+        field("location_summary", "Location", "text", TEXT_OPTIONAL, None),
+        field("container_count", "Containers (total)", "number", NUMBER, None),
+        field("opened_count", "Containers (opened)", "number", NUMBER, None),
+        field("placed_count", "Containers (placed)", "number", NUMBER, None),
+        field("unplaced_count", "Containers (unplaced)", "number", NUMBER, None),
     ];
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(fields)))
@@ -520,8 +462,8 @@ pub async fn generate_report(
         if !search.trim().is_empty() {
             let escaped = escape_like_pattern(search.trim());
             let pattern = format!("%{}%", escaped);
-            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\')".to_string();
-            for _ in 0..5 {
+            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\' OR COALESCE(cas_number, '') LIKE ? ESCAPE '\\' OR COALESCE(cat_number, '') LIKE ? ESCAPE '\\')".to_string();
+            for _ in 0..7 {
                 params.push(pattern.clone());
             }
         }
@@ -596,8 +538,8 @@ async fn fetch_export_data(
         if !search.trim().is_empty() {
             let escaped = escape_like_pattern(search.trim());
             let pattern = format!("%{}%", escaped);
-            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\')".to_string();
-            for _ in 0..5 {
+            search_condition = " AND (reagent_name LIKE ? ESCAPE '\\' OR batch_number LIKE ? ESCAPE '\\' OR supplier LIKE ? ESCAPE '\\' OR COALESCE(location_summary, '') LIKE ? ESCAPE '\\' OR COALESCE(room_names, '') LIKE ? ESCAPE '\\' OR COALESCE(cas_number, '') LIKE ? ESCAPE '\\' OR COALESCE(cat_number, '') LIKE ? ESCAPE '\\')".to_string();
+            for _ in 0..7 {
                 params.push(pattern.clone());
             }
         }

@@ -337,6 +337,12 @@ const UsageBar = ({
     c => getStatus(c) !== 'empty' && getStatus(c) !== 'disposed'
   );
   const hasMultipleContainers = usableContainers.length > 1;
+  // Bottles of this batch stand in more than one place: the user has to say
+  // which one is taken (same rule as in useBatchLogic.handleQuantityUse)
+  const placeCount = new Set(
+    usableContainers.map(c => c.position_id || c.placement_id || 'unplaced')
+  ).size;
+  const mustChooseContainer = hasMultipleContainers && placeCount > 1;
 
  
   // Selection can be empty, a single ID, or comma-separated IDs (sealed group).
@@ -459,12 +465,12 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                 width: '100%',
               }}
             >
-              <option value="">Select container...</option>
+              <option value="">{mustChooseContainer ? 'Select container (required)…' : 'Select container...'}</option>
               {Object.entries(groupedOptions).map(([location, data]) => (
                 <optgroup key={location} label={location} style={{ fontStyle: 'normal', fontWeight: '700', color: '#1a202c' }}>
                   {data.opened.map(c => (
                     <option key={c.id} value={c.id} style={{ fontWeight: '400', paddingLeft: '10px' }}>
-                      #{c.sequence_number} — {extractQty(c).toFixed(1)} {batch.unit} (opened)
+                      #{c.sequence_number} — {extractQty(c).toFixed(1)} {batch.unit} (opened) · {location}
                     </option>
                   ))}
                  {Object.values(data.sealed).map(g => (
@@ -476,8 +482,8 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
                       style={{ fontWeight: '400', paddingLeft: '10px' }}
                     >
                       {g.count > 1
-                        ? `${g.count} × ${g.qty.toFixed(1)} ${g.unit} (sealed) — pool of ${(g.count * g.qty).toFixed(1)} ${g.unit}`
-                        : `#${g.firstSeq} — ${g.qty.toFixed(1)} ${g.unit} (sealed)`}
+                        ? `${g.count} × ${g.qty.toFixed(1)} ${g.unit} (sealed) — pool of ${(g.count * g.qty).toFixed(1)} ${g.unit} · ${location}`
+                        : `#${g.firstSeq} — ${g.qty.toFixed(1)} ${g.unit} (sealed) · ${location}`}
                     </option>
                   ))}
                 </optgroup>
@@ -623,20 +629,33 @@ const groupedOptions = usableContainers.reduce((acc, c) => {
               // Enabled whenever a positive quantity is entered (and, for an
               // expired batch, a reason is given). With no container selected the
               // server auto-distributes across containers (opened first).
-              disabled={isLoading || !input.quantity || expiredReasonMissing}
+              disabled={isLoading || !input.quantity || expiredReasonMissing || (mustChooseContainer && !selectedId)}
               icon={<UseIcon size={14} />}
               style={{ backgroundColor: expired ? '#dd6b20' : '#38a169', height: ctlH, padding: '0 12px', flexShrink: 0 }}
               title={expiredReasonMissing
                 ? 'Enter a reason to use expired stock'
-                : (hasMultipleContainers && !selectedId
-                  ? 'No container selected — will auto-distribute across containers'
-                  : undefined)}
+                : (mustChooseContainer && !selectedId
+                  ? 'Select the container first'
+                  : (hasMultipleContainers && !selectedId
+                    ? 'No container selected: opened bottles are used first'
+                    : undefined))}
             >
               {isLoading ? '...' : 'Use'}
             </Button> 
           </div>
         </div>
       </div>
+
+      {/* Visible text, not a tooltip: phones have no hover */}
+      {hasMultipleContainers && !success && !error && (
+        <div style={{ paddingLeft: '4px', fontSize: '12px', color: mustChooseContainer && !selectedId ? '#c05621' : '#718096' }}>
+          {selectedId
+            ? `From: ${[...new Set(usableContainers.filter(c => selectedIds.includes(c.id)).map(getFullLocation))].join('; ')}`
+            : (mustChooseContainer
+              ? `This batch is stored in ${placeCount} places. Select the container you are taking from.`
+              : 'No container selected: opened bottles are used first.')}
+        </div>
+      )}
 
       {/* Уведомления */}
       {(success || error) && (

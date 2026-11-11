@@ -2,13 +2,20 @@
 // Полноценный модуль управления локациями хранения
 // Иерархия: Комната → Зона хранения (шкаф/холодильник) → Позиция (полка/ящик)
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import { api } from '../../services/api';
 import useIsMobile from '../hooks/useIsMobile';
 import LabelPrintModal from '../labels/LabelPrintModal';
 import LocationLabelPrintModal from '../labels/LocationLabelPrintModal';
 import InventoryPanel from '../inventory/InventoryPanel';
 import { DataMatrixIcon } from '../labels/LabelIcons';
+import { can } from '../../utils/permissions';
+
+// What the signed-in user may change here (server: create_room, edit_room,
+// delete_room; zones and shelves follow the room permissions). Buttons the
+// server would refuse are not shown.
+const StoragePerms = React.createContext({ createRoom: true, edit: true, remove: true });
+const HIDDEN = { display: 'none' };
 
 // ==================== КОНСТАНТЫ ====================
 
@@ -696,6 +703,7 @@ const ZoneInventoryModal = ({ zone, onClose }) => {
 // ==================== КАРТОЧКА ПОЗИЦИИ ====================
 
 const PositionCard = ({ position, onEdit, onDelete }) => {
+  const allow = useContext(StoragePerms);
   const [hovered, setHovered] = useState(false);
   const touch = useIsMobile(TOUCH_QUERY);
   const [expanded, setExpanded] = useState(false);
@@ -746,14 +754,14 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
           <i className="fas fa-qrcode" />
         </button>
         <button
-          style={touch ? { ...S.actionBtn, ...S.actionBtnTouch } : S.actionBtn}
+          style={!allow.edit ? HIDDEN : (touch ? { ...S.actionBtn, ...S.actionBtnTouch } : S.actionBtn)}
           onClick={(e) => { e.stopPropagation(); onEdit(position); }}
           title="Edit"
         >
           <i className="fas fa-pen" />
         </button>
         <button
-          style={{ ...S.actionBtn, ...(touch ? S.actionBtnTouch : null), color: '#dc2626' }}
+          style={!allow.remove ? HIDDEN : { ...S.actionBtn, ...(touch ? S.actionBtnTouch : null), color: '#dc2626' }}
           onClick={(e) => {
             e.stopPropagation();
             if (window.confirm(`Delete position "${position.name}"?`)) onDelete(position.id);
@@ -814,6 +822,7 @@ const PositionCard = ({ position, onEdit, onDelete }) => {
 // ==================== КАРТОЧКА ЗОНЫ ====================
 
 const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
+  const allow = useContext(StoragePerms);
   const [expanded, setExpanded] = useState(false);
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showPositionForm, setShowPositionForm] = useState(false);
@@ -894,10 +903,10 @@ const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#2b6cb0' }} onClick={() => setShowLabels(true)} title="Print labels for the bottles in this zone" aria-label="Print labels">
             <DataMatrixIcon size={touch ? 15 : 12} />
           </button>
-          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowZoneForm(true)} title="Edit zone" aria-label="Edit zone">
+          <button style={!allow.edit ? HIDDEN : { ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowZoneForm(true)} title="Edit zone" aria-label="Edit zone">
             <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
-          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#dc2626' }} onClick={handleDeleteZone} title="Delete zone" aria-label="Delete zone">
+          <button style={!allow.remove ? HIDDEN : { ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#dc2626' }} onClick={handleDeleteZone} title="Delete zone" aria-label="Delete zone">
             <i className="fas fa-trash" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
         </div>
@@ -919,7 +928,7 @@ const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
             />
           ))}
           <div
-            style={S.addPositionBtn}
+            style={allow.edit ? S.addPositionBtn : HIDDEN}
             onClick={() => { setEditPosition(null); setShowPositionForm(true); }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = '#10b981'; e.currentTarget.style.color = '#10b981'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = '#d1d5db'; e.currentTarget.style.color = '#9ca3af'; }}
@@ -986,6 +995,7 @@ const ZoneSection = ({ zone, positions, onRefresh, onInventory }) => {
 // ==================== КАРТОЧКА КОМНАТЫ ====================
 
 const RoomSection = ({ room, onRefresh, onInventory }) => {
+  const allow = useContext(StoragePerms);
   const [expanded, setExpanded] = useState(false);
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [showRoomForm, setShowRoomForm] = useState(false);
@@ -1061,10 +1071,10 @@ const RoomSection = ({ room, onRefresh, onInventory }) => {
           <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#6b46c1' }} onClick={() => setShowQr(true)} title="Print QR labels for this room, its cabinets and shelves" aria-label="Print room QR labels">
             <i className="fas fa-qrcode" style={{ fontSize: touch ? '14px' : '11px' }} />
           </button>
-          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowRoomForm(true)} title="Edit room" aria-label="Edit room">
+          <button style={!allow.edit ? HIDDEN : { ...S.btnSmall, ...(touch ? S.btnSmallTouch : null) }} onClick={() => setShowRoomForm(true)} title="Edit room" aria-label="Edit room">
             <i className="fas fa-pen" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
-          <button style={{ ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#dc2626' }} onClick={handleDeleteRoom} title="Delete room" aria-label="Delete room">
+          <button style={!allow.remove ? HIDDEN : { ...S.btnSmall, ...(touch ? S.btnSmallTouch : null), color: '#dc2626' }} onClick={handleDeleteRoom} title="Delete room" aria-label="Delete room">
             <i className="fas fa-trash" style={{ fontSize: touch ? '13px' : '10px' }} />
           </button>
         </div>
@@ -1094,7 +1104,7 @@ const RoomSection = ({ room, onRefresh, onInventory }) => {
           ))}
 
           <button
-            style={S.addZoneBtn}
+            style={allow.edit ? S.addZoneBtn : HIDDEN}
             onClick={(e) => { e.stopPropagation(); setShowZoneForm(true); }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = '#6366f1'; e.currentTarget.style.color = '#6366f1'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = '#d1d5db'; e.currentTarget.style.color = '#6b7280'; }}
@@ -1141,6 +1151,11 @@ const readActiveCheck = () => { try { return localStorage.getItem(ACTIVE_CHECK_K
 
 const LocationManager = ({ user }) => {
   const isMobile = useIsMobile();
+  const allow = useMemo(() => ({
+    createRoom: can(user, 'create_room'),
+    edit: can(user, 'edit_room'),
+    remove: can(user, 'delete_room'),
+  }), [user]);
   // "locations" | "checks"; an open inventory check is remembered across reloads
   const [tab, setTab] = useState(() => (readActiveCheck() ? 'checks' : 'locations'));
   const [activeCheck, setActiveCheckState] = useState(readActiveCheck);
@@ -1220,6 +1235,7 @@ const LocationManager = ({ user }) => {
   }
 
   return (
+    <StoragePerms.Provider value={allow}>
     <div style={isMobile ? { ...S.container, padding: '68px 12px 16px' } : S.container}>
       {/* Header */}
       <div style={S.header}>
@@ -1242,7 +1258,7 @@ const LocationManager = ({ user }) => {
             onBlur={e => { e.target.style.borderColor = '#e5e7eb'; e.target.style.boxShadow = 'none'; }}
           />
           <button
-            style={S.addBtn}
+            style={allow.createRoom ? S.addBtn : HIDDEN}
             onClick={() => setShowRoomForm(true)}
             onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#4f46e5'; }}
             onMouseLeave={e => { e.currentTarget.style.backgroundColor = '#6366f1'; }}
@@ -1303,7 +1319,7 @@ const LocationManager = ({ user }) => {
           </div>
           {!search && (
             <button
-              style={{ ...S.addBtn, marginTop: '16px' }}
+              style={allow.createRoom ? { ...S.addBtn, marginTop: '16px' } : HIDDEN}
               onClick={() => setShowRoomForm(true)}
               onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#4f46e5'; }}
               onMouseLeave={e => { e.currentTarget.style.backgroundColor = '#6366f1'; }}
@@ -1333,6 +1349,7 @@ const LocationManager = ({ user }) => {
         />
       )}
     </div>
+    </StoragePerms.Provider>
   );
 };
 

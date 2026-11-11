@@ -1102,6 +1102,65 @@ pub async fn upload_equipment_file(
 #[derive(Debug, serde::Deserialize)]
 pub struct FileViewQuery {
     pub download: Option<String>,
+    /// Link token (public route only), see `create_equipment_file_link`
+    pub t: Option<String>,
+}
+
+/// How long a file link stays valid. Long enough to start a download or open
+/// a PDF, short enough that a link copied from the address bar is soon useless.
+const FILE_LINK_TTL_SECONDS: i64 = 5 * 60;
+
+/// POST /api/v1/equipment/{id}/files/{file_id}/link
+///
+/// Images are loaded by the app with the session token. A document opened in
+/// a new tab or saved by the browser is a plain navigation, which cannot carry
+/// that token, so the app asks for a link that is valid for a few minutes and
+/// for this one file.
+pub async fn create_equipment_file_link(
+    app_state: web::Data<Arc<AppState>>,
+    auth_service: web::Data<Arc<crate::auth::AuthService>>,
+    path: web::Path<(String, String)>,
+    http_request: actix_web::HttpRequest,
+) -> ApiResult<HttpResponse> {
+    crate::permissions::require(&http_request, &app_state.db_pool, "view_equipment").await?;
+    let (equipment_id, file_id) = path.into_inner();
+
+    let exists: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM equipment_files WHERE id = ? AND equipment_id = ?"
+    )
+        .bind(&file_id)
+        .bind(&equipment_id)
+        .fetch_optional(&app_state.db_pool)
+        .await?;
+    if exists.is_none() {
+        return Err(ApiError::not_found("File"));
+    }
+
+    let token = auth_service.sign_file_link(&file_id, FILE_LINK_TTL_SECONDS)?;
+    Ok(HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "url": format!("/api/v1/public/equipment/{}/files/{}?t={}", equipment_id, file_id, token),
+        "expires_in": FILE_LINK_TTL_SECONDS,
+    }))))
+}
+
+/// GET /api/v1/public/equipment/{id}/files/{file_id}?t=<link token>
+///
+/// Outside the session middleware, so it works as a plain link, but only with
+/// a valid link token for this file.
+pub async fn download_equipment_file_by_link(
+    app_state: web::Data<Arc<AppState>>,
+    auth_service: web::Data<Arc<crate::auth::AuthService>>,
+    path: web::Path<(String, String)>,
+    query: web::Query<FileViewQuery>,
+) -> ApiResult<HttpResponse> {
+    let file_id = &path.1;
+    let valid = query.t.as_deref().map(|t| auth_service.verify_file_link(t, file_id)).unwrap_or(false);
+    if !valid {
+        return Err(ApiError::Forbidden(
+            "This file link is missing or has expired. Open the file from the application again.".to_string()
+        ));
+    }
+    download_equipment_file(app_state, path, query).await
 }
 
 /// Content-Disposition for a stored file: PDFs, images and plain text open in
@@ -1145,8 +1204,10 @@ pub async fn download_equipment_file(
     let file = file.ok_or_else(|| ApiError::not_found("File"))?;
 
     // Читаем файл
-    let contents = std::fs::read(&file.file_path)
-        .map_err(|e| ApiError::InternalServerError(format!("Failed to read file: {}", e)))?;
+    let contents = tokio::fs::read(&file.file_path).await.map_err(|e| {
+        log::error!("Failed to read equipment file {}: {}", file.file_path, e);
+        ApiError::NotFound("The file is missing on the server".to_string())
+    })?;
 
     let force_download = query.download.as_deref().map_or(false, |v| v != "0" && v != "false");
     let disposition = file_disposition(&file.original_filename, &file.mime_type, force_download);

@@ -1,6 +1,7 @@
 // components/Dashboard.js - CHELATE Style with Real Activity & Charts
 import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../services/api';
+import { can, isAdmin as isAdminUser } from '../utils/permissions';
 import StatsCard from './StatsCard';
 import LoadingOverlay from './LoadingOverlay';
 import useIsMobile from './hooks/useIsMobile';
@@ -336,9 +337,9 @@ const Dashboard = ({ user, showToast, onNavigate }) => {
     }
   };
 
-  const canCreateReagents = () => ['Admin', 'Researcher'].includes(user?.role);
-  const canManageEquipment = () => ['Admin', 'Researcher'].includes(user?.role);
-  const isAdmin = () => user?.role === 'Admin';
+  const canCreateReagents = () => can(user, 'create_reagent');
+  const canManageEquipment = () => can(user, 'edit_equipment');
+  const isAdmin = () => isAdminUser(user);
 
   const quickActions = useMemo(() => {
     const actions = [];

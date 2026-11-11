@@ -1,6 +1,7 @@
 // src/components/experiments/hooks/useExperiments.js
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../../services/api';
+import { can } from '../../../utils/permissions';
 
 /**
  * Главный хук для управления экспериментами
@@ -233,10 +234,10 @@ export const useExperiments = (user) => {
 
   // === Права доступа ===
   const permissions = useMemo(() => ({
-    canCreate: ['Admin', 'Researcher'].includes(user?.role),
-    canEdit: ['Admin', 'Researcher'].includes(user?.role),
-    canDelete: user?.role === 'Admin',
-  }), [user?.role]);
+    canCreate: can(user, 'create_experiment'),
+    canEdit: can(user, 'edit_experiment'),
+    canDelete: can(user, 'delete_experiment'),
+  }), [user]);
 
   return {
     // Данные
